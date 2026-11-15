@@ -472,21 +472,32 @@ export const routerAttributeModule: AttributeModule = {
 
       // Build the resolved manifest: declared data-route entries + optional static
       // manifest file + dynamic scan. Internal (shadow) routes are tagged and kept
+      let cachedManifestUrl: string | null = null;
+      let cachedManifestList: any[] | null = null;
+
       // out of the *public* array.
       const buildManifest = async () => {
         const entries: RouteRecord[] = routeList.slice();
 
         const manifestUrl = state.config.manifest;
         if (manifestUrl) {
+          const resolvedManifestUrl = applyBase(manifestUrl);
           try {
-            let raw: string;
-            if (runtime.fetch) {
-              raw = (await runtime.fetch.request(applyBase(manifestUrl), { responseType: 'text' }, el)) as string;
+            let list: any[];
+            if (cachedManifestList && cachedManifestUrl === resolvedManifestUrl) {
+              list = cachedManifestList;
             } else {
-              raw = await (await fetch(applyBase(manifestUrl))).text();
+              let raw: string;
+              if (runtime.fetch) {
+                raw = (await runtime.fetch.request(resolvedManifestUrl, { responseType: 'text' }, el)) as string;
+              } else {
+                raw = await (await fetch(resolvedManifestUrl)).text();
+              }
+              const parsed = JSON.parse(raw);
+              list = Array.isArray(parsed) ? parsed : (parsed.routes ?? []);
+              cachedManifestUrl = resolvedManifestUrl;
+              cachedManifestList = list;
             }
-            const parsed = JSON.parse(raw);
-            const list = Array.isArray(parsed) ? parsed : (parsed.routes ?? []);
             for (const entry of list) {
               if (!entry || typeof entry !== 'object') continue;
               const routePath = entry.route !== undefined ? entry.route : (entry.path || '');
@@ -713,21 +724,28 @@ export const routerAttributeModule: AttributeModule = {
 
           const pDir = (state.config.pagesDir || pagesDir || '_pages').replace(/^\/+|\/+$/g, '');
           const manifestUrl = state.config.manifest || `/${pDir}/manifest.json`;
+          const resolvedManifestUrl = applyBase(manifestUrl);
           let rawList: any[] = [];
 
-          // 1. Try fetching manifest.json
-          try {
-            const manifestRes = await fetchFn(applyBase(manifestUrl));
-            if (manifestRes && manifestRes.ok) {
-              const json = await manifestRes.json();
-              if (Array.isArray(json)) {
-                rawList = json;
-              } else if (Array.isArray(json.routes)) {
-                rawList = json.routes;
+          // 1. Reuse already-loaded manifest if identical URL, else fetch manifest.json
+          if (cachedManifestList && cachedManifestUrl === resolvedManifestUrl) {
+            rawList = cachedManifestList;
+          } else {
+            try {
+              const manifestRes = await fetchFn(resolvedManifestUrl);
+              if (manifestRes && manifestRes.ok) {
+                const json = await manifestRes.json();
+                if (Array.isArray(json)) {
+                  rawList = json;
+                } else if (Array.isArray(json.routes)) {
+                  rawList = json.routes;
+                }
+                cachedManifestUrl = resolvedManifestUrl;
+                cachedManifestList = rawList;
               }
+            } catch {
+              /* ignore manifest fetch error */
             }
-          } catch {
-            /* ignore manifest fetch error */
           }
 
           const discovered: DiscoveredPage[] = [];
@@ -1415,7 +1433,7 @@ export const routerAttributeModule: AttributeModule = {
       // (globalSignals() is a reactive object, so watch() fires on change.)
       // Guard against re-entrant calls (e.g. commitTabSwitch writing activePageTabId).
       let tabSwitching = false;
-      runtime.watch(
+      const stopTabWatch = runtime.watch(
         () => globals.activePageTabId || globals.activeTabId,
         () => {
           if (tabSwitching) return;
@@ -1605,20 +1623,8 @@ export const routerAttributeModule: AttributeModule = {
         const toInfo = buildInfo(matched, path, params, query, url.hash);
         const fromRoute = state.currentRoute;
         const fromInfo = previousInfo;
+        const prevPath = state.path;
 
-        // --- Synchronous outlet commit (paint-first) ---
-        // Publish the resolved outlet signals IMMEDIATELY so the content panel
-        // stays in lockstep with the tab header. The panel derives its
-        // component from the active tab's own `content` field (the same
-        // `tabs[]` object that supplies the header's title/icon), so no
-        // parallel `outletContent` signal is written here — the header and
-        // body read the SAME source and update on the same tick. Lifecycle
-        // hooks below only govern navigation control (abort / redirect).
-        const resolvedComponent = matched?.component ?? null;
-        state.route = resolvedComponent;
-        state.layout = matched?.layout ?? null;
-        publishOutlet(state.layout ?? state.route);
-        state.path = path;
         // Clear transient error state on any NORMAL route, but preserve
         // it when the matched route IS the error page (it reads
         // #router.errorCode to present 404/500/… copy).
@@ -1630,25 +1636,28 @@ export const routerAttributeModule: AttributeModule = {
         state.loading = true;
 
         // beforeLeave (current route).
-        if (fromRoute) {
+        if (fromRoute?.beforeLeave) {
           const r = await runHook(fromRoute.beforeLeave, toInfo, fromInfo);
           if (token !== navToken) { state.loading = false; return; }
           if (r.abort) { state.loading = false; return; }
           if (r.redirect) { state.loading = false; state.navigate(r.redirect, { replace: true }); return; }
         }
 
-        // beforeEnter (matched route).
+        // beforeEnter & handler (matched route).
         if (matched) {
-          const r = await runHook(matched.beforeEnter, toInfo, fromInfo);
-          if (token !== navToken) { state.loading = false; return; }
-          if (r.abort) { state.loading = false; return; }
-          if (r.redirect) { state.loading = false; state.navigate(r.redirect, { replace: true }); return; }
+          if (matched.beforeEnter) {
+            const r = await runHook(matched.beforeEnter, toInfo, fromInfo);
+            if (token !== navToken) { state.loading = false; return; }
+            if (r.abort) { state.loading = false; return; }
+            if (r.redirect) { state.loading = false; state.navigate(r.redirect, { replace: true }); return; }
+          }
 
-          // handler (matched route).
-          const h = await runHook(matched.handler, toInfo, fromInfo);
-          if (token !== navToken) { state.loading = false; return; }
-          if (h.abort) { state.loading = false; return; }
-          if (h.redirect) { state.loading = false; state.navigate(h.redirect, { replace: true }); return; }
+          if (matched.handler) {
+            const h = await runHook(matched.handler, toInfo, fromInfo);
+            if (token !== navToken) { state.loading = false; return; }
+            if (h.abort) { state.loading = false; return; }
+            if (h.redirect) { state.loading = false; state.navigate(h.redirect, { replace: true }); return; }
+          }
         }
 
         // Final guard before committing any state.
@@ -1656,10 +1665,11 @@ export const routerAttributeModule: AttributeModule = {
 
         // Remember the outgoing route for `#router.previous`.
         const outgoingPrevious = fromRoute
-          ? { path: state.path, meta: fromRoute.meta }
+          ? { path: prevPath, meta: fromRoute.meta }
           : (previousInfo ? { path: previousInfo.path, meta: previousInfo.meta } : null);
 
-        // Commit remaining state.
+        // Commit state only after guards succeed.
+        state.path = path;
         state.hash = url.hash;
         state.query = query;
         state.params = params;
@@ -1774,10 +1784,10 @@ export const routerAttributeModule: AttributeModule = {
         (globalThis as any).navigation.addEventListener('navigate', onNavigate);
       }
 
-      // Fallback: react to browser back/forward when Navigation API is absent.
+      // React to back/forward bridged via custom ux-popstate event (from history listener / linkRewriter).
       const onPopState = (event?: any) => {
         // Per-tab: resolve the owning tab from the history entry state.
-        const st = event && event.state;
+        const st = (event?.detail && event.detail.state !== undefined) ? event.detail.state : (event && event.state);
         const tab = st && (typeof st.pageTabId === 'string' ? st.pageTabId : (typeof st.tabId === 'string' ? st.tabId : null));
         if (tab && tab !== state.activePageTabId) {
           state.switchPageTab(tab);
@@ -1788,10 +1798,6 @@ export const routerAttributeModule: AttributeModule = {
         updateRoute(globalThis.location.href);
       };
       const popStateEvent = `${CUSTOM_EVENT_PREFIX}popstate`;
-      if (!('navigation' in globalThis)) {
-        globalThis.addEventListener('popstate', onPopState);
-      }
-      // Custom event bridge (dispatched by the history listener module).
       document.addEventListener(popStateEvent, onPopState);
 
       queueMicrotask(async () => {
@@ -1801,7 +1807,7 @@ export const routerAttributeModule: AttributeModule = {
       });
 
       // Reactive synchronization of extracted metadata into the global recent signal list
-      runtime.effect(() => {
+      const stopRecentEffect = runtime.effect(() => {
         const activeTab = state.activePageTab;
         if (!activeTab || !activeTab.route || activeTab.route.startsWith('/_internal')) return;
         const meta = activeTab.meta || activeTab.linkedContent?.meta;
@@ -1824,7 +1830,7 @@ export const routerAttributeModule: AttributeModule = {
       });
 
       // Reactive synchronization of active page tab title to the native browser window/tab title
-      runtime.effect(() => {
+      const stopTitleEffect = runtime.effect(() => {
         const activeTab = state.activePageTab;
         if (!activeTab || typeof document === 'undefined') return;
         const meta = activeTab.meta || activeTab.linkedContent?.meta;
@@ -1838,11 +1844,11 @@ export const routerAttributeModule: AttributeModule = {
       });
 
       return () => {
+        stopTabWatch?.();
+        stopRecentEffect?.();
+        stopTitleEffect?.();
         if ('navigation' in globalThis) {
           (globalThis as any).navigation.removeEventListener('navigate', onNavigate);
-        }
-        if (!('navigation' in globalThis)) {
-          globalThis.removeEventListener('popstate', onPopState);
         }
         document.removeEventListener(popStateEvent, onPopState);
       };

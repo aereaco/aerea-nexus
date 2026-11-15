@@ -60,48 +60,44 @@ function setValuePreservingCursor(el: HTMLInputElement | HTMLTextAreaElement, va
 }
 
 function applyBindingResult(result: unknown, el: HTMLElement): void {
-  if (result !== undefined && result !== null) {
-    if (typeof result === 'object' && !Array.isArray(result)) {
-      Object.entries(result).forEach(([param, val]) => {
-        if (param in el) {
-          if ((el as any)[param] !== val) (el as any)[param] = val;
-        } else {
-          if (val === false || val === null || val === undefined) {
-            if (el.hasAttribute(param)) el.removeAttribute(param);
-          } else {
-            const strVal = String(val);
-            if (el.getAttribute(param) !== strVal) el.setAttribute(param, strVal);
-          }
-        }
-      });
-    } else {
-      if (el instanceof HTMLInputElement) {
-        if (el.type === 'checkbox') {
-          el.checked = Boolean(result);
-        } else if (el.type === 'radio') {
-          el.checked = (el.value === String(result));
-        } else {
-          const strVal = result !== undefined && result !== null ? String(result) : '';
-          setValuePreservingCursor(el, strVal);
-        }
-      } else if (el instanceof HTMLSelectElement) {
-        const targetValue = result !== undefined && result !== null ? String(result) : '';
-        const options = Array.from(el.options);
-        const found = options.some(opt => opt.value === targetValue);
-        if (found || targetValue === '') {
-          if (el.value !== targetValue) {
-            el.value = targetValue;
-          }
-        }
-      } else if (el instanceof HTMLTextAreaElement) {
-        const strVal = result !== undefined && result !== null ? String(result) : '';
-        setValuePreservingCursor(el, strVal);
+  if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+    Object.entries(result).forEach(([param, val]) => {
+      if (param in el) {
+        if ((el as any)[param] !== val) (el as any)[param] = val;
       } else {
-        const strVal = result !== undefined && result !== null ? String(result) : '';
-        if (el.textContent !== strVal) {
-          el.textContent = strVal;
+        if (val === false || val === null || val === undefined) {
+          if (el.hasAttribute(param)) el.removeAttribute(param);
+        } else {
+          const strVal = String(val);
+          if (el.getAttribute(param) !== strVal) el.setAttribute(param, strVal);
         }
       }
+    });
+    return;
+  }
+
+  const strVal = result !== undefined && result !== null ? String(result) : '';
+  if (el instanceof HTMLInputElement) {
+    if (el.type === 'checkbox') {
+      el.checked = Boolean(result);
+    } else if (el.type === 'radio') {
+      el.checked = result !== undefined && result !== null && el.value === strVal;
+    } else {
+      setValuePreservingCursor(el, strVal);
+    }
+  } else if (el instanceof HTMLSelectElement) {
+    const options = Array.from(el.options);
+    const found = options.some(opt => opt.value === strVal);
+    if (found || strVal === '') {
+      if (el.value !== strVal) {
+        el.value = strVal;
+      }
+    }
+  } else if (el instanceof HTMLTextAreaElement) {
+    setValuePreservingCursor(el, strVal);
+  } else {
+    if (el.textContent !== strVal) {
+      el.textContent = strVal;
     }
   }
 }
@@ -162,7 +158,7 @@ const bindModule: AttributeModule = {
             }
 
             const trimmedVal = value.trim();
-            const isValidLValue = /^[a-zA-Z_$][a-zA-Z0-9_$]*(\.[a-zA-Z_$][a-zA-Z0-9_$]*|\[[^\]]+\])*$/.test(trimmedVal);
+            const isValidLValue = /^#?[a-zA-Z_$][a-zA-Z0-9_$]*(\.[a-zA-Z_$][a-zA-Z0-9_$]*|\[[^\]]+\])*$/.test(trimmedVal);
 
             if (isValidLValue) {
               try {

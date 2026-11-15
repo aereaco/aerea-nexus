@@ -27,7 +27,7 @@ const onModule: AttributeModule = {
       };
 
       let target: EventTarget = el;
-      let options: AddEventListenerOptions | boolean = false;
+      let options: AddEventListenerOptions = {};
 
       const targetModifiers = new Set(['window', 'document', 'outside']);
       const optionModifiers = new Set(['passive', 'capture']);
@@ -52,14 +52,17 @@ const onModule: AttributeModule = {
         }
 
         if (optionModifiers.has(modName)) {
-          if (modName === 'passive') options = { passive: true };
-          if (modName === 'capture') options = true;
+          if (modName === 'passive') options.passive = true;
+          if (modName === 'capture') options.capture = true;
           return;
         }
 
         const modifierModule = runtime.getModifier(modName);
         if (modifierModule) {
-          handler = modifierModule.handle(handler, el, fullArg, runtime) as EventListener;
+          const wrapped = modifierModule.handle(handler, el, fullArg, runtime);
+          if (typeof wrapped === 'function') {
+            handler = wrapped as EventListener;
+          }
         }
       });
 

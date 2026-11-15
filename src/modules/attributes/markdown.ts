@@ -17,10 +17,6 @@ export function ensureMarkdownStyles(root?: Document | ShadowRoot | null) {
   ensureAdoptedStylesheet(MARKDOWN_BASE_CSS, markdownSheetRef, root);
 }
 
-if (typeof document !== 'undefined') {
-  ensureMarkdownStyles();
-}
-
 const ALERT_CONFIGS: Record<string, [cls: string, icon: string, title: string]> = {
   NOTE: ['nexus-alert-note', 'material-symbols-light:info-outline', 'Note'],
   TIP: ['nexus-alert-tip', 'material-symbols-light:lightbulb-outline', 'Tip'],
@@ -31,6 +27,19 @@ const ALERT_CONFIGS: Record<string, [cls: string, icon: string, title: string]> 
 
 const escapeHtml = (s: string): string =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+const sanitizeMarkdownUrl = (rawUrl: string): string => {
+  const trimmed = rawUrl.trim();
+  const normalized = trimmed.replace(/[\u0000-\u0020]+/g, '').toLowerCase();
+  if (
+    normalized.startsWith('javascript:') ||
+    normalized.startsWith('vbscript:') ||
+    normalized.startsWith('data:text/html')
+  ) {
+    return '#';
+  }
+  return trimmed.replace(/"/g, '&quot;');
+};
 
 // Helper to generate URL/anchor friendly slug IDs
 function slugify(text: string): string {
@@ -59,7 +68,7 @@ export function parseMarkdown(md: string): string {
         `<div class="nexus-code-header">` +
           `<span class="nexus-code-lang">${lang}</span>` +
           `<button type="button" class="nexus-copy-btn" ` +
-            `onclick="navigator.clipboard.writeText(this.closest('.nexus-code-block').querySelector('code').textContent).then(()=>{ const self=this; const prev=self.innerText; self.innerText='Copied!'; setTimeout(()=>self.innerText=prev, 1500); })">` +
+            `data-on-click="navigator.clipboard?.writeText($el.closest('.nexus-code-block')?.querySelector('code')?.textContent || '').then(() => { const s = $el.querySelector('span'); if (s) { s.textContent = 'Copied!'; setTimeout(() => s.textContent = 'Copy', 1500); } })">` +
             `<svg width="14" height="14" style="display:inline-block; vertical-align: middle;" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg> ` +
             `<span>Copy</span>` +
           `</button>` +
@@ -159,10 +168,11 @@ export function parseMarkdown(md: string): string {
   html = html.replace(/(\*\*|__)(.*?)\1/g, '<strong>$2</strong>');
   html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
   html = html.replace(/(^|\s)_(.*?)_(\s|$)/g, '$1<em>$2</em>$3');
-  html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" class="nexus-img" loading="lazy" />');
+  html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_m, alt, url) => `<img src="${sanitizeMarkdownUrl(url)}" alt="${escapeHtml(alt)}" class="nexus-img" loading="lazy" />`);
   html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, text, url) => {
-    const isExt = url.startsWith('http://') || url.startsWith('https://');
-    return `<a href="${url}" class="nexus-link"${isExt ? ' target="_blank" rel="noopener noreferrer"' : ''}>${text}</a>`;
+    const safeUrl = sanitizeMarkdownUrl(url);
+    const isExt = safeUrl.startsWith('http://') || safeUrl.startsWith('https://');
+    return `<a href="${safeUrl}" class="nexus-link"${isExt ? ' target="_blank" rel="noopener noreferrer"' : ''}>${text}</a>`;
   });
   html = html.replace(/(^|[^"'])(https?:\/\/[^\s<]+)/g, '$1<a href="$2" class="nexus-link" target="_blank" rel="noopener noreferrer">$2</a>');
 
@@ -186,11 +196,6 @@ export function parseMarkdown(md: string): string {
 const markdownModule: AttributeModule = {
   name: 'markdown',
   attribute: 'markdown',
-  onRegister(_context: RuntimeContext) {
-    if (typeof document !== 'undefined') {
-      ensureMarkdownStyles(document);
-    }
-  },
   handle: (el: HTMLElement, value: string, runtime: RuntimeContext): (() => void) | void => {
     ensureMarkdownStyles(el.getRootNode() as Document | ShadowRoot);
 
@@ -216,6 +221,9 @@ const markdownModule: AttributeModule = {
       const transpiled = parseMarkdown(mdText);
       if (el.innerHTML !== transpiled) {
         el.innerHTML = transpiled;
+        el.querySelectorAll('.nexus-copy-btn').forEach(btn => {
+          if (btn instanceof HTMLElement) runtime.processElement(btn, true);
+        });
       }
     };
 

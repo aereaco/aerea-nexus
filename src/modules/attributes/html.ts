@@ -1,5 +1,6 @@
 import { AttributeModule } from '../../engine/modules.ts';
 import { RuntimeContext } from '../../engine/composition.ts';
+import { teardownSubtree } from '../../engine/reconciler.ts';
 
 const htmlModule: AttributeModule = {
   name: 'html',
@@ -10,6 +11,7 @@ const htmlModule: AttributeModule = {
       if (content !== lastContent) {
         lastContent = content;
         const html = content === undefined || content === null ? '' : String(content);
+        teardownSubtree(el, false);
         el.innerHTML = html;
         Array.from(el.children).forEach(child => {
           if (child instanceof HTMLElement || child instanceof SVGElement) {

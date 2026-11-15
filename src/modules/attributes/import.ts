@@ -2,6 +2,7 @@ import { AttributeModule } from '../../engine/modules.ts';
 import { RuntimeContext } from '../../engine/composition.ts';
 import { reportError } from '../../engine/debug.ts';
 import { getIndexedDBProxy } from '../../engine/scope.ts';
+import { deepEqual } from '../../engine/reconciler.ts';
 import { stylesheet, discoverColorTokens, buildTailwindThemeBridge, markExternalStylesSettled } from './stylesheet.ts';
 import { cacheEngine } from '../../engine/cache.ts';
 
@@ -502,23 +503,34 @@ const importModule: AttributeModule = {
   handle: (el: HTMLElement, expression: string, runtime: RuntimeContext): (() => void) | void => {
     // Differential update state
     let activeCleanup: (() => void) | null = null;
-    let lastConfigStr = '';
+    let hasLastConfig = false;
+    let lastConfig: unknown = undefined;
+
+    const cloneSnapshot = (v: unknown): unknown => {
+      if (Array.isArray(v)) return v.map(cloneSnapshot);
+      if (v && typeof v === 'object') {
+        const out: Record<string, unknown> = {};
+        for (const [k, val] of Object.entries(v)) out[k] = cloneSnapshot(val);
+        return out;
+      }
+      return v;
+    };
 
     const stopEffect = runtime.effect(() => {
       // data-import
       const attrExpr = el.getAttribute('data-import') || expression;
       const config = runtime.evaluate(el, attrExpr) as Record<string, ImportPayload>;
-      const configStr = JSON.stringify(config);
       
       // Optimization: Skip re-import if config hasn't changed, but ensure FOUC gate is released
-      if (configStr === lastConfigStr) {
+      if (hasLastConfig && deepEqual(config, lastConfig)) {
         el.classList.remove('nexus-loading');
         el.classList.add('nexus-ready');
         el.removeAttribute('data-nexus-loading');
         el.setAttribute('data-nexus-ready', '');
         return;
       }
-      lastConfigStr = configStr;
+      hasLastConfig = true;
+      lastConfig = cloneSnapshot(config);
 
       // Clean up previous iteration
       if (activeCleanup) {
@@ -585,9 +597,9 @@ const importModule: AttributeModule = {
                 itemTasks.push(importESModule(id, item.module, iterationCleanupFns, runtime, el));
             }
 
-            // Scripts — run asynchronously so external CDN scripts (Iconify) do not block FOUC gate
+            // Scripts
             if (item.script) {
-                importScript(id, item.script, iterationCleanupFns, runtime, el).catch(() => {});
+                itemTasks.push(importScript(id, item.script, iterationCleanupFns, runtime, el).catch(() => {}));
             }
 
             // Styles / Themes (Unified)

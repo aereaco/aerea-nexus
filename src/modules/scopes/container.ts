@@ -15,12 +15,19 @@ import { ref, Ref } from '../../engine/reactivity.ts';
  * We will use matchMedia for standard queries for now, assuming viewport.
  */
 const containerSignals: Map<string, Ref<boolean>> = new Map();
+const cleanupFns: (() => void)[] = [];
 
 export function getContainerSignal(query: string, _element?: HTMLElement): Ref<boolean> {
   // TODO: Implement true container queries using ResizeObserver on closest container.
   // This is a placeholder that falls back to viewport media queries.
   if (containerSignals.has(query)) {
     return containerSignals.get(query)!;
+  }
+
+  if (typeof globalThis.matchMedia !== 'function') {
+    const s = ref(false);
+    containerSignals.set(query, s);
+    return s;
   }
 
   const mql = globalThis.matchMedia(query);
@@ -31,8 +38,16 @@ export function getContainerSignal(query: string, _element?: HTMLElement): Ref<b
   };
 
   mql.addEventListener('change', listener);
+  cleanupFns.push(() => mql.removeEventListener('change', listener));
   containerSignals.set(query, s);
   return s;
+}
+
+export function dispose(): void {
+  while (cleanupFns.length > 0) {
+    cleanupFns.pop()?.();
+  }
+  containerSignals.clear();
 }
 
 export const scopeRule = (q: string, body: () => any) => getContainerSignal(q).value ? body() : undefined;

@@ -18,11 +18,13 @@ const getTheme = () => {
   return globalThis.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 };
 
+const getUserAgent = () => (typeof navigator !== 'undefined' ? navigator.userAgent : '');
+
 export const osScope = reactive({
   platform: getOS(),
   theme: getTheme(),
-  isMobile: /Android|iPhone|iPad|iPod/i.test(navigator.userAgent),
-  isDesktop: !/Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+  isMobile: /Android|iPhone|iPad|iPod/i.test(getUserAgent()),
+  isDesktop: !/Android|iPhone|iPad|iPod/i.test(getUserAgent())
 });
 
 const cleanupFns: (() => void)[] = [];

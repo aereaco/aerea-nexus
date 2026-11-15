@@ -14,6 +14,7 @@
 import { AttributeModule } from '../../engine/modules.ts';
 import { RuntimeContext } from '../../engine/composition.ts';
 import { addScopeToNode } from '../../engine/scope.ts';
+import { reactiveLocalStorage } from '../../engine/reflect.ts';
 
 const ALL_DAISYUI_THEMES = [
   'light', 'dark', 'cupcake', 'bumblebee', 'emerald', 'corporate', 'synthwave', 'retro',
@@ -66,17 +67,17 @@ const themeModule: AttributeModule = {
     let savedLight = rawConfig.light?.theme || 'light';
     let savedDark = rawConfig.dark?.theme || 'dark';
 
-    // Only the root application element persists and synchronizes with localStorage
-    if (isRoot && typeof localStorage !== 'undefined') {
+    // Only the root application element persists and synchronizes with reactiveLocalStorage
+    if (isRoot && reactiveLocalStorage) {
         try {
-            const savedState = localStorage.getItem('ux_theme_state');
+            const savedState = reactiveLocalStorage.getItem('ux_theme_state');
             if (savedState !== null) initialModeState = Number(savedState);
 
-            const l = localStorage.getItem('ux_theme_light');
-            if (l) savedLight = l;
+            const l = reactiveLocalStorage.getItem('ux_theme_light');
+            if (l) savedLight = String(l);
 
-            const d = localStorage.getItem('ux_theme_dark');
-            if (d) savedDark = d;
+            const d = reactiveLocalStorage.getItem('ux_theme_dark');
+            if (d) savedDark = String(d);
         } catch (_) {}
     }
 
@@ -141,21 +142,21 @@ const themeModule: AttributeModule = {
         get $themeIcon() { return themeIcon.value; },
         $switchTheme: () => {
             modeState.value = (modeState.value + 1) % 3;
-            if (isRoot && typeof localStorage !== 'undefined') {
-               try { localStorage.setItem('ux_theme_state', String(modeState.value)); } catch (_) {}
+            if (isRoot && reactiveLocalStorage) {
+               try { reactiveLocalStorage.setItem('ux_theme_state', String(modeState.value)); } catch (_) {}
             }
         },
         $setTheme: (t: string) => {
             const isDark = modeState.value === 1 || (modeState.value === 2 && systemDark.value);
             if (isDark) {
                 darkSelected.value = t;
-                if (isRoot && typeof localStorage !== 'undefined') {
-                   try { localStorage.setItem('ux_theme_dark', t); } catch (_) {}
+                if (isRoot && reactiveLocalStorage) {
+                   try { reactiveLocalStorage.setItem('ux_theme_dark', t); } catch (_) {}
                 }
             } else {
                 lightSelected.value = t;
-                if (isRoot && typeof localStorage !== 'undefined') {
-                   try { localStorage.setItem('ux_theme_light', t); } catch (_) {}
+                if (isRoot && reactiveLocalStorage) {
+                   try { reactiveLocalStorage.setItem('ux_theme_light', t); } catch (_) {}
                 }
             }
         }

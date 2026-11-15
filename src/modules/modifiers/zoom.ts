@@ -7,7 +7,7 @@ import { RuntimeContext } from '../../engine/composition.ts';
  */
 export const zoomModifier: ModifierModule = {
   name: 'zoom',
-  handle: (_payload: any, _element: HTMLElement, _argument: string, _runtime: RuntimeContext) => {},
+  handle: (payload: any, _element: HTMLElement, _argument: string, _runtime: RuntimeContext) => { return payload; },
 
   interceptPipeline: (evaluate: RuntimeContext['evaluate'], _element: HTMLElement, _argument: string, _runtime: RuntimeContext) => {
     return (el, expression, extras) => {

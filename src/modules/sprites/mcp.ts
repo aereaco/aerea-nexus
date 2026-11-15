@@ -1,6 +1,6 @@
 import { SpriteModule } from '../../engine/modules.ts';
 import { RuntimeContext } from '../../engine/composition.ts';
-import { reactive, effect } from '../../engine/reactivity.ts';
+import { reactive } from '../../engine/reactivity.ts';
 
 /**
  * Universal $mcp Sprite.
@@ -48,6 +48,13 @@ export const mcpModule: SpriteModule = {
         const output = reactive({ value: '' });
         const buffer = new StreamBuffer(output);
 
+        // Handle streaming notifications if supported by the server
+        const unsubscribe = client.onNotification('notifications/sampling/delta', (params: any) => {
+           if (params.delta?.text) {
+             buffer.append(params.delta.text);
+           }
+        });
+
         client.sendRequest('sampling/createMessage', {
           messages: [{ role: 'user', content: { type: 'text', text: prompt } }]
         }).then((res: any) => {
@@ -55,13 +62,8 @@ export const mcpModule: SpriteModule = {
              buffer.append(res.content.text);
              buffer.flush();
           }
-        });
-
-        // Handle streaming notifications if supported by the server
-        client.onNotification('notifications/sampling/delta', (params: any) => {
-           if (params.delta?.text) {
-             buffer.append(params.delta.text);
-           }
+        }).finally(() => {
+          unsubscribe?.();
         });
 
         return output;

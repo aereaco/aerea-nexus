@@ -7,6 +7,17 @@ const showModule: AttributeModule = {
   handle: (el: HTMLElement, value: string, runtime: RuntimeContext): (() => void) | void => {
     const originalDisplay = el.style.display === 'none' ? '' : el.style.display;
     return runtime.bind(el, value, result => {
+      if (typeof HTMLDialogElement !== 'undefined' && el instanceof HTMLDialogElement) {
+        if (result) {
+          if (!el.open && typeof el.showModal === 'function') {
+            try { el.showModal(); } catch { el.setAttribute('open', ''); }
+          }
+        } else if (el.open && typeof el.close === 'function') {
+          el.close();
+        }
+        return;
+      }
+
       if (result) {
         if (originalDisplay) {
           el.style.display = originalDisplay;

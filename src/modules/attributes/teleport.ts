@@ -4,6 +4,7 @@ import { ParsedAttribute } from '../../engine/attributeParser.ts';
 import { DATA_STACK_KEY, IS_TEMPLATE_KEY } from '../../engine/consts.ts';
 import { getDataStack } from '../../engine/scope.ts';
 import { DragReorderEngine, buildReorderContext } from './drag.ts';
+import { teardownSubtree } from '../../engine/reconciler.ts';
 import { toError } from '../../engine/debug.ts';
 
 /**
@@ -279,6 +280,7 @@ export const teleportAttribute: AttributeModule = {
 
     return () => {
       cleanup?.();
+      teardownSubtree(clone, true);
       if (clone.parentNode) {
         clone.parentNode.removeChild(clone);
       }

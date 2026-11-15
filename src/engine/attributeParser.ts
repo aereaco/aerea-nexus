@@ -43,7 +43,7 @@ export function parseAttribute(name: string, _runtime: RuntimeContext, element: 
       value: element.getAttribute(name) || '',
       directive: cached.directive,
       argument: cached.argument,
-      modifiers: cached.modifiers,
+      modifiers: [...cached.modifiers],
       target: cached.target
     };
   }
@@ -85,7 +85,7 @@ export function parseAttribute(name: string, _runtime: RuntimeContext, element: 
 
     // `_` (standard per NEG_TOKENS.MODIFIER) transitions to MODIFIER state
     // `-` transitions from DIRECTIVE to ARGUMENT state (only when before modifier state)
-    const isModifierDelim = char === MODIFIER_DELIMITER || char === '_';
+    const isModifierDelim = char === MODIFIER_DELIMITER || char === '_' || char === ':';
     const isArgDelim = char === '-' && state < 2;
     const isDelim = isModifierDelim || isArgDelim;
 
@@ -128,7 +128,8 @@ export function parseAttribute(name: string, _runtime: RuntimeContext, element: 
   return {
     name,
     value: element.getAttribute(name) || '',
-    ...structure
+    ...structure,
+    modifiers: [...structure.modifiers]
   };
 }
 

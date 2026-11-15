@@ -34,7 +34,7 @@ import { RuntimeContext } from '../../engine/composition.ts';
 import { initError } from '../../engine/debug.ts';
 import { addScopeToNode } from '../../engine/scope.ts';
 import { CLEANUP_FUNCTIONS_KEY, DATA_STACK_KEY, IS_TEMPLATE_KEY, LOCAL_SCOPES_KEY, MARKER_KEY } from '../../engine/consts.ts';
-import { nexusClassMap, nexusStyleMap } from '../../engine/reconciler.ts';
+import { nexusClassMap, nexusStyleMap, teardownSubtree } from '../../engine/reconciler.ts';
 
 // SVGs (paths, etc.) are SVGElement, not HTMLElement — both must be treated
 // as cloneable/scopable flow nodes.
@@ -105,19 +105,10 @@ const forModule: AttributeModule = {
       (el as any)[IS_TEMPLATE_KEY] = true;
     }
 
+    const keyExpr = el.getAttribute('data-key') || el.getAttribute(':key');
     const disposeNodes = (nodes: Node[]) => {
       nodes.forEach(n => {
-        if (n instanceof HTMLElement || n instanceof SVGElement) {
-          const enhanced = n as any;
-          const elRemovals = enhanced[CLEANUP_FUNCTIONS_KEY];
-          if (elRemovals) {
-            elRemovals.forEach((cleanup: () => void) => cleanup());
-            delete enhanced[CLEANUP_FUNCTIONS_KEY];
-          }
-          delete enhanced[LOCAL_SCOPES_KEY];
-          delete enhanced[DATA_STACK_KEY];
-          disposeNodes(Array.from(n.childNodes));
-        }
+        teardownSubtree(n, true);
         n.parentNode?.removeChild(n);
       });
     };
@@ -134,7 +125,22 @@ const forModule: AttributeModule = {
         const newlyCreatedNodes: ForNode[] = [];
 
         items.forEach((item, index) => {
-          let key = (item as any)?.id ?? (typeof item === 'object' && item !== null ? index : item);
+          let key: any;
+          if (keyExpr) {
+            try {
+              const extras: Record<string, unknown> = { [itemKey]: item };
+              if (indexKey) extras[indexKey] = index;
+              const evaluatedKey = runtime.evaluate(el, keyExpr, extras);
+              if (evaluatedKey !== undefined && evaluatedKey !== null) {
+                key = evaluatedKey;
+              }
+            } catch {
+              // Fallback to default key below
+            }
+          }
+          if (key === undefined || key === null) {
+            key = (item as any)?.id ?? (typeof item === 'object' && item !== null ? index : item);
+          }
           if (currentKeys.has(key)) {
             key = `${String(key)}__${index}`;
           }
@@ -165,6 +171,8 @@ const forModule: AttributeModule = {
 
             nodes.forEach(n => {
               if (isFlowNode(n)) {
+                (n as any)._ux_key = key;
+                (n as any)._nexus_key = key;
                 const scope: Record<string, any> = { [itemKey]: item };
                 if (indexKey) scope[indexKey] = index;
                 // ZCZS: Use shallowReactive to preserve the original reactive proxy

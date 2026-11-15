@@ -138,8 +138,13 @@ function createNexusCollection(elements: HTMLElement[]): NexusCollection {
   });
 }
 
+const reactiveElementProxyCache = new WeakMap<HTMLElement, any>();
+
 function createReactiveElementProxy(el: HTMLElement): any {
-  return new Proxy(el, {
+  const cached = reactiveElementProxyCache.get(el);
+  if (cached) return cached;
+
+  const proxy = new Proxy(el, {
     get(target: any, key: string | symbol) {
       if (typeof key === 'symbol') return target[key];
 
@@ -177,6 +182,8 @@ function createReactiveElementProxy(el: HTMLElement): any {
       return true;
     }
   });
+  reactiveElementProxyCache.set(el, proxy);
+  return proxy;
 }
 
 /**

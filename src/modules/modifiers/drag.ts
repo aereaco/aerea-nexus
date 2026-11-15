@@ -8,8 +8,8 @@ import { RuntimeContext } from '../../engine/composition.ts';
  */
 export const dragModifier: ModifierModule = {
   name: 'drag',
-  handle: (_payload: any, _element: HTMLElement, _argument: string, _runtime: RuntimeContext) => {
-     // No-op for direct handle call
+  handle: (payload: any, _element: HTMLElement, _argument: string, _runtime: RuntimeContext) => {
+     return payload;
   },
 
   interceptPipeline: (evaluate: RuntimeContext['evaluate'], element: HTMLElement, _argument: string, _runtime: RuntimeContext) => {

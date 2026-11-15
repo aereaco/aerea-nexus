@@ -522,7 +522,7 @@ class StyleSheetManager {
         (el as HTMLElement & { _signalBindings?: string[] })._signalBindings = currentBindings;
 
         const varName = signalName.replace(/[#.]/g, '-');
-        runtime.effect(() => {
+        runtime.elementBoundEffect(el, () => {
           const val = runtime.evaluate(el, signalName);
           el.style.setProperty(`--nx-${varName}`, String(val !== undefined ? val : ''));
         });
@@ -727,10 +727,6 @@ const stylesheetModule: AttributeModule = {
     // the document from the start — the previous cleanup-only path never ran for
     // persistent pages, so no drag feedback ever rendered. Idempotent.
     stylesheet.emitPreflightAndTheme(el);
-
-    cleanupFns.push(() => {
-      stylesheet.emitPreflightAndTheme(el);
-    });
 
     return () => cleanupFns.forEach(fn => fn());
   },

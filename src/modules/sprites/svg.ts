@@ -33,7 +33,16 @@ export const svgModule: SpriteModule = {
        */
       connect: (elA: HTMLElement, elB: HTMLElement, options: { type?: string, offset?: number } = {}) => {
         const type = options.type || 'bezier';
-        const pathData = reactive({ d: '' });
+        let rafId = 0;
+        let stopped = false;
+        const disconnect = () => {
+          stopped = true;
+          if (rafId && typeof cancelAnimationFrame === 'function') {
+            cancelAnimationFrame(rafId);
+            rafId = 0;
+          }
+        };
+        const pathData = reactive({ d: '', disconnect });
 
         const update = () => {
           // Safety guard: elA and elB might be Proxies or null during initialization
@@ -64,10 +73,19 @@ export const svgModule: SpriteModule = {
 
         // Sync with animation frame
         const ticker = () => {
+           if (stopped || !elA?.isConnected || !elB?.isConnected) {
+             disconnect();
+             return;
+           }
            update();
-           requestAnimationFrame(ticker);
+           if (!stopped && typeof requestAnimationFrame === 'function') {
+             rafId = requestAnimationFrame(ticker);
+           }
         };
-        ticker();
+        update();
+        if (!stopped && elA?.isConnected && elB?.isConnected && typeof requestAnimationFrame === 'function') {
+          rafId = requestAnimationFrame(ticker);
+        }
 
         return pathData;
       },

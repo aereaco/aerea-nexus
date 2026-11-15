@@ -51,9 +51,10 @@ export function createSwApi(runtime: RuntimeContext) {
       state.status = sw.controller ? 'active' : 'idle';
     });
 
-    // Listen for messages from the service worker
+    // Listen for messages from the service worker (zero-serialization dispatch)
     sw.addEventListener('message', (event: MessageEvent) => {
-      runtime.evaluate(document.body, `$dispatch('sw:message', ${JSON.stringify(event.data)})`, {});
+      const target = document.body || document.documentElement;
+      target?.dispatchEvent(new CustomEvent('sw:message', { bubbles: true, cancelable: true, detail: event.data }));
     });
   }
 

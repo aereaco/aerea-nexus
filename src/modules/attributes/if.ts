@@ -28,40 +28,8 @@
 
 import { AttributeModule } from '../../engine/modules.ts';
 import { RuntimeContext } from '../../engine/composition.ts';
-import { CLEANUP_FUNCTIONS_KEY, MARKER_KEY, IS_TEMPLATE_KEY } from '../../engine/consts.ts';
-
-interface NexusIfElement extends HTMLElement {
-  [CLEANUP_FUNCTIONS_KEY]?: Map<string, () => void> | Array<() => void>;
-  [MARKER_KEY]?: unknown;
-}
-
-/**
- * Recursively tear down an element subtree: invoke every element's registered
- * cleanup functions (effects, listeners, nested directives) and clear the
- * engine's processed-marker so the node can be cleanly re-hydrated later.
- *
- * The engine stores cleanups in a Map (see modules.ts); older code paths may
- * use an array. Both are iterated via `forEach`, whose callback receives the
- * cleanup function as its first argument in either case.
- */
-function teardownTree(node: Node): void {
-  if (!(node instanceof HTMLElement)) return;
-  // Depth-first: dispose descendants before the node itself.
-  const children = Array.from(node.childNodes);
-  for (const child of children) teardownTree(child);
-
-  const enhanced = node as NexusIfElement;
-  const removals = enhanced[CLEANUP_FUNCTIONS_KEY];
-  if (removals) {
-    (removals as Map<string, () => void>).forEach((c: () => void) => {
-      try { c(); } catch { /* best-effort teardown */ }
-    });
-    delete enhanced[CLEANUP_FUNCTIONS_KEY];
-  }
-  // Clear the processed marker so processElement() will re-walk this node if it
-  // is ever mounted again.
-  delete enhanced[MARKER_KEY];
-}
+import { IS_TEMPLATE_KEY } from '../../engine/consts.ts';
+import { teardownSubtree } from '../../engine/reconciler.ts';
 
 const ifModule: AttributeModule = {
   name: 'if',
@@ -104,7 +72,7 @@ const ifModule: AttributeModule = {
 
     const disposeNodes = (nodes: Node[]) => {
       nodes.forEach(n => {
-        teardownTree(n);
+        teardownSubtree(n, true);
         n.parentNode?.removeChild(n);
       });
     };
@@ -115,10 +83,12 @@ const ifModule: AttributeModule = {
       // For the non-template blueprint the clone is itself an element carrying
       // `data-if` (and our hiding attributes). Strip them so the clone renders
       // normally and does not recursively re-register this directive.
-      if (clone instanceof HTMLElement) {
+      if (clone instanceof Element) {
         clone.removeAttribute('data-if');
         delete (clone as any)[IS_TEMPLATE_KEY];
-        clone.style.removeProperty('display');
+        if (clone instanceof HTMLElement || clone instanceof SVGElement) {
+          clone.style.removeProperty('display');
+        }
         currentNodes = [clone];
       } else {
         currentNodes = Array.from((clone as DocumentFragment).childNodes);
@@ -126,7 +96,7 @@ const ifModule: AttributeModule = {
 
       currentNodes.forEach(n => {
         anchor.parentNode?.insertBefore(n, anchor);
-        if (n instanceof HTMLElement) runtime.processElement(n);
+        if (n instanceof Element) runtime.processElement(n as HTMLElement);
       });
     };
 

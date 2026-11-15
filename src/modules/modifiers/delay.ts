@@ -12,13 +12,12 @@
  */
 
 import { DEFAULT_DEBOUNCE_TIME } from '../../engine/consts.ts';
-import { createTimerModifier, clearTimer } from '../../engine/utils/timer.ts';
+import { createTimerModifier } from '../../engine/utils/timer.ts';
 
 export const delayModifier = createTimerModifier(
   'delay',
   DEFAULT_DEBOUNCE_TIME,
   (run, wait, _el, rec, map) => {
-    clearTimer(rec);
     const runner = () => {
       map.delete('delay');
       run();

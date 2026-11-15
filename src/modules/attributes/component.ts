@@ -1,7 +1,8 @@
 import { AttributeModule } from '../../engine/modules.ts';
 import { RuntimeContext } from '../../engine/composition.ts';
 import { addScopeToNode, getDataStack } from '../../engine/scope.ts';
-import { COMPONENT_CONTEXT_KEY, DATA_STACK_KEY, CLEANUP_FUNCTIONS_KEY, MARKER_KEY } from '../../engine/consts.ts';
+import { COMPONENT_CONTEXT_KEY, DATA_STACK_KEY } from '../../engine/consts.ts';
+import { teardownSubtree } from '../../engine/reconciler.ts';
 import { cacheEngine } from '../../engine/cache.ts';
 import type { NexusEnhancedElement } from '../../engine/reactivity.ts';
 import { initError, errMsg } from '../../engine/debug.ts';
@@ -64,19 +65,8 @@ export class BaseComponent extends ElementBase {
   }
 }
 
-function teardownComponentSubtree(root: Element | ShadowRoot): void {
-  const disposeNode = (node: Node) => {
-    if (node instanceof Element) {
-      const enhanced = node as NexusEnhancedElement;
-      if (enhanced[CLEANUP_FUNCTIONS_KEY]) {
-        enhanced[CLEANUP_FUNCTIONS_KEY].forEach((cleanup: () => void) => cleanup());
-        enhanced[CLEANUP_FUNCTIONS_KEY].clear();
-      }
-      delete (enhanced as any)[MARKER_KEY];
-      Array.from(node.children).forEach(disposeNode);
-    }
-  };
-  Array.from(root.childNodes).forEach(disposeNode);
+function clearComponentRoot(root: Element | ShadowRoot): void {
+  Array.from(root.childNodes).forEach(child => teardownSubtree(child, true));
   if (root instanceof Element) {
     root.replaceChildren();
   } else {
@@ -325,10 +315,10 @@ const componentModule: AttributeModule = {
         }
       }
 
-      addScopeToNode(el, ctx);
+      const scopeCleanup = addScopeToNode(el, ctx);
 
       let __lastPath: string | undefined;
-      runtime.effect(() => {
+      const [, effectCleanup] = runtime.elementBoundEffect(el, () => {
         let config: ComponentConfig;
         const evaluated = runtime.evaluate(el, value);
         if (typeof evaluated === 'object' && evaluated !== null) {
@@ -429,7 +419,7 @@ const componentModule: AttributeModule = {
             const isPathChange = previousPath !== undefined && previousPath !== targetPath;
             if (isPathChange) {
               const targetRoot = config.shadowrootmode ? el.shadowRoot : el;
-              if (targetRoot) teardownComponentSubtree(targetRoot);
+              if (targetRoot) clearComponentRoot(targetRoot);
             }
 
             if (config.shadowrootmode) {
@@ -510,6 +500,10 @@ const componentModule: AttributeModule = {
       });
 
       return () => {
+        effectCleanup?.();
+        scopeCleanup?.();
+        if (el.shadowRoot) clearComponentRoot(el.shadowRoot);
+        teardownSubtree(el, false);
         delete (el as any).__component_init;
         if (el instanceof BaseComponent) {
           el.disconnectedCallback();
