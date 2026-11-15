@@ -1,8 +1,9 @@
 import { ObserverModule } from './modules.ts';
 import { RuntimeContext } from './composition.ts';
 import { NexusEnhancedElement, ownership } from './reactivity.ts';
-import { reportError, errMsg } from './debug.ts';
+import { reportError, errMsg, handleDebugAttributeChange } from './debug.ts';
 import { CLEANUP_FUNCTIONS_KEY, RUN_EFFECT_RUNNERS_KEY, MARKER_KEY } from './consts.ts';
+import { teardownSubtree } from './reconciler.ts';
 import { stylesheet, markExternalStylesSettled } from '../modules/attributes/stylesheet.ts';
 import { corePredictiveEngine } from './predictive.ts';
 
@@ -79,16 +80,11 @@ const mutationObserverModule: ObserverModule = {
               }
 
               mutation.removedNodes.forEach(node => {
-                if (node instanceof HTMLElement) {
-                  if (isExternalOverlay(node)) return;
-                  if (node.isConnected || addedThisBatch.has(node) || movedNodes.has(node)) return;
+                if (node instanceof Element) {
+                  if (node instanceof HTMLElement && isExternalOverlay(node)) return;
+                  if (node.isConnected || addedThisBatch.has(node as HTMLElement) || movedNodes.has(node as HTMLElement)) return;
 
-                  const enhancedTarget = node as NexusEnhancedElement;
-                  if (enhancedTarget[CLEANUP_FUNCTIONS_KEY]) {
-                    enhancedTarget[CLEANUP_FUNCTIONS_KEY]!.forEach((cleanup: () => void) => cleanup());
-                    delete enhancedTarget[CLEANUP_FUNCTIONS_KEY];
-                  }
-                  delete (enhancedTarget as any)[MARKER_KEY];
+                  teardownSubtree(node, true);
                 }
               });
 
@@ -110,6 +106,10 @@ const mutationObserverModule: ObserverModule = {
                 if (target === document.documentElement) {
                   markExternalStylesSettled();
                 }
+              }
+
+              if (attrName === 'data-debug') {
+                handleDebugAttributeChange(target, context);
               }
 
               // Skip framework-managed attributes entirely.
@@ -142,7 +142,7 @@ const mutationObserverModule: ObserverModule = {
 
           // Dispatch event once per batch to notify modules (like Predictive Engine) that DOM structure has changed
           if (hasChildListMutations) {
-            document.dispatchEvent(new CustomEvent('nexus:dom-mutated', { bubbles: true }));
+            document.dispatchEvent(new CustomEvent('ux:dom-mutated', { bubbles: true }));
           }
 
           // Track moved nodes for cross-batch stability

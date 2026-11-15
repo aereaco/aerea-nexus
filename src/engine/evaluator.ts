@@ -97,29 +97,192 @@ export function evaluate(
  * are transformed once at initialization. Valid JS identifiers like _ and $
  * are handled directly by the Proxy scope.
  */
+function replaceScopeRules(expr: string): string {
+  if (!expr.includes('@')) return expr;
+  let out = '';
+  let i = 0;
+  let inQuote: string | null = null;
+  let escape = false;
+
+  while (i < expr.length) {
+    const ch = expr[i];
+    if (escape) {
+      out += ch;
+      escape = false;
+      i++;
+      continue;
+    }
+    if (inQuote) {
+      out += ch;
+      if (ch === '\\') escape = true;
+      else if (ch === inQuote) inQuote = null;
+      i++;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      inQuote = ch;
+      out += ch;
+      i++;
+      continue;
+    }
+
+    if (ch === '@') {
+      const rest = expr.slice(i);
+      const header = /^@(\w+)\s*\(/.exec(rest);
+      if (header) {
+        const name = header[1];
+        let j = i + header[0].length;
+        let parenDepth = 1;
+        let q: string | null = null;
+        let esc = false;
+        while (j < expr.length && parenDepth > 0) {
+          const c = expr[j];
+          if (esc) { esc = false; j++; continue; }
+          if (q) {
+            if (c === '\\') esc = true;
+            else if (c === q) q = null;
+            j++;
+            continue;
+          }
+          if (c === "'" || c === '"' || c === '`') q = c;
+          else if (c === '(') parenDepth++;
+          else if (c === ')') parenDepth--;
+          j++;
+        }
+        if (parenDepth === 0) {
+          const rawArg = expr.slice(i + header[0].length, j - 1);
+          let k = j;
+          while (k < expr.length && /\s/.test(expr[k])) k++;
+          if (expr[k] === '{') {
+            k++;
+            const bodyStart = k;
+            let braceDepth = 1;
+            let bq: string | null = null;
+            let besc = false;
+            while (k < expr.length && braceDepth > 0) {
+              const c = expr[k];
+              if (besc) { besc = false; k++; continue; }
+              if (bq) {
+                if (c === '\\') besc = true;
+                else if (c === bq) bq = null;
+                k++;
+                continue;
+              }
+              if (c === "'" || c === '"' || c === '`') bq = c;
+              else if (c === '{') braceDepth++;
+              else if (c === '}') braceDepth--;
+              k++;
+            }
+            if (braceDepth === 0) {
+              let safeArg = rawArg.trim();
+              if ((safeArg.startsWith("'") && safeArg.endsWith("'")) || (safeArg.startsWith('"') && safeArg.endsWith('"'))) {
+                safeArg = safeArg.slice(1, -1);
+              }
+              safeArg = safeArg.replace(/`/g, '\\`');
+              const innerBody = replaceScopeRules(expr.slice(bodyStart, k - 1).trim());
+              out += `_scopes.${name}(\`${safeArg}\`, () => { return ${innerBody} })`;
+              i = k;
+              continue;
+            }
+          }
+        }
+      }
+    }
+
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
+function replaceGlobalShorthand(expr: string): string {
+  if (!expr.includes('#')) return expr;
+  let out = '';
+  let i = 0;
+  let inQuote: string | null = null;
+  let escape = false;
+  const templateBraceDepths: number[] = [];
+  let braceDepth = 0;
+
+  while (i < expr.length) {
+    const ch = expr[i];
+    if (escape) {
+      out += ch;
+      escape = false;
+      i++;
+      continue;
+    }
+    if (inQuote) {
+      out += ch;
+      if (ch === '\\') {
+        escape = true;
+      } else if (inQuote === '`' && ch === '$' && expr[i + 1] === '{') {
+        out += '{';
+        i += 2;
+        templateBraceDepths.push(braceDepth);
+        braceDepth++;
+        inQuote = null;
+        continue;
+      } else if (ch === inQuote) {
+        inQuote = null;
+      }
+      i++;
+      continue;
+    }
+
+    if (ch === "'" || ch === '"' || ch === '`') {
+      inQuote = ch;
+      out += ch;
+      i++;
+      continue;
+    }
+
+    if (ch === '{') {
+      braceDepth++;
+      out += ch;
+      i++;
+      continue;
+    }
+    if (ch === '}') {
+      braceDepth--;
+      out += ch;
+      if (templateBraceDepths.length > 0 && templateBraceDepths[templateBraceDepths.length - 1] === braceDepth) {
+        templateBraceDepths.pop();
+        inQuote = '`';
+      }
+      i++;
+      continue;
+    }
+
+    if (ch === '#') {
+      const prev = i > 0 ? expr[i - 1] : '';
+      if (!prev || !/[a-zA-Z0-9_$]/.test(prev)) {
+        const match = /^#([a-zA-Z_$][\w$]*)/.exec(expr.slice(i));
+        if (match) {
+          out += `__global.${match[1]}`;
+          i += match[0].length;
+          continue;
+        }
+      }
+    }
+
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
 function preProcessExpression(expression: string): string {
   let processed = expression;
 
-  // 1. @ Scope Rules (@rule(...) { ... })
+  // 1. @ Scope Rules (@rule(...) { ... }) with balanced brace & string awareness
   if (processed.includes('@')) {
-    // Matches @<name>(<args>) { <body> } 
-    // Supports nested parentheses inside args via (.*?) bounded to the opening {
-    processed = processed.replace(/@(\w+)\s*\((.*?)\)\s*\{([^}]*)\}/g, (_match, name, arg, body) => {
-      let safeArg = arg.trim();
-      if ((safeArg.startsWith("'") && safeArg.endsWith("'")) || (safeArg.startsWith('"') && safeArg.endsWith('"'))) {
-        safeArg = safeArg.slice(1, -1);
-      }
-      safeArg = safeArg.replace(/`/g, "\\`");
-      return `_scopes.${name}(\`${safeArg}\`, () => { return ${body.trim()} })`;
-    });
+    processed = replaceScopeRules(processed);
   }
 
-  // 2. # Global Signals (#name -> __global.name)
-  // Required because '#' is illegal as an identifier start in native JS.
-  // We map it to __global to ensure it bypasses local scope shadowing without
-  // colliding with the $ namespace reserved exclusively for predefined sprites.
+  // 2. # Global Signals (#name -> __global.name) outside string literals
   if (processed.includes('#')) {
-    processed = processed.replace(/(^|[^a-zA-Z0-9_$'"`])#([a-zA-Z_$][\w$]*)/g, '$1__global.$2');
+    processed = replaceGlobalShorthand(processed);
   }
 
   return processed;

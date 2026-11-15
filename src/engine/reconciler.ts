@@ -1,7 +1,47 @@
-import { DATA_PRESERVE_ATTR, CLEANUP_FUNCTIONS_KEY, MARKER_KEY } from './consts.ts';
+import {
+  DATA_PRESERVE_ATTR,
+  CLEANUP_FUNCTIONS_KEY,
+  MARKER_KEY,
+  LOCAL_SCOPES_KEY,
+  DATA_STACK_KEY,
+  COMPONENT_CONTEXT_KEY
+} from './consts.ts';
 import { NexusEnhancedElement } from './reactivity.ts';
 import { stylesheet } from '../modules/attributes/stylesheet.ts';
 import { hashString } from './utils/hash.ts';
+
+/**
+ * Authoritative deterministic teardown for a DOM node and its entire descendant subtree.
+ * Supports both HTMLElement and SVGElement nodes (any `Element`).
+ */
+export function teardownSubtree(root: Node, includeRoot: boolean = true): void {
+  if (!(root instanceof Element)) return;
+
+  const children = root.children;
+  for (let i = 0; i < children.length; i++) {
+    teardownSubtree(children[i], true);
+  }
+
+  if (!includeRoot) return;
+
+  const enhanced = root as unknown as NexusEnhancedElement & Record<symbol, unknown>;
+  const cleanups = enhanced[CLEANUP_FUNCTIONS_KEY];
+  if (cleanups) {
+    cleanups.forEach((cleanup: () => void) => {
+      try {
+        cleanup();
+      } catch {
+        // Isolate teardown faults
+      }
+    });
+    cleanups.clear();
+    delete enhanced[CLEANUP_FUNCTIONS_KEY];
+  }
+  delete enhanced[LOCAL_SCOPES_KEY];
+  delete enhanced[DATA_STACK_KEY];
+  delete enhanced[COMPONENT_CONTEXT_KEY];
+  delete enhanced[MARKER_KEY];
+}
 
 // Default configuration options
 const noOp = () => true;
@@ -32,10 +72,13 @@ const defaults = {
         }
       }
       
-      // Preserve VT and Nexus Keys across patches
+      // Preserve VT and UX/Nexus Keys across patches
       if (from instanceof HTMLElement && to instanceof HTMLElement) {
         if (from.style.viewTransitionName) {
           to.style.viewTransitionName = from.style.viewTransitionName;
+        }
+        if ('_ux_key' in from) {
+          (to as any)._ux_key = (from as any)._ux_key;
         }
         if ('_nexus_key' in from) {
           (to as any)._nexus_key = (from as any)._nexus_key;
@@ -58,15 +101,8 @@ const defaults = {
     },
     afterNodeMorphed: noOp,
     beforeNodeRemoved: (node: Node) => {
-      // Execute teardowns synchronously before departure, avoiding race conditions
-      // with delayed generic MutationObserver unmounts.
-      if (node instanceof Element) {
-        const enhancedNode = node as NexusEnhancedElement;
-        if (enhancedNode[CLEANUP_FUNCTIONS_KEY]) {
-          enhancedNode[CLEANUP_FUNCTIONS_KEY].forEach((cleanup: () => void) => cleanup());
-          enhancedNode[CLEANUP_FUNCTIONS_KEY].clear();
-        }
-      }
+      // Execute recursive subtree teardowns synchronously before departure
+      teardownSubtree(node, true);
       return true;
     },
     afterNodeRemoved: noOp,
@@ -172,7 +208,11 @@ function morphScript(fromScript: HTMLScriptElement, toScript: HTMLScriptElement)
 function getElementKey(node: Node): string | null {
   if (node.nodeType === Node.ELEMENT_NODE) {
     const el = node as Element;
-    return el.id || null;
+    const internalKey = (el as any)._ux_key ?? (el as any)._nexus_key;
+    if (internalKey !== undefined && internalKey !== null && internalKey !== '') {
+      return String(internalKey);
+    }
+    return el.getAttribute('data-key') || el.id || null;
   }
   return null;
 }
@@ -288,6 +328,7 @@ function morphNodes(from: Node, to: Node, config: any): void {
   }
 
   if (from.nodeType !== to.nodeType) {
+    teardownSubtree(from, true);
     from.parentElement?.replaceChild(to.cloneNode(true), from);
     return;
   }
@@ -305,6 +346,7 @@ function morphNodes(from: Node, to: Node, config: any): void {
   const toEl = to as HTMLElement;
 
   if (fromEl.tagName !== toEl.tagName) {
+    teardownSubtree(fromEl, true);
     fromEl.parentElement?.replaceChild(toEl.cloneNode(true), fromEl);
     return;
   }
@@ -408,7 +450,7 @@ export function morphDOM(from: Element, to: Element | string, options: Record<st
     }
   }
   
-  from.dispatchEvent(new CustomEvent('nexus:dom-morphed', { bubbles: true }));
+  from.dispatchEvent(new CustomEvent('ux:dom-morphed', { bubbles: true }));
 }
 
 // ─── Visual Reconciliation ───
@@ -480,36 +522,38 @@ export const nexusStyleMap = new WeakMap<Element, Set<string>>();
  * @param value The style map (Object)
  */
 export function reconcileStyle(el: HTMLElement, value: unknown): void {
-  if (!value) return;
-
   const currentAdded = nexusStyleMap.get(el) || new Set<string>();
-  const toAdd = new Set<string>();
   let styleObj: Record<string, unknown> = {};
 
-  if (typeof value === 'string') {
+  if (!value) {
+    styleObj = {};
+  } else if (typeof value === 'string') {
     value.split(';').forEach(pair => {
-      const [prop, val] = pair.split(':').map(s => s.trim());
-      if (prop && val) styleObj[prop] = val;
+      const colonIdx = pair.indexOf(':');
+      if (colonIdx !== -1) {
+        const prop = pair.slice(0, colonIdx).trim();
+        const val = pair.slice(colonIdx + 1).trim();
+        if (prop && val) styleObj[prop] = val;
+      }
     });
-  } else if (typeof value === 'object' && value !== null) {
+  } else if (typeof value === 'object') {
     styleObj = value as Record<string, unknown>;
   } else {
-    return;
+    styleObj = {};
   }
 
   Object.entries(styleObj).forEach(([prop, val]) => {
     const cssProp = prop.replace(/[A-Z]/g, m => `-${m.toLowerCase()}`);
     if (val !== null && val !== undefined && val !== false) {
       el.style.setProperty(cssProp, String(val));
-      toAdd.add(cssProp);
       currentAdded.add(cssProp);
     } else {
-       el.style.removeProperty(cssProp);
-       currentAdded.delete(cssProp);
+      el.style.removeProperty(cssProp);
+      currentAdded.delete(cssProp);
     }
   });
 
-  // Cleanup properties that were previously set by Nexus but are now missing
+  // Cleanup properties that were previously set by UX but are now missing
   currentAdded.forEach(prop => {
     if (!(prop in styleObj) && !(prop.replace(/-([a-z])/g, (_m, c) => c.toUpperCase()) in styleObj)) {
       el.style.removeProperty(prop);
@@ -517,7 +561,11 @@ export function reconcileStyle(el: HTMLElement, value: unknown): void {
     }
   });
 
-  if (currentAdded.size > 0) nexusStyleMap.set(el, currentAdded);
+  if (currentAdded.size > 0) {
+    nexusStyleMap.set(el, currentAdded);
+  } else {
+    nexusStyleMap.delete(el);
+  }
 }
 
 /**

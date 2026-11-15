@@ -260,7 +260,7 @@ export class CorePredictiveEngine {
 
     // Listen for DOM mutations to refresh Quadtree with idle debouncing (eliminates forced synchronous layout thrashing)
     const onDomMutated = () => this.scheduleQuadtreeRebuild();
-    document.addEventListener('nexus:dom-mutated', onDomMutated, { passive: true });
+    document.addEventListener('ux:dom-mutated', onDomMutated, { passive: true });
 
     let predictionRaf: number | null = null;
     const schedulePrediction = () => {
@@ -355,7 +355,7 @@ export class CorePredictiveEngine {
     window.addEventListener('focusin', onFocusIn, { passive: true });
 
     this.cleanupFns.push(() => {
-      document.removeEventListener('nexus:dom-mutated', onDomMutated);
+      document.removeEventListener('ux:dom-mutated', onDomMutated);
       window.removeEventListener('gamepadconnected', onGamepadConnected);
       window.removeEventListener('gamepaddisconnected', onGamepadDisconnected);
       window.removeEventListener('mousemove', onMouseMove);

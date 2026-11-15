@@ -7,7 +7,22 @@ import { initSelfHeal, getBeaconHistory } from './engine/agent.ts';
 import { fetchModule } from './engine/fetch.ts';
 import { corePredictiveEngine } from './engine/predictive.ts';
 import { cacheEngine } from './engine/cache.ts';
-import { handleWorkerMessage } from './engine/logic.worker.ts';
+import { scheduler } from './engine/scheduler.ts';
+import { getElementScope } from './engine/scope.ts';
+import {
+  reactiveLocalStorage,
+  reactiveSessionStorage,
+  getIndexedDBProxy
+} from './engine/reflect.ts';
+import { morphDOM, teardownSubtree } from './engine/reconciler.ts';
+import {
+  reactive,
+  ref,
+  computed,
+  effect,
+  elementBoundEffect,
+  watch
+} from './engine/reactivity.ts';
 
 // Auto-Discovered Modules (inlined by build.ts from generated manifest.ts)
 import {
@@ -29,19 +44,38 @@ export function $id(groupName: string = 'default'): string {
   return `${groupName}-${_idCounters[groupName]}`;
 }
 
-export function $nextTick(): Promise<void> {
+export function $nextTick(cb?: () => void): Promise<void> {
   return new Promise(resolve => {
-    Promise.resolve().then(() => {
-      requestAnimationFrame(() => resolve());
+    scheduler.nextTick(() => {
+      cb?.();
+      resolve();
     });
   });
 }
 
 export class UX {
-  private coordinator: ModuleCoordinator;
+  private _coordinator: ModuleCoordinator;
+  public readonly reactive = reactive;
+  public readonly ref = ref;
+  public readonly computed = computed;
+  public readonly effect = effect;
+  public readonly elementBoundEffect = elementBoundEffect;
+  public readonly watch = watch;
+  public readonly nextTick = $nextTick;
+  public readonly id = $id;
+  public readonly storage = {
+    local: reactiveLocalStorage,
+    session: reactiveSessionStorage
+  };
+  public readonly predictive = corePredictiveEngine;
+  public readonly cache = cacheEngine;
+  public readonly topology = topology;
+  public readonly selfHeal = { getHistory: getBeaconHistory };
+  public readonly runInWorker = runInWorker;
+  public readonly UX = UX;
 
   constructor() {
-    this.coordinator = new ModuleCoordinator();
+    this._coordinator = new ModuleCoordinator();
 
     // Scope providers
     registerScopeProvider('$el', (el) => el);
@@ -54,74 +88,74 @@ export class UX {
 
 
     // Inline actions
-    this.coordinator.registerActionModule('$id', {
+    this._coordinator.registerActionModule('$id', {
       name: '$id',
       handle: (_el, ...args: any[]) => ($id as any)(...args)
     });
-    this.coordinator.registerActionModule('$nextTick', {
+    this._coordinator.registerActionModule('$nextTick', {
       name: '$nextTick',
       handle: (_el, ...args: any[]) => ($nextTick as any)(...args)
     });
 
     // Register all modules from manifest
     this.registerFromManifest();
+    this._coordinator.finishBooting();
 
     // Predictive engine
-    this.coordinator.runtimeContext.setGlobalSignal('$predictive', corePredictiveEngine);
-    (this as any).predictive = corePredictiveEngine;
-    (this as any).cache = cacheEngine;
+    this._coordinator.runtimeContext.setGlobalSignal('$predictive', corePredictiveEngine);
 
     // Fetch utility
-    this.coordinator.registerUtilityModule('fetch', fetchModule);
+    this._coordinator.registerUtilityModule('fetch', fetchModule);
 
     // Self-heal
-    initSelfHeal(this.coordinator.runtimeContext, {
+    initSelfHeal(this._coordinator.runtimeContext, {
       enabled: true,
-      emitToConsole: this.coordinator.runtimeContext.isDevMode ?? false,
+      emitToConsole: this._coordinator.runtimeContext.isDevMode ?? false,
       emitToPlatform: false
     });
 
     this.init();
 
     if (typeof document !== 'undefined') {
+      document.dispatchEvent(new CustomEvent('ux:ready', { bubbles: true }));
       document.dispatchEvent(new CustomEvent('nexus-ready', { bubbles: true }));
     }
   }
 
   private registerFromManifest() {
     autoAttributes.forEach(({ name, module }) => {
-      this.coordinator.registerAttributeModule(name, module.default || module);
+      this._coordinator.registerAttributeModule(name, module.default || module);
     });
 
     autoSprites.forEach(({ name, module }) => {
       const spriteMod = module.default || Object.values(module).find((m: any) => m && typeof m.sprites === 'function');
       if (spriteMod && typeof spriteMod.sprites === 'function') {
-        this.coordinator.registerSpriteModule(spriteMod.name || name, spriteMod);
+        this._coordinator.registerSpriteModule(spriteMod.name || name, spriteMod);
       }
     });
 
     autoScopes.forEach(({ name, module }) => {
       const scopeMod = module.default || Object.values(module)[0];
       if (scopeMod) {
-        this.coordinator.registerScopeModule(scopeMod.name || name, scopeMod);
+        this._coordinator.registerScopeModule(scopeMod.name || name, scopeMod);
       }
     });
 
     autoModifiers.forEach(({ name, module }) => {
-      this.coordinator.registerModifierModule(name, module.default || module);
+      this._coordinator.registerModifierModule(name, module.default || module);
     });
 
     autoObservers.forEach(({ name, module }) => {
       const obsMod = module.default || Object.values(module)[0];
       if (obsMod) {
-        this.coordinator.registerObserverModule(obsMod.name || name, obsMod);
+        this._coordinator.registerObserverModule(obsMod.name || name, obsMod);
       }
     });
 
     autoListeners.forEach(({ name, module }) => {
       const listenerMod = module.default || Object.values(module)[0];
       if (listenerMod) {
-        this.coordinator.registerListenerModule(listenerMod.name || name, listenerMod);
+        this._coordinator.registerListenerModule(listenerMod.name || name, listenerMod);
       }
     });
   }
@@ -139,15 +173,59 @@ export class UX {
     const roots = document.querySelectorAll(ROOT_SELECTOR);
     roots.forEach(root => {
       if (root instanceof HTMLElement) {
-        this.coordinator.initializeModules(root);
+        this._coordinator.initializeModules(root);
       }
     });
   }
 
-  public get coordinate() { return this.coordinator; }
+  public get coordinator() { return this._coordinator; }
+  public get coordinate() { return this._coordinator; }
+  public get runtime() { return this._coordinator.runtimeContext; }
+  public get signals() { return this._coordinator.runtimeContext.globalSignals(); }
+  public get sprites() { return this._coordinator.runtimeContext.sprites; }
+  public get idb() { return getIndexedDBProxy(); }
+
+  public getSignal<T = unknown>(key: string): T {
+    return this._coordinator.runtimeContext.globalSignals()[key] as T;
+  }
+
+  public setSignal(key: string, value: unknown): void {
+    this._coordinator.runtimeContext.setGlobalSignal(key, value);
+  }
+
+  public scope(el: Element, extras?: Record<string, unknown>) {
+    return getElementScope(el, this._coordinator.runtimeContext, extras);
+  }
+
+  public localSignals(el: HTMLElement) {
+    return this._coordinator.runtimeContext.localSignals(el);
+  }
+
+  public evaluate(el: Element, expr: string, extras?: Record<string, unknown>) {
+    return this._coordinator.runtimeContext.evaluate(el as HTMLElement, expr, extras);
+  }
+
+  public process(el: HTMLElement, forceReWalk: boolean = false) {
+    return this._coordinator.processElement(el, forceReWalk);
+  }
+
+  public teardown(el: Node, includeRoot: boolean = true) {
+    return teardownSubtree(el, includeRoot);
+  }
+
+  public morph(el: Element, htmlOrNode: Element | string, options?: Record<string, unknown>) {
+    return morphDOM(el, htmlOrNode, options);
+  }
+
+  public action(name: string, fn: (...args: any[]) => unknown) {
+    this._coordinator.registerActionModule(name, {
+      name,
+      handle: (_el, ...args: any[]) => fn(...args)
+    });
+  }
 
   public register(type: string, name: string, module: any) {
-    const c = this.coordinator;
+    const c = this._coordinator;
     switch (type) {
       case 'attribute': c.registerAttributeModule(name, module); break;
       case 'action': c.registerActionModule(name, module); break;
@@ -159,18 +237,54 @@ export class UX {
   }
 }
 
-const isWorker = typeof (globalThis as any).WorkerGlobalScope !== 'undefined' && typeof document === 'undefined';
-export const Nexus = (typeof document !== 'undefined') ? new UX() : null as unknown as UX;
+export const uxInstance = (typeof document !== 'undefined') ? new UX() : null as unknown as UX;
+export const Nexus = uxInstance;
+export default uxInstance;
 
-if (isWorker) {
-  self.onmessage = handleWorkerMessage;
-} else if (typeof document !== 'undefined') {
+if (typeof document !== 'undefined') {
   topology.start();
 }
 
-if (typeof window !== 'undefined' && Nexus) {
-  (globalThis as any).Nexus = Nexus;
-  (globalThis as any).Nexus.selfHeal = { getHistory: getBeaconHistory };
-  (globalThis as any).Nexus.runInWorker = runInWorker;
-  (globalThis as any)._NEXUS_RUNTIME = (Nexus as any).coordinator.runtimeContext;
+const elementUxBridgeCache = new WeakMap<Element, {
+  readonly state: Record<string, unknown>;
+  readonly scope: Record<string, unknown>;
+  evaluate: (expr: string, extras?: Record<string, unknown>) => unknown;
+  morph: (htmlOrNode: Element | string, options?: Record<string, unknown>) => void;
+  process: (forceReWalk?: boolean) => void;
+  teardown: (includeRoot?: boolean) => void;
+}>();
+
+if (typeof Element !== 'undefined' && !Object.getOwnPropertyDescriptor(Element.prototype, 'ux')) {
+  Object.defineProperty(Element.prototype, 'ux', {
+    configurable: true,
+    get(this: Element) {
+      let bridge = elementUxBridgeCache.get(this);
+      if (!bridge && uxInstance) {
+        const el = this;
+        bridge = {
+          get state() {
+            return el instanceof HTMLElement ? uxInstance.localSignals(el) : {};
+          },
+          get scope() {
+            return uxInstance.scope(el);
+          },
+          evaluate: (expr: string, extras?: Record<string, unknown>) => uxInstance.evaluate(el, expr, extras),
+          morph: (htmlOrNode: Element | string, options?: Record<string, unknown>) => uxInstance.morph(el, htmlOrNode, options),
+          process: (forceReWalk: boolean = false) => {
+            if (el instanceof HTMLElement) uxInstance.process(el, forceReWalk);
+          },
+          teardown: (includeRoot: boolean = true) => uxInstance.teardown(el, includeRoot)
+        };
+        elementUxBridgeCache.set(el, bridge);
+      }
+      return bridge;
+    }
+  });
+}
+
+if (typeof window !== 'undefined' && uxInstance) {
+  (globalThis as any).UX = uxInstance;
+  (globalThis as any).Nexus = uxInstance;
+  (globalThis as any)._UX_RUNTIME = uxInstance.runtime;
+  (globalThis as any)._NEXUS_RUNTIME = uxInstance.runtime;
 }

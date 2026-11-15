@@ -251,40 +251,30 @@ class EngineTopology {
    * Measure frame lag and trigger scale up/down
    */
   private measureLag() {
-    const frameStart = performance.now();
-    
-    // Simulate work measurement
-    requestAnimationFrame(() => {
-      const frameEnd = performance.now();
-      const frameTime = frameEnd - frameStart;
-      const lagRatio = frameTime / this.FRAME_BUDGET;
-      
-      this.lagHistory.push(lagRatio);
-      if (this.lagHistory.length > this.LAG_SAMPLE_SIZE) {
-        this.lagHistory.shift();
-      }
+    requestAnimationFrame((t1) => {
+      requestAnimationFrame((t2) => {
+        const frameTime = t2 - t1;
+        const lag = Math.max(0, frameTime - this.FRAME_BUDGET);
+        const lagRatio = lag / this.FRAME_BUDGET;
 
-      // Calculate average lag
-      const avgLag = this.lagHistory.reduce((a, b) => a + b, 0) / this.lagHistory.length;
+        this.lagHistory.push(lagRatio);
+        if (this.lagHistory.length > this.LAG_SAMPLE_SIZE) {
+          this.lagHistory.shift();
+        }
 
-      // Ignore lag measurements that fall within the transition cooldown window.
-      // Spawning/terminating workers causes a transient frame lag that is NOT a
-      // real load signal — without this guard it instantly trips scale-up and
-      // produces a permanent scale-down -> lag -> scale-up oscillation.
-      const now = performance.now();
-      if (now - this.lastScaleTime < this.SCALE_COOLDOWN_MS) {
-        return;
-      }
+        const avgLag = this.lagHistory.reduce((a, b) => a + b, 0) / this.lagHistory.length;
 
-      // Scale up only when we have enough accumulated history (so a single
-      // transient spike or the post-scale cooldown can't force a scale-up).
-      if (avgLag > this.LAG_THRESHOLD && this.currentTier < 3 && this.lagHistory.length >= this.MIN_SAMPLES_FOR_SCALE_UP) {
-        this.scaleUp();
-      }
-      // Scale down if lag is consistently low
-      else if (avgLag < 0.1 && this.currentTier > 0 && this.lagHistory.length >= this.LAG_SAMPLE_SIZE) {
-        this.scaleDown();
-      }
+        const now = performance.now();
+        if (now - this.lastScaleTime < this.SCALE_COOLDOWN_MS) {
+          return;
+        }
+
+        if (avgLag > this.LAG_THRESHOLD && this.currentTier < 3 && this.lagHistory.length >= this.MIN_SAMPLES_FOR_SCALE_UP) {
+          this.scaleUp();
+        } else if (avgLag < 0.1 && this.currentTier > 0 && this.lagHistory.length >= this.LAG_SAMPLE_SIZE) {
+          this.scaleDown();
+        }
+      });
     });
   }
 
@@ -293,7 +283,7 @@ class EngineTopology {
    */
   private async scaleUp() {
     const newTier = (this.currentTier + 1) as TierLevel;
-    console.log(`[Nexus Topology] Scaling UP from Tier ${this.currentTier} to Tier ${newTier}`);
+    console.log(`[UX Topology] Scaling UP from Tier ${this.currentTier} to Tier ${newTier}`);
     
     this.lagHistory = []; // Reset lag history to start fresh under the new tier
     this.lastScaleTime = performance.now(); // start cooldown; transient worker lag ignored
@@ -302,7 +292,7 @@ class EngineTopology {
     
     // Emit event for predictive engine promotion
     if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('nexus:topology-scale', { 
+      window.dispatchEvent(new CustomEvent('ux:topology-scale', { 
         detail: { tier: this.currentTier, direction: 'up' } 
       }));
     }
@@ -315,15 +305,16 @@ class EngineTopology {
     const newTier = (this.currentTier - 1) as TierLevel;
     if (newTier < 0) return;
     
-    console.log(`[Nexus Topology] Scaling DOWN from Tier ${this.currentTier} to Tier ${newTier}`);
+    console.log(`[UX Topology] Scaling DOWN from Tier ${this.currentTier} to Tier ${newTier}`);
     
     this.lagHistory = []; // Reset lag history to start fresh under the new tier
+    this.lastScaleTime = performance.now();
     this.currentTier = newTier;
     await this.initializeTier();
 
     // Emit event for predictive engine demotion  
     if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('nexus:topology-scale', { 
+      window.dispatchEvent(new CustomEvent('ux:topology-scale', { 
         detail: { tier: this.currentTier, direction: 'down' } 
       }));
     }

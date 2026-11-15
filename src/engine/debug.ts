@@ -55,9 +55,9 @@ export function reportError(error: Error, element?: HTMLElement, expression?: st
 
   // 1. Diagnostic Routing (AI-First MCP Integration)
   // Only routes to MCP if the debug engine is active (data-debug present)
-  const Nexus = (globalThis as Record<string, unknown>).Nexus as Record<string, unknown> | undefined;
-  const coordinator = Nexus?.coordinator as Record<string, unknown> | undefined;
-  const runtime = coordinator?.runtimeContext as RuntimeContext | undefined;
+  const uxGlobal = ((globalThis as Record<string, unknown>).UX || (globalThis as Record<string, unknown>).Nexus) as Record<string, unknown> | undefined;
+  const coordinator = uxGlobal?.coordinator as Record<string, unknown> | undefined;
+  const runtime = (uxGlobal?.runtime || coordinator?.runtimeContext) as RuntimeContext | undefined;
   
   if (runtime?.mcp && runtime.isDevMode) {
     runtime.mcp.sendRequest('sampling/createMessage', {
@@ -151,79 +151,68 @@ export function evaluationError(expression: string, originalError: Error, elemen
  */
 export const logger = {
   log: (context: RuntimeContext, ...args: unknown[]) => {
-    if (context.isDevMode) console.log(`[Nexus]`, ...args);
+    if (context.isDevMode) console.log(`[UX]`, ...args);
   },
   warn: (context: RuntimeContext, ...args: unknown[]) => {
-    if (context.isDevMode) console.warn(`[Nexus]`, ...args);
+    if (context.isDevMode) console.warn(`[UX]`, ...args);
   },
   info: (context: RuntimeContext, ...args: unknown[]) => {
-    if (context.isDevMode) console.info(`[Nexus]`, ...args);
+    if (context.isDevMode) console.info(`[UX]`, ...args);
   },
   debug: (context: RuntimeContext, ...args: unknown[]) => {
-    if (context.isDevMode) console.debug(`[Nexus Debug]`, ...args);
+    if (context.isDevMode) console.debug(`[UX Debug]`, ...args);
   },
   error: (_context: RuntimeContext, ...args: unknown[]) => {
     // Errors are always logged, but prefixed
-    console.error(`[Nexus Error]`, ...args);
+    console.error(`[UX Error]`, ...args);
   }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 3. Sanitizing MutationObserver (extracted from engine/modules.ts)
+// 3. Sanitizing Engine (routed through the single MutationObserver in mutation.ts)
 // ─────────────────────────────────────────────────────────────────────────────
 
-let sanitizingObserver: MutationObserver | null = null;
+/**
+ * Handles `data-debug` attribute detection & lazy MCP diagnostic transport setup.
+ * Invoked directly by the single framework MutationObserver on attribute changes
+ * and once at startup on `document.documentElement`.
+ */
+export function handleDebugAttributeChange(target: HTMLElement, runtimeContext: RuntimeContext): void {
+  const debugValue = target.getAttribute('data-debug');
+
+  // Update dev mode flag
+  runtimeContext.isDevMode = debugValue !== null;
+
+  // If data-debug has an MCP config, initialize diagnostic transport
+  if (debugValue && debugValue.trim().startsWith('{')) {
+    try {
+      const config = new Function(`return (${debugValue})`)() as Record<string, string>;
+      if (config.mcp && !runtimeContext.mcp) {
+        // Lazy-load MCP connection from the independent mcp.ts module
+        import('./mcp.ts').then(({ MCPClient }) => {
+          runtimeContext.mcp = new MCPClient(config.mcp);
+          runtimeContext.mcp.connect().catch(() => {
+            console.warn(`[UX Debug] MCP connection failed: ${config.mcp}`);
+          });
+        });
+      }
+    } catch {
+      // Invalid debug config — activate debug mode without MCP
+    }
+  }
+}
 
 /**
- * Initializes the Sanitizing Engine.
- * This is called by the ModuleCoordinator during framework boot.
- * The sanitizing MutationObserver is crash-isolated from the framework observer.
- * 
- * @param runtimeContext - The framework runtime context
+ * Lightweight initial debug check on document root (zero secondary MutationObserver).
  */
 export function initSanitizingEngine(runtimeContext: RuntimeContext): void {
-  if (typeof MutationObserver === 'undefined' || typeof document === 'undefined') return;
-
+  if (typeof document === 'undefined' || !document.documentElement) return;
   try {
-    sanitizingObserver = new MutationObserver((mutations) => {
-      try {
-        for (const mutation of mutations) {
-          if (mutation.type === 'attributes' && mutation.attributeName === 'data-debug') {
-            const target = mutation.target as HTMLElement;
-            const debugValue = target.getAttribute('data-debug');
-            
-            // Update dev mode flag
-            runtimeContext.isDevMode = debugValue !== null;
-
-            // If data-debug has an MCP config, initialize diagnostic transport
-            if (debugValue && debugValue.trim().startsWith('{')) {
-              try {
-                const config = new Function(`return (${debugValue})`)() as Record<string, string>;
-                if (config.mcp && !runtimeContext.mcp) {
-                  // Lazy-load MCP connection from the independent mcp.ts module
-                  import('./mcp.ts').then(({ MCPClient }) => {
-                    runtimeContext.mcp = new MCPClient(config.mcp);
-                    runtimeContext.mcp.connect().catch(() => {
-                      console.warn(`[Nexus Debug] MCP connection failed: ${config.mcp}`);
-                    });
-                  });
-                }
-              } catch {
-                // Invalid debug config — activate debug mode without MCP
-              }
-            }
-          }
-        }
-      } catch (e) {
-        // Crash isolation: sanitizing observer must never propagate errors
-        console.error('[Nexus Sanitizer] Internal error (isolated):', e);
-      }
-    });
-
-    // Observe the document root for data-debug attribute changes
-    sanitizingObserver.observe(document.documentElement, { attributes: true, subtree: true });
+    if (document.documentElement.hasAttribute('data-debug')) {
+      handleDebugAttributeChange(document.documentElement, runtimeContext);
+    }
   } catch (e) {
-    console.error('[Nexus Sanitizer] Failed to initialize:', e);
+    console.error('[UX Sanitizer] Failed to initialize:', e);
   }
 }
 
@@ -231,8 +220,5 @@ export function initSanitizingEngine(runtimeContext: RuntimeContext): void {
  * Disposes the Sanitizing Engine.
  */
 export function disposeSanitizingEngine(): void {
-  if (sanitizingObserver) {
-    sanitizingObserver.disconnect();
-    sanitizingObserver = null;
-  }
+  // Handled deterministically by the single MutationObserver teardown
 }

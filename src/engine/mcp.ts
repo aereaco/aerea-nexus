@@ -10,7 +10,7 @@ export class MCPClient {
   private requestId = 0;
   private pendingRequests = new Map<number, (res: unknown) => void>();
   private onConnectCallback?: () => void;
-  private onMessageCallback?: (event: string, data: unknown) => void;
+  private notificationListeners = new Set<(event: string, data: unknown) => void>();
 
   constructor(serverUrl: string) {
     this.url = serverUrl;
@@ -42,14 +42,6 @@ export class MCPClient {
             reportError(new Error(`MCP Malformed JSON: ${event.data}`));
           }
         };
-
-        // Handle specific MCP event types if the server uses the 'event' field
-        this.eventSource.addEventListener('message', (e: MessageEvent) => {
-           try {
-             const payload = JSON.parse(e.data);
-             this.handleIncoming(payload);
-           } catch (_e) { /* ignore raw data */ }
-        });
 
       } catch (e) {
         reject(e);
@@ -96,14 +88,21 @@ export class MCPClient {
       }
     } else if (payload.method) {
       // Notification (e.g. notifications/resources/updated)
-      if (this.onMessageCallback) {
-        this.onMessageCallback(payload.method, payload.params);
+      for (const listener of this.notificationListeners) {
+        try {
+          listener(payload.method, payload.params);
+        } catch { /* isolate listener error */ }
       }
     }
   }
 
   public onConnect(cb: () => void) { this.onConnectCallback = cb; }
-  public onNotification(cb: (event: string, data: unknown) => void) { this.onMessageCallback = cb; }
+  public onNotification(cb: (event: string, data: unknown) => void): () => void {
+    this.notificationListeners.add(cb);
+    return () => {
+      this.notificationListeners.delete(cb);
+    };
+  }
 
   public disconnect() {
     this.eventSource?.close();

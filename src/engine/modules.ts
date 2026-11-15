@@ -58,7 +58,6 @@ import { MARKER_KEY } from './consts.ts';
 import { NexusEnhancedElement } from './reactivity.ts';
 import { attachObserver, registerObserver, disposeObservers } from './observers.ts';
 import { topology, TierLevel } from './topology.ts';
-import { MCPClient } from './mcp.ts';
 
 /**
  * Defines the shape of an action function.
@@ -203,6 +202,7 @@ export class ModuleCoordinator {
   public runtimeContext: RuntimeContext;
   private initContext: InitContext;
   private markerDispenser = 1;
+  private isBooting = true;
 
   constructor() {
     registerScopeProvider('_scopes', () => this._scopesRegistry);
@@ -298,14 +298,16 @@ export class ModuleCoordinator {
       update: (fn: () => void) => fn() // Immediate execution for now
     };
 
-    // Optional MCP Initialization
+    // Optional MCP Initialization (lazy-loaded)
     if (typeof document !== 'undefined') {
       const mcpUrl = document.querySelector('meta[name="nexus-mcp-server"]')?.getAttribute('content');
       if (mcpUrl) {
-        this.runtimeContext.mcp = new MCPClient(mcpUrl);
-        this.runtimeContext.mcp.connect().catch(() => {
-          this.runtimeContext.debug(`[Coordinator] MCP Connection skipped: ${mcpUrl}`);
-        });
+        import('./mcp.ts').then(({ MCPClient }) => {
+          this.runtimeContext.mcp = new MCPClient(mcpUrl);
+          this.runtimeContext.mcp.connect().catch(() => {
+            this.runtimeContext.debug(`[Coordinator] MCP Connection skipped: ${mcpUrl}`);
+          });
+        }).catch(() => { /* ignore optional MCP load failure */ });
       }
     }
     // Dynamic Debug Support — delegated to the Integrated Sanitizing Engine
@@ -382,6 +384,11 @@ export class ModuleCoordinator {
         );
       }
     });
+    this.isBooting = false;
+  }
+
+  public finishBooting(): void {
+    this.isBooting = false;
   }
 
   public registerModifierModule(name: string, module: ModifierModule): void {
@@ -417,7 +424,9 @@ export class ModuleCoordinator {
         this.directiveOrder.push(key);
       }
     }
-    this.triggerScan();
+    if (!this.isBooting) {
+      this.triggerScan();
+    }
   }
 
   public registerActionModule(name: string, module: ActionModule): void {

@@ -1,6 +1,7 @@
 import { AttributeModule } from '../../engine/modules.ts';
 import { RuntimeContext } from '../../engine/composition.ts';
 import { addScopeToNode } from '../../engine/scope.ts';
+import { initError } from '../../engine/debug.ts';
 
 import { ParsedAttribute } from '../../engine/attributeParser.ts';
 
@@ -43,11 +44,11 @@ const switcherModule: AttributeModule = {
         
         runtime.log(`Nexus Switcher [${expression}]: Cycling ${current} -> ${nextValue}`);
 
-        // Update via evaluate to ensure it propagates through the stack correctly
+        // Update via evaluate to ensure it propagates through the stack correctly (ZCZS: pass by reference)
         try {
-          runtime.evaluate(el, `${expression} = ${JSON.stringify(nextValue)}`);
+          runtime.evaluate(el, `${expression} = $next`, { $next: nextValue });
         } catch (e) {
-          console.error('Nexus Switcher: Failed to update signal', expression, e);
+          console.error('UX Switcher: Failed to update signal', expression, e);
         }
       },
       $isActive: (id: unknown) => {
@@ -64,13 +65,13 @@ const switcherModule: AttributeModule = {
       }
     };
 
-    runtime.log(`Nexus Switcher [${expression}]: Injecting helpers on`, el);
-    addScopeToNode(el, helpers);
+    runtime.log(`UX Switcher [${expression}]: Injecting helpers on`, el);
+    const removeScope = addScopeToNode(el, helpers);
 
     // Watch for changes to trigger animations if requested
-    return runtime.bind(el, expression, currentVal => {
+    const unbind = runtime.bind(el, expression, currentVal => {
       const items = runtime.evaluate(el, optionsAttr);
-      runtime.log(`Nexus Switcher [${expression}]: Active state changed to:`, currentVal, 'options:', items);
+      runtime.log(`UX Switcher [${expression}]: Active state changed to:`, currentVal, 'options:', items);
       
       // Simple animation hook: toggle a class on children
       // Animation hook: toggle a transition class on children
@@ -89,6 +90,11 @@ const switcherModule: AttributeModule = {
         }
       });
     });
+
+    return () => {
+      if (typeof unbind === 'function') unbind();
+      removeScope();
+    };
   }
 };
 

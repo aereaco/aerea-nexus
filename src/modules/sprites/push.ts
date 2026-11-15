@@ -1,4 +1,5 @@
 import { RuntimeContext } from '../../engine/composition.ts';
+import { SpriteModule } from '../../engine/modules.ts';
 import { createPwaAsyncOp, hasServiceWorker, runPwaOp } from '../../engine/utils/pwa.ts';
 import { errMsg } from '../../engine/debug.ts';
 
@@ -14,14 +15,14 @@ import { errMsg } from '../../engine/debug.ts';
  *   $push.subscription                  — reactive current subscription
  */
 
-function urlBase64ToUint8Array(base64String: string): Uint8Array {
+function urlBase64ToUint8Array(base64String: string): Uint8Array<ArrayBuffer> {
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
   const base64 = (base64String + padding)
     .replace(/-/g, '+')
     .replace(/_/g, '/');
 
   const rawData = atob(base64);
-  const outputArray = new Uint8Array(rawData.length);
+  const outputArray = new Uint8Array(new ArrayBuffer(rawData.length));
 
   for (let i = 0; i < rawData.length; ++i) {
     outputArray[i] = rawData.charCodeAt(i);
@@ -80,7 +81,7 @@ export function createPushApi(runtime: RuntimeContext) {
 
           const sub = await reg.pushManager.subscribe({
             userVisibleOnly: true,
-            applicationServerKey: keyBytes
+            applicationServerKey: keyBytes as BufferSource
           });
 
           state.subscription = sub;

@@ -47,7 +47,7 @@ export interface CrashBeacon {
 
 export interface SignalHeapSnapshot {
   numericSignals: Float64Array | null;
-  booleanSignals: Int32Array | null;
+  booleanSignals: Uint8Array | null;
   objectSignals: Record<string, unknown>[];
   signalIndexMap: Record<string, number>;
   size: number;
@@ -102,7 +102,7 @@ export class SelfHealAgent {
   private maxHistorySize = 10;
   private heapSnapshot: SignalHeapSnapshot | null = null;
   private isCapturing = false;
-  private globalErrorHandler: ((error: Error, context?: unknown) => void) | null = null;
+  private globalErrorHandler: ((eventOrError: Error | Event, context?: unknown) => void) | null = null;
   private globalRejectionHandler: ((reason: unknown, promise?: Promise<unknown>) => void) | null = null;
   private runtime: RuntimeContext | null = null;
 
@@ -121,18 +121,26 @@ export class SelfHealAgent {
   private setupGlobalHandlers(): void {
     if (typeof window === 'undefined') return;
 
-    // Window error handler
-    this.globalErrorHandler = (error: Error, context?: unknown) => {
-      this.captureBeacon(error, 'error', context);
+    // Window error handler (receives ErrorEvent from globalThis 'error')
+    this.globalErrorHandler = (eventOrError: Error | Event, context?: unknown) => {
+      const error = eventOrError instanceof Error
+        ? eventOrError
+        : (eventOrError as ErrorEvent)?.error instanceof Error
+          ? (eventOrError as ErrorEvent).error
+          : new Error((eventOrError as ErrorEvent)?.message || String(eventOrError));
+      this.captureBeacon(error, 'error', context ?? eventOrError);
     };
-    globalThis.addEventListener('error', this.globalErrorHandler as any);
+    globalThis.addEventListener('error', this.globalErrorHandler as EventListener);
 
-    // Unhandled promise rejection
-    this.globalRejectionHandler = (reason: unknown, promise?: Promise<unknown>) => {
+    // Unhandled promise rejection (receives PromiseRejectionEvent)
+    this.globalRejectionHandler = (eventOrReason: unknown, promise?: Promise<unknown>) => {
+      const isRejectionEvent = typeof PromiseRejectionEvent !== 'undefined' && eventOrReason instanceof PromiseRejectionEvent;
+      const reason = isRejectionEvent ? eventOrReason.reason : (eventOrReason as any)?.reason ?? eventOrReason;
+      const rejectionPromise = isRejectionEvent ? eventOrReason.promise : promise;
       const error = toError(reason);
-      this.captureBeacon(error, 'unhandledRejection', { promise });
+      this.captureBeacon(error, 'unhandledRejection', { promise: rejectionPromise });
     };
-    globalThis.addEventListener('unhandledrejection', this.globalRejectionHandler as any);
+    globalThis.addEventListener('unhandledrejection', this.globalRejectionHandler as EventListener);
   }
 
   /**
@@ -203,7 +211,7 @@ export class SelfHealAgent {
   private captureSignalHeap(): SignalHeapSnapshot {
     // Try to get typed arrays from reactivity if available
     let numericSignals: Float64Array | null = null;
-    let booleanSignals: Int32Array | null = null;
+    let booleanSignals: Uint8Array | null = null;
     let objectSignals: Record<string, unknown>[] = [];
     let signalIndexMap: Record<string, number> = {};
 
@@ -211,12 +219,10 @@ export class SelfHealAgent {
       // Access SignalHeap from runtime context if available
       if (this.runtime) {
         if (heap) {
-           // Copy typed arrays if they match the expected internal names
-           // (Assuming we want to keep the "completing" logic as robust as possible)
            const h = heap as any;
            if (h._floatHeap instanceof Float64Array) numericSignals = new Float64Array(h._floatHeap);
-           if (h._intHeap instanceof Int32Array) booleanSignals = new Int32Array(h._intHeap);
-           signalIndexMap = { ...(h._indexMap || {}) };
+           if (h._boolHeap instanceof Uint8Array) booleanSignals = new Uint8Array(h._boolHeap);
+           signalIndexMap = h._indexMap instanceof Map ? Object.fromEntries(h._indexMap) : { ...(h._indexMap || {}) };
         }
 
         // Capture global reactive state from runtime
@@ -225,7 +231,7 @@ export class SelfHealAgent {
           objectSignals = [globalState];
         }
       }
-    } catch (e) {
+    } catch (_e) {
       // Silently fail - capture what we can
     }
 

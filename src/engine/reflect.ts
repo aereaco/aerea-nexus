@@ -147,62 +147,95 @@ export interface IndexedDBStoreOperations {
   [key: string]: any;
 }
 
+let cachedIDB: IDBDatabase | null = null;
+let idbOpenLock: Promise<void> = Promise.resolve();
+
+function openRawIDB(version?: number, ensureStoreName?: string): Promise<IDBDatabase> {
+  return new Promise<IDBDatabase>((resolve, reject) => {
+    const req = version !== undefined
+      ? indexedDB.open(DEFAULT_IDB_DATABASE, version)
+      : indexedDB.open(DEFAULT_IDB_DATABASE);
+    req.onupgradeneeded = (e) => {
+      const udb = (e.target as IDBOpenDBRequest).result;
+      if (ensureStoreName && !udb.objectStoreNames.contains(ensureStoreName)) {
+        udb.createObjectStore(ensureStoreName);
+      }
+    };
+    req.onsuccess = () => {
+      const db = req.result;
+      db.onversionchange = () => {
+        db.close();
+        if (cachedIDB === db) cachedIDB = null;
+      };
+      db.onclose = () => {
+        if (cachedIDB === db) cachedIDB = null;
+      };
+      resolve(db);
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
 async function openAndEnsureStore(storeName: string): Promise<IDBDatabase> {
   if (typeof indexedDB === 'undefined') {
     throw new Error('IndexedDB is not supported in this environment');
   }
 
-  const db = await new Promise<IDBDatabase>((resolve, reject) => {
-    const req = indexedDB.open(DEFAULT_IDB_DATABASE);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-    req.onupgradeneeded = (e) => {
-      const udb = (e.target as IDBOpenDBRequest).result;
-      if (!udb.objectStoreNames.contains(storeName)) {
-        udb.createObjectStore(storeName);
-      }
-    };
-  });
-
-  if (db.objectStoreNames.contains(storeName)) {
-    return db;
+  if (cachedIDB && cachedIDB.objectStoreNames.contains(storeName)) {
+    return cachedIDB;
   }
 
-  const nextVersion = db.version + 1;
-  db.close();
+  let resultDb!: IDBDatabase;
+  const run = async () => {
+    if (cachedIDB && cachedIDB.objectStoreNames.contains(storeName)) {
+      resultDb = cachedIDB;
+      return;
+    }
 
-  return new Promise<IDBDatabase>((resolve, reject) => {
-    const req = indexedDB.open(DEFAULT_IDB_DATABASE, nextVersion);
-    req.onupgradeneeded = (e) => {
-      const udb = (e.target as IDBOpenDBRequest).result;
-      if (!udb.objectStoreNames.contains(storeName)) {
-        udb.createObjectStore(storeName);
-      }
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
+    if (!cachedIDB) {
+      cachedIDB = await openRawIDB(undefined, storeName);
+    }
+
+    if (cachedIDB.objectStoreNames.contains(storeName)) {
+      resultDb = cachedIDB;
+      return;
+    }
+
+    const nextVersion = cachedIDB.version + 1;
+    cachedIDB.close();
+    cachedIDB = null;
+    cachedIDB = await openRawIDB(nextVersion, storeName);
+    resultDb = cachedIDB;
+  };
+
+  const next = idbOpenLock.then(run, run);
+  idbOpenLock = next.catch(() => {});
+  await next;
+  return resultDb;
 }
 
 export function createStoreOperations(storeName: string): IndexedDBStoreOperations {
+  const ITERATE_KEY = Symbol.for('iterate');
+
   const baseOps: IndexedDBStoreOperations = {
     async all(): Promise<any[]> {
+      track(baseOps, ITERATE_KEY);
       const db = await openAndEnsureStore(storeName);
       return new Promise((resolve) => {
         try {
           const tx = db.transaction(storeName, 'readonly');
           const store = tx.objectStore(storeName);
           const req = store.getAll();
-          req.onsuccess = () => { db.close(); resolve(req.result || []); };
-          req.onerror = () => { db.close(); resolve([]); };
+          req.onsuccess = () => resolve(req.result || []);
+          req.onerror = () => resolve([]);
         } catch {
-          db.close();
           resolve([]);
         }
       });
     },
 
     async keys(prefix?: string): Promise<string[]> {
+      track(baseOps, ITERATE_KEY);
       const db = await openAndEnsureStore(storeName);
       return new Promise((resolve) => {
         try {
@@ -210,13 +243,11 @@ export function createStoreOperations(storeName: string): IndexedDBStoreOperatio
           const store = tx.objectStore(storeName);
           const req = store.getAllKeys();
           req.onsuccess = () => {
-            db.close();
             const rawKeys = (req.result || []).map(String);
             resolve(prefix ? rawKeys.filter(k => k.startsWith(prefix)) : rawKeys);
           };
-          req.onerror = () => { db.close(); resolve([]); };
+          req.onerror = () => resolve([]);
         } catch {
-          db.close();
           resolve([]);
         }
       });
@@ -227,16 +258,16 @@ export function createStoreOperations(storeName: string): IndexedDBStoreOperatio
     },
 
     async get(key: string | number): Promise<any> {
+      track(baseOps, String(key));
       const db = await openAndEnsureStore(storeName);
       return new Promise((resolve) => {
         try {
           const tx = db.transaction(storeName, 'readonly');
           const store = tx.objectStore(storeName);
           const req = store.get(key);
-          req.onsuccess = () => { db.close(); resolve(req.result ?? null); };
-          req.onerror = () => { db.close(); resolve(null); };
+          req.onsuccess = () => resolve(req.result ?? null);
+          req.onerror = () => resolve(null);
         } catch {
-          db.close();
           resolve(null);
         }
       });
@@ -260,10 +291,13 @@ export function createStoreOperations(storeName: string): IndexedDBStoreOperatio
               store.put(item);
             }
           }
-          tx.oncomplete = () => { db.close(); resolve(); };
-          tx.onerror = () => { db.close(); reject(tx.error); };
+          tx.oncomplete = () => {
+            if (key !== undefined) trigger(baseOps, String(key));
+            trigger(baseOps, ITERATE_KEY);
+            resolve();
+          };
+          tx.onerror = () => reject(tx.error);
         } catch (e) {
-          db.close();
           reject(e);
         }
       });
@@ -276,10 +310,13 @@ export function createStoreOperations(storeName: string): IndexedDBStoreOperatio
           const tx = db.transaction(storeName, 'readwrite');
           const store = tx.objectStore(storeName);
           store.delete(key);
-          tx.oncomplete = () => { db.close(); resolve(); };
-          tx.onerror = () => { db.close(); reject(tx.error); };
+          tx.oncomplete = () => {
+            trigger(baseOps, String(key));
+            trigger(baseOps, ITERATE_KEY);
+            resolve();
+          };
+          tx.onerror = () => reject(tx.error);
         } catch (e) {
-          db.close();
           reject(e);
         }
       });
@@ -292,10 +329,12 @@ export function createStoreOperations(storeName: string): IndexedDBStoreOperatio
           const tx = db.transaction(storeName, 'readwrite');
           const store = tx.objectStore(storeName);
           store.clear();
-          tx.oncomplete = () => { db.close(); resolve(); };
-          tx.onerror = () => { db.close(); reject(tx.error); };
+          tx.oncomplete = () => {
+            trigger(baseOps, ITERATE_KEY);
+            resolve();
+          };
+          tx.onerror = () => reject(tx.error);
         } catch (e) {
-          db.close();
           reject(e);
         }
       });
@@ -305,7 +344,7 @@ export function createStoreOperations(storeName: string): IndexedDBStoreOperatio
   return new Proxy(baseOps, {
     set(target, prop, value) {
       if (typeof prop === 'string' && !(prop in target)) {
-        target.put(value, prop);
+        target.put(value, prop).catch(() => {});
         return true;
       }
       (target as any)[prop] = value;

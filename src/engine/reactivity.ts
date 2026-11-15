@@ -18,16 +18,18 @@ class SignalHeap {
   private _arrayHeap: Map<string, unknown[]>;
   private _indexMap: Map<string, number>;
   private _typeMap: Map<string, 'float' | 'int' | 'bool' | 'string' | 'object' | 'array'>;
+  private _freeSlots: number[] = [];
   private _nextIndex: number = 0;
   private _shared: boolean = false;
 
   constructor(size: number = 1024, shared: boolean = false) {
     this._shared = shared && ZCZS_SUPPORTED;
     if (this._shared) {
-      const sab = new SharedArrayBuffer(size * 8);
-      this._floatHeap = new Float64Array(sab);
-      this._intHeap = new Int32Array(sab, size * 4);
-      this._boolHeap = new Uint8Array(new SharedArrayBuffer(size));
+      // Partition into non-overlapping aligned slots (16 bytes/slot: 8 Float64 + 4 Int32 + 4 Uint8/pad)
+      const sab = new SharedArrayBuffer(size * 16);
+      this._floatHeap = new Float64Array(sab, 0, size);
+      this._intHeap = new Int32Array(sab, size * 8, size);
+      this._boolHeap = new Uint8Array(sab, size * 12, size);
     } else {
       this._floatHeap = new Float64Array(size);
       this._intHeap = new Int32Array(size);
@@ -46,7 +48,7 @@ class SignalHeap {
       this._typeMap.set(key, type);
       return this._indexMap.get(key)!;
     }
-    const index = this._nextIndex++;
+    const index = this._freeSlots.length > 0 ? this._freeSlots.pop()! : this._nextIndex++;
     this._indexMap.set(key, index);
     this._typeMap.set(key, type);
     return index;
@@ -105,27 +107,27 @@ class SignalHeap {
 
   setNumeric(key: string, value: number): void {
     const index = this.allocateNumeric(key);
-    this._floatHeap[index] = value;
+    if (index < this._floatHeap.length) this._floatHeap[index] = value;
   }
   getNumeric(key: string): number | undefined {
     const index = this._indexMap.get(key);
-    return index !== undefined ? this._floatHeap[index] : undefined;
+    return index !== undefined && index < this._floatHeap.length ? this._floatHeap[index] : undefined;
   }
   setInt(key: string, value: number): void {
     const index = this.allocateInt(key);
-    this._intHeap[index] = value;
+    if (index < this._intHeap.length) this._intHeap[index] = value;
   }
   getInt(key: string): number | undefined {
     const index = this._indexMap.get(key);
-    return index !== undefined ? this._intHeap[index] : undefined;
+    return index !== undefined && index < this._intHeap.length ? this._intHeap[index] : undefined;
   }
   setBoolean(key: string, value: boolean): void {
     const index = this.allocateBoolean(key);
-    this._boolHeap[index] = value ? 1 : 0;
+    if (index < this._boolHeap.length) this._boolHeap[index] = value ? 1 : 0;
   }
   getBoolean(key: string): boolean | undefined {
     const index = this._indexMap.get(key);
-    return index !== undefined ? this._boolHeap[index] === 1 : undefined;
+    return index !== undefined && index < this._boolHeap.length ? this._boolHeap[index] === 1 : undefined;
   }
   setString(key: string, value: string): void {
     this._allocateSlot(key, 'string');
@@ -148,18 +150,51 @@ class SignalHeap {
   has(key: string): boolean { return this._indexMap.has(key); }
   getType(key: string): string | undefined { return this._typeMap.get(key); }
   delete(key: string): void {
+    const idx = this._indexMap.get(key);
+    if (idx !== undefined) {
+      this._freeSlots.push(idx);
+    }
+    const strVal = this._stringHeap.get(key);
     this._indexMap.delete(key);
     this._typeMap.delete(key);
     this._stringHeap.delete(key);
+    if (strVal !== undefined) {
+      let stillReferenced = false;
+      for (const existing of this._stringHeap.values()) {
+        if (existing === strVal) {
+          stillReferenced = true;
+          break;
+        }
+      }
+      if (!stillReferenced) {
+        this._stringPool.delete(strVal);
+      }
+    }
     this._objectHeap.delete(key);
     this._arrayHeap.delete(key);
   }
   attachSharedBuffer(sab: SharedArrayBuffer): void {
     if (this._shared) return;
+    const slotCount = Math.floor(sab.byteLength / 16);
+    if (slotCount <= 0) return;
+
+    const prevFloat = this._floatHeap;
+    const prevInt = this._intHeap;
+    const prevBool = this._boolHeap;
+
+    const newFloat = new Float64Array(sab, 0, slotCount);
+    const newInt = new Int32Array(sab, slotCount * 8, slotCount);
+    const newBool = new Uint8Array(sab, slotCount * 12, slotCount);
+
+    // Preserve boot-time heap writes before swapping views
+    newFloat.set(prevFloat.subarray(0, Math.min(prevFloat.length, slotCount)));
+    newInt.set(prevInt.subarray(0, Math.min(prevInt.length, slotCount)));
+    newBool.set(prevBool.subarray(0, Math.min(prevBool.length, slotCount)));
+
     this._shared = true;
-    this._floatHeap = new Float64Array(sab);
-    this._intHeap = new Int32Array(sab, this._floatHeap.length * 8);
-    this._boolHeap = new Uint8Array(sab, (this._floatHeap.length * 8) + (this._intHeap.length * 4));
+    this._floatHeap = newFloat;
+    this._intHeap = newInt;
+    this._boolHeap = newBool;
     console.log('[SignalHeap] Attached SharedArrayBuffer');
   }
 }
@@ -261,7 +296,7 @@ export interface ReactiveEffectOptions {
 export interface Ref<T = any> { value: T; }
 export interface ComputedRef<T = any> extends Ref<T> { readonly value: T; }
 
-const ITERATE_KEY = Symbol('iterate');
+export const ITERATE_KEY = Symbol.for('iterate');
 const targetMap = new WeakMap<object, Map<string | symbol, Set<ActiveEffect>>>();
 let activeEffect: ActiveEffect | null = null;
 
@@ -665,8 +700,8 @@ export function elementBoundEffect(
           const enhanced = el as NexusEnhancedElement;
           enhanced[EFFECT_RUNNERS_KEY]?.delete(runner);
         } else {
-          if ((globalThis as any).Nexus?.coordinator?.runtimeContext?.isDevMode) {
-            console.debug(`[Nexus Transient] <${el.tagName}> effect attempt ${consecutiveFailures}/3:`, msg);
+          if ((globalThis as any).UX?.runtime?.isDevMode || (globalThis as any).Nexus?.coordinator?.runtimeContext?.isDevMode) {
+            console.debug(`[UX Transient] <${el.tagName}> effect attempt ${consecutiveFailures}/3:`, msg);
           }
         }
       }
@@ -741,13 +776,12 @@ export function unifiedRef<T extends Record<string, unknown>>(
       const fullKey = `${heapKey}.${k}`;
       if (type === 'number') heap.allocateNumeric(fullKey);
       else if (type === 'boolean') heap.allocateBoolean(fullKey);
-      else if (type === 'string') heap.setString(fullKey, '');
     });
   } else {
     Object.entries(initialValue).forEach(([k, v]) => {
       const fullKey = `${heapKey}.${k}`;
-      if (typeof v === 'number') heap.allocateNumeric(fullKey);
-      else if (typeof v === 'boolean') heap.allocateBoolean(fullKey);
+      if (typeof v === 'number') heap.set(fullKey, v);
+      else if (typeof v === 'boolean') heap.set(fullKey, v);
     });
   }
 
@@ -765,8 +799,10 @@ export function unifiedRef<T extends Record<string, unknown>>(
       ownership.validateBorrow(state, 'mutable');
       if (newValue && typeof newValue === 'object') {
         Object.entries(newValue).forEach(([k, v]) => {
-          const fullKey = `${heapKey}.${k}`;
-          heap.set(fullKey, v);
+          // Only mirror numeric/boolean primitives into binary SAB heap (avoid leaking objects/arrays)
+          if (typeof v === 'number' || typeof v === 'boolean') {
+            heap.set(`${heapKey}.${k}`, v);
+          }
           (state as any)[k] = v;
         });
       } else {
@@ -782,7 +818,10 @@ export function unifiedComputed<T>(getter: () => T, key?: string): ComputedRef<T
   const heapKey = key || `computed_${Math.random().toString(36).slice(2)}`;
   return computed<any>(() => {
     const value = getter();
-    heap.set(heapKey, value);
+    // Only mirror numeric/boolean primitives into binary SAB heap
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      heap.set(heapKey, value);
+    }
     return value;
   });
 }

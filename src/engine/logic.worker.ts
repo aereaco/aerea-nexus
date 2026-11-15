@@ -5,6 +5,7 @@
  */
 
 let _heapView: Float64Array | null = null;
+const compiledFnCache = new Map<string, (...args: unknown[]) => unknown>();
 
 function describeWorkerFnError(err: unknown): string {
   if (err instanceof ReferenceError) {
@@ -37,7 +38,15 @@ export function handleWorkerMessage(e: MessageEvent): void {
     case 'EXECUTE_FN':
       (async () => {
         try {
-          const compiledFn = new Function(`return (${fn})`)();
+          let compiledFn = compiledFnCache.get(fn);
+          if (!compiledFn) {
+            compiledFn = new Function(`return (${fn})`)() as (...args: unknown[]) => unknown;
+            if (compiledFnCache.size > 256) {
+              const firstKey = compiledFnCache.keys().next().value;
+              if (firstKey !== undefined) compiledFnCache.delete(firstKey);
+            }
+            compiledFnCache.set(fn, compiledFn);
+          }
           const callArgs = Array.isArray(args) ? args : [];
           const result = await compiledFn(...callArgs);
           self.postMessage({ type: 'RESULT', id, payload: result });
@@ -50,25 +59,19 @@ export function handleWorkerMessage(e: MessageEvent): void {
   }
 }
 
-self.onmessage = handleWorkerMessage;
+const isWorkerScope = typeof (globalThis as Record<string, unknown>).WorkerGlobalScope !== 'undefined' && typeof document === 'undefined';
+if (isWorkerScope) {
+  self.onmessage = handleWorkerMessage;
+}
 
 function postLog(...args: unknown[]) {
-  self.postMessage({ type: 'LOG', payload: args });
+  if (isWorkerScope) {
+    self.postMessage({ type: 'LOG', payload: args });
+  }
 }
 
 // Registry of tasks available to the worker
 const tasks: Record<string, (data: unknown) => unknown> = {
-  'fibonacci': (data: unknown) => {
-    const n = Number(data);
-    // Example CPU intensive task
-    const fib = (num: number): number => num <= 1 ? num : fib(num - 1) + fib(num - 2);
-    return fib(n);
-  },
-  'processData': (data: unknown) => {
-    const numbers = data as number[];
-    // Example data processing
-    return numbers.map(x => x * 2).filter(x => x > 10);
-  },
   'PREDICT_TRAJECTORY': (data: unknown) => {
     const { history, candidates } = data as {
       history: { x: number; y: number; z: number; t: number }[];
@@ -137,10 +140,8 @@ function executeTask(taskName: string, data: unknown): unknown {
   if (taskName in tasks) {
     return tasks[taskName](data);
   }
-  // Dynamic execution? (Riskier, but powerful)
-  // if (taskName === 'eval') ...
   throw new Error(`Unknown task: ${taskName}`);
 }
 
-// Signal readiness
+// Signal readiness when inside dedicated worker
 postLog('Worker ready');
