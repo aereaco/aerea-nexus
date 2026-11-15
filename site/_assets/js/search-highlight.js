@@ -154,9 +154,15 @@
     }, 120);
   }
 
+  const highlightsApi = { getSearchTokens, syncHighlights, syncPageHighlights };
   window.getSearchTokens = getSearchTokens;
   window.syncHighlights = syncHighlights;
   window.syncPageHighlights = syncPageHighlights;
-  if (window.UX) window.UX.Highlights = { getSearchTokens, syncHighlights, syncPageHighlights };
-  window.NexusHighlights = { getSearchTokens, syncHighlights, syncPageHighlights };
+  if (window.UX) window.UX.Highlights = highlightsApi;
+  if (typeof document !== 'undefined') {
+    document.addEventListener('ux:ready', function () {
+      if (window.UX) window.UX.Highlights = highlightsApi;
+    }, { once: true });
+  }
+  window.NexusHighlights = highlightsApi;
 })();

@@ -22,8 +22,7 @@
                 searchActiveIndex = 0;
               })
               .catch(function() {
-                const prefix = q.charAt(0).toLowerCase();
-                window.fetch('/_pages/search-shards/' + encodeURIComponent(prefix) + '.json')
+                window.fetch('/_pages/search-index.json')
                   .then(function(r) { return r.ok ? r.json() : []; })
                   .then(function(entries) {
                     searchResults = (typeof searchResultGroups === 'function') ? searchResultGroups(q, entries) : [];

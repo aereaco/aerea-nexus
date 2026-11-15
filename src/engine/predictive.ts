@@ -431,19 +431,19 @@ export class CorePredictiveEngine {
     // Note: data-import payloads (CDN links, Iconify) are managed exclusively by import.ts
     // to prevent FOUC gate race conditions, so they are intentionally bypassed here.
 
-    // 3. Directive Expressions (data-on-*, data-signal, data-effect, data-bind)
-    for (let i = 0; i < el.attributes.length; i++) {
-      const attr = el.attributes[i];
-      const name = attr.name;
-      if (name.startsWith('data-on-') || name === 'data-signal' || name === 'data-effect' || name.startsWith('data-bind')) {
-        const matches = attr.value.match(/(?:https?:\/\/|\/|\.\/|\.\.\/|[a-zA-Z0-9_\-]+\/)[a-zA-Z0-9_\-\.]+\.[a-zA-Z0-9]+/gi);
-        if (matches) {
-          urls.push(...matches);
-        }
-      }
-    }
+    const isWarmableLocalTarget = (rawUrl: string): boolean => {
+      const cleaned = rawUrl.trim();
+      return (
+        cleaned.startsWith('/_pages/') ||
+        cleaned.startsWith('/_components/') ||
+        cleaned.startsWith('/_assets/') ||
+        cleaned.startsWith('_pages/') ||
+        cleaned.startsWith('_components/') ||
+        cleaned.startsWith('_assets/')
+      );
+    };
 
-    return Array.from(new Set(urls));
+    return Array.from(new Set(urls.filter(isWarmableLocalTarget)));
   }
 
   private rebuildQuadtree() {

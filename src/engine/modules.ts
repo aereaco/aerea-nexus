@@ -399,6 +399,9 @@ export class ModuleCoordinator {
   public registerAttributeModule(name: string, module: AttributeModule): void {
     const key = module.attribute || name;
     this.attributeModules.set(key, module);
+    if (name && name !== key) {
+      this.attributeModules.set(name, module);
+    }
     module.onRegister?.(this.runtimeContext);
 
     const index = this.directiveOrder.indexOf(key);
@@ -561,7 +564,8 @@ export class ModuleCoordinator {
         try {
           const parsedAttr = this.runtimeContext.parseAttribute(attr.name, this.runtimeContext, element);
           if (parsedAttr?.directive) {
-            const module = this.attributeModules.get(parsedAttr.directive);
+            const compoundKey = parsedAttr.argument ? `${parsedAttr.directive}-${parsedAttr.argument}` : parsedAttr.directive;
+            const module = this.attributeModules.get(compoundKey) || this.attributeModules.get(parsedAttr.directive);
             if (module) {
               const attrName = attr.name;
               const attrValue = attr.value;

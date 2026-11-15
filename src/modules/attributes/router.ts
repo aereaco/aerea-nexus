@@ -644,7 +644,8 @@ export const routerAttributeModule: AttributeModule = {
 
       const initialPath = stripBase(globalThis.location.pathname) || '/';
       const initialMatched = routeList.find((r) => r.path === initialPath);
-      const initialSource = initialMatched?.component || resolveStaticComponent(initialPath);
+      const hasPendingManifest = Boolean(routerConfig.manifest || cfg.manifest);
+      const initialSource = initialMatched?.component || (hasPendingManifest && initialPath !== '/' ? '' : resolveStaticComponent(initialPath));
 
       const syncTabState = (tabId: string, source?: string | null, route?: string | null, meta?: Record<string, any>) => {
         const curPageTab = state.pageTabs?.find((t: PageTab) => t && t.id === tabId);

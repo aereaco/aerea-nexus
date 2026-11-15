@@ -664,7 +664,10 @@
                             indexedDB.snippets.delete(doc.SnippetModule + '_' + target);
                             const idx = snippets.indexOf(target);
                             if (idx !== -1) snippets.splice(idx, 1);
-                            if (activeSnippet === target) activeSnippet = baseSnippets[0] || 'Default';
+                            if (activeSnippet === target) {
+                                activeSnippet = baseSnippets[0] || 'Default';
+                                snippetCode = (doc?.Examples && doc.Examples[activeSnippet]) || doc?.Snippet || '';
+                            }
                             showDeleteSnippetModal = false;
                             toastMsg = 'Deleted: ' + target; toastType = 'info'; showToast = true;
                         ">Delete</button>

@@ -461,14 +461,12 @@ async function handleServerSearch(url: URL): Promise<Response> {
   }
 
   const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
-  const prefix = q.charAt(0).toLowerCase();
-  const shardsDir = join(SITE_DIR, "_pages", "search-shards");
-  const shardPath = join(shardsDir, `${prefix}.json`);
-  const manifestPath = join(shardsDir, "manifest.json");
+  const searchIndexPath = join(SITE_DIR, "_pages", "search-index.json");
+  const manifestPath = join(SITE_DIR, "_pages", "manifest.json");
 
   let entries: any[] = [];
   try {
-    const raw = await Deno.readTextFile(shardPath);
+    const raw = await Deno.readTextFile(searchIndexPath);
     entries = JSON.parse(raw);
   } catch (_) {
     try {

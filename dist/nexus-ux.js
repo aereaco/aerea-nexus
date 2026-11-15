@@ -7669,7 +7669,8 @@ ${match}</ul>
         });
         const initialPath = stripBase(globalThis.location.pathname) || "/";
         const initialMatched = routeList.find((r) => r.path === initialPath);
-        const initialSource = initialMatched?.component || resolveStaticComponent(initialPath);
+        const hasPendingManifest = Boolean(routerConfig.manifest || cfg.manifest);
+        const initialSource = initialMatched?.component || (hasPendingManifest && initialPath !== "/" ? "" : resolveStaticComponent(initialPath));
         const syncTabState = (tabId, source, route, meta) => {
           const curPageTab = state.pageTabs?.find((t) => t && t.id === tabId);
           if (curPageTab) {
@@ -11428,17 +11429,11 @@ ${match}</ul>
       const routeLink = el.getAttribute("data-route-link");
       if (routeLink)
         urls.push(routeLink);
-      for (let i = 0; i < el.attributes.length; i++) {
-        const attr = el.attributes[i];
-        const name = attr.name;
-        if (name.startsWith("data-on-") || name === "data-signal" || name === "data-effect" || name.startsWith("data-bind")) {
-          const matches = attr.value.match(/(?:https?:\/\/|\/|\.\/|\.\.\/|[a-zA-Z0-9_\-]+\/)[a-zA-Z0-9_\-\.]+\.[a-zA-Z0-9]+/gi);
-          if (matches) {
-            urls.push(...matches);
-          }
-        }
-      }
-      return Array.from(new Set(urls));
+      const isWarmableLocalTarget = (rawUrl) => {
+        const cleaned = rawUrl.trim();
+        return cleaned.startsWith("/_pages/") || cleaned.startsWith("/_components/") || cleaned.startsWith("/_assets/") || cleaned.startsWith("_pages/") || cleaned.startsWith("_components/") || cleaned.startsWith("_assets/");
+      };
+      return Array.from(new Set(urls.filter(isWarmableLocalTarget)));
     }
     rebuildQuadtree() {
       this.quadtree = new Quadtree({
@@ -16067,6 +16062,9 @@ ${bridge}`, {
     registerAttributeModule(name, module) {
       const key = module.attribute || name;
       this.attributeModules.set(key, module);
+      if (name && name !== key) {
+        this.attributeModules.set(name, module);
+      }
       module.onRegister?.(this.runtimeContext);
       const index = this.directiveOrder.indexOf(key);
       if (index === -1) {
@@ -16193,7 +16191,8 @@ ${bridge}`, {
           try {
             const parsedAttr = this.runtimeContext.parseAttribute(attr.name, this.runtimeContext, element);
             if (parsedAttr?.directive) {
-              const module = this.attributeModules.get(parsedAttr.directive);
+              const compoundKey = parsedAttr.argument ? `${parsedAttr.directive}-${parsedAttr.argument}` : parsedAttr.directive;
+              const module = this.attributeModules.get(compoundKey) || this.attributeModules.get(parsedAttr.directive);
               if (module) {
                 const attrName = attr.name;
                 const attrValue = attr.value;
@@ -16553,6 +16552,9 @@ ${bridge}`, {
   if (typeof window !== "undefined" && uxInstance) {
     globalThis.UX = uxInstance;
     globalThis.Nexus = uxInstance;
+    if (globalThis.NexusHighlights && !uxInstance.Highlights) {
+      uxInstance.Highlights = globalThis.NexusHighlights;
+    }
     globalThis._UX_RUNTIME = uxInstance.runtime;
     globalThis._NEXUS_RUNTIME = uxInstance.runtime;
   }

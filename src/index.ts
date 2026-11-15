@@ -285,6 +285,9 @@ if (typeof Element !== 'undefined' && !Object.getOwnPropertyDescriptor(Element.p
 if (typeof window !== 'undefined' && uxInstance) {
   (globalThis as any).UX = uxInstance;
   (globalThis as any).Nexus = uxInstance;
+  if ((globalThis as any).NexusHighlights && !(uxInstance as any).Highlights) {
+    (uxInstance as any).Highlights = (globalThis as any).NexusHighlights;
+  }
   (globalThis as any)._UX_RUNTIME = uxInstance.runtime;
   (globalThis as any)._NEXUS_RUNTIME = uxInstance.runtime;
 }
