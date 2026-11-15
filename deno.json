@@ -1,6 +1,6 @@
 {
   "tasks": {
-    "build": "deno run -A scripts/build.ts",
+    "build": "deno run -A scripts/build.ts --minify",
     "test": "deno test -A src/",
     "setup": "git config core.hooksPath scripts/git/hooks",
     "serve": "deno run -A scripts/serve.ts",
@@ -12,15 +12,12 @@
     "build:publish": "deno run -A scripts/build.ts --minify --publish"
   },
     "imports": {
-      "@msgpack/msgpack": "npm:@msgpack/msgpack@^3.0.0-beta2",
       "esbuild": "https://deno.land/x/esbuild@v0.20.0/mod.js",
       "esbuild-deno-loader": "https://deno.land/x/esbuild_deno_loader@0.9.0/mod.ts",
       "brotli": "https://deno.land/x/brotli@v0.1.4/mod.ts",
       "std/path": "https://deno.land/std@0.212.0/path/mod.ts",
       "std/assert": "https://deno.land/std@0.212.0/assert/mod.ts",
-      "jsdom": "npm:jsdom@24.0.0",
-      "@swc/core": "npm:@swc/core@1.15.24",
-      "@std/encoding-brotli": "jsr:@std/encoding-brotli@^0.225.2"
+      "@swc/core": "npm:@swc/core@1.15.24"
     },
    "compilerOptions": {
      "lib": [

@@ -55,19 +55,8 @@ declare module "./composition.ts" {
 // Register the internal global scope provider statically for # signal parsing
 registerScopeProvider('__global', (_, runtime) => runtime.globalSignals());
 
-let shouldAutoEvaluateFunctions = true;
 let currentEvalDepth = 0;
 const MAX_EVAL_DEPTH = 50;
-
-export function dontAutoEvaluateFunctions<R>(callback: () => R): R {
-  const cache = shouldAutoEvaluateFunctions;
-  shouldAutoEvaluateFunctions = false;
-  try {
-    return callback();
-  } finally {
-    shouldAutoEvaluateFunctions = cache;
-  }
-}
 
 
 export function evaluate(
@@ -469,7 +458,7 @@ export function evaluateLater(
         : scope;
 
       const result = func.call(el, currentScope);
-      if (shouldAutoEvaluateFunctions && typeof result === 'function') {
+      if (typeof result === 'function') {
         receiver(result.call(el, currentScope));
       } else {
         receiver(result);

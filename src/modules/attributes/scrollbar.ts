@@ -60,10 +60,7 @@ export function ensureScrollbarStyles(root?: Document | ShadowRoot | null, confi
   ensureAdoptedStylesheet(css, scrollbarSheetRef, root);
 }
 
-if (typeof document !== 'undefined') {
-  ensureScrollbarStyles();
-  setupGlobalListeners();
-}
+// Lazy-initialized on first [data-scrollbar] directive handle() call.
 
 const overlayInstances = new WeakMap<Element, OverlayScrollbarInstance>();
 const activeInstances = new Set<OverlayScrollbarInstance>();
@@ -466,7 +463,7 @@ function setupGlobalListeners(): void {
   };
   document.addEventListener('pointerover', onPointerOver, { capture: true, passive: true });
 
-  document.addEventListener('nexus:dom-mutated', () => {
+  document.addEventListener('ux:dom-mutated', () => {
     requestAnimationFrame(scanScrollContainers);
   }, { passive: true });
 
@@ -505,6 +502,9 @@ const scrollbarModule: AttributeModule = {
       }
       return;
     }
+
+    ensureScrollbarStyles(el.getRootNode() as Document | ShadowRoot, globalConfig);
+    setupGlobalListeners();
 
     const isGlobal = el.hasAttribute('data-scrollbar_global') || 
       (parsedAttr?.modifiers && parsedAttr.modifiers.includes('global')) ||

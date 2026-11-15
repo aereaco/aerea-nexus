@@ -93,35 +93,6 @@ export function attrHash(key: number | string, val: number | string): number {
 }
 
 /**
- * Recursively walks the DOM tree, respecting 'data-ignore' attributes.
- */
-export function walkDOM(
-  element: Element | null,
-  callback: (el: HTMLElement | SVGElement) => void,
-) {
-  if (
-    !element ||
-    !(element instanceof HTMLElement || element instanceof SVGElement)
-  ) {
-    return;
-  }
-  
-  const dataset = element.dataset;
-  // Use 'ignore' instead of 'starIgnore' to align with modern Nexus-UX naming
-  if ('ignore' in dataset) {
-    return;
-  }
-  
-  callback(element);
-  
-  let el = element.firstElementChild;
-  while (el) {
-    walkDOM(el, callback);
-    el = el.nextElementSibling;
-  }
-}
-
-/**
  * Fast 32-bit string hashing algorithm.
  * Returns a stable numeric string representation of the string hash.
  */

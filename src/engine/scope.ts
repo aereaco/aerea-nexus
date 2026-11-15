@@ -498,11 +498,4 @@ export function getElementScope(
   return proxy;
 }
 
-/**
- * Backward-compatible helper that delegates to createReflectProxy.
- */
-export function buildNativeApiScope(runtime?: RuntimeContext): Record<string, unknown> {
-  return createReflectProxy(runtime);
-}
-
 

@@ -388,7 +388,22 @@ function runBuild() {
 
 function gitCommit(paths: string[]) {
   try {
-    new Deno.Command("git", { args: ["add", "dist/", ...paths] }).outputSync();
+    const distArtifacts = [
+      "dist/nexus-ux.js",
+      "dist/nexus-ux.min.js",
+      "dist/nexus-ux.min.js.br",
+      "dist/logic.worker.js",
+      "dist/logic.worker.min.js",
+      "dist/manifest.json"
+    ].filter((p) => {
+      try {
+        Deno.statSync(p);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    new Deno.Command("git", { args: ["add", ...distArtifacts, ...paths] }).outputSync();
     const diffCheck = new Deno.Command("git", { args: ["diff", "--staged", "--quiet"] }).outputSync();
     if (diffCheck.code === 0) {
       return; // No staged changes

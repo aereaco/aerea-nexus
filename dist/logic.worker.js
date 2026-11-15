@@ -1,5 +1,6 @@
 // src/engine/logic.worker.ts
 var _heapView = null;
+var compiledFnCache = /* @__PURE__ */ new Map();
 function describeWorkerFnError(err) {
   if (err instanceof ReferenceError) {
     return `${err.message} \u2014 runInWorker() cannot see variables closed over from the caller's scope; pass them explicitly via the "args" parameter instead.`;
@@ -27,7 +28,16 @@ function handleWorkerMessage(e) {
     case "EXECUTE_FN":
       (async () => {
         try {
-          const compiledFn = new Function(`return (${fn})`)();
+          let compiledFn = compiledFnCache.get(fn);
+          if (!compiledFn) {
+            compiledFn = new Function(`return (${fn})`)();
+            if (compiledFnCache.size > 256) {
+              const firstKey = compiledFnCache.keys().next().value;
+              if (firstKey !== void 0)
+                compiledFnCache.delete(firstKey);
+            }
+            compiledFnCache.set(fn, compiledFn);
+          }
           const callArgs = Array.isArray(args) ? args : [];
           const result = await compiledFn(...callArgs);
           self.postMessage({ type: "RESULT", id, payload: result });
@@ -39,20 +49,16 @@ function handleWorkerMessage(e) {
       break;
   }
 }
-self.onmessage = handleWorkerMessage;
+var isWorkerScope = typeof globalThis.WorkerGlobalScope !== "undefined" && typeof document === "undefined";
+if (isWorkerScope) {
+  self.onmessage = handleWorkerMessage;
+}
 function postLog(...args) {
-  self.postMessage({ type: "LOG", payload: args });
+  if (isWorkerScope) {
+    self.postMessage({ type: "LOG", payload: args });
+  }
 }
 var tasks = {
-  "fibonacci": (data) => {
-    const n = Number(data);
-    const fib = (num) => num <= 1 ? num : fib(num - 1) + fib(num - 2);
-    return fib(n);
-  },
-  "processData": (data) => {
-    const numbers = data;
-    return numbers.map((x) => x * 2).filter((x) => x > 10);
-  },
   "PREDICT_TRAJECTORY": (data) => {
     const { history, candidates } = data;
     if (!history || history.length < 3)

@@ -1,8 +1,6 @@
-var UX = (() => {
+(() => {
   var __defProp = Object.defineProperty;
-  var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
   var __getOwnPropNames = Object.getOwnPropertyNames;
-  var __hasOwnProp = Object.prototype.hasOwnProperty;
   var __esm = (fn, res) => function __init() {
     return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
   };
@@ -10,15 +8,6 @@ var UX = (() => {
     for (var name in all)
       __defProp(target, name, { get: all[name], enumerable: true });
   };
-  var __copyProps = (to, from, except, desc) => {
-    if (from && typeof from === "object" || typeof from === "function") {
-      for (let key of __getOwnPropNames(from))
-        if (!__hasOwnProp.call(to, key) && key !== except)
-          __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-    }
-    return to;
-  };
-  var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
   // src/engine/consts.ts
   var ROOT_SELECTOR, STATE, ATTRIBUTE_PREFIX, CUSTOM_EVENT_PREFIX, DATA_PRESERVE_ATTR, NEG_TOKENS, MODIFIER_DELIMITER, DATA_STACK_KEY, LOCAL_SCOPES_KEY, COMPONENT_CONTEXT_KEY, CLEANUP_FUNCTIONS_KEY, EFFECT_RUNNERS_KEY, RUN_EFFECT_RUNNERS_KEY, MARKER_KEY, IS_TEMPLATE_KEY, TIMER_MAP_KEY, DEFAULT_DEBOUNCE_TIME, DEFAULT_THROTTLE_TIME;
@@ -71,7 +60,7 @@ var UX = (() => {
         requestId = 0;
         pendingRequests = /* @__PURE__ */ new Map();
         onConnectCallback;
-        onMessageCallback;
+        notificationListeners = /* @__PURE__ */ new Set();
         constructor(serverUrl) {
           this.url = serverUrl;
         }
@@ -99,13 +88,6 @@ var UX = (() => {
                   reportError(new Error(`MCP Malformed JSON: ${event.data}`));
                 }
               };
-              this.eventSource.addEventListener("message", (e) => {
-                try {
-                  const payload = JSON.parse(e.data);
-                  this.handleIncoming(payload);
-                } catch (_e) {
-                }
-              });
             } catch (e) {
               reject(e);
             }
@@ -145,8 +127,11 @@ var UX = (() => {
               resolve(payload.result || payload.error);
             }
           } else if (payload.method) {
-            if (this.onMessageCallback) {
-              this.onMessageCallback(payload.method, payload.params);
+            for (const listener of this.notificationListeners) {
+              try {
+                listener(payload.method, payload.params);
+              } catch {
+              }
             }
           }
         }
@@ -154,7 +139,10 @@ var UX = (() => {
           this.onConnectCallback = cb;
         }
         onNotification(cb) {
-          this.onMessageCallback = cb;
+          this.notificationListeners.add(cb);
+          return () => {
+            this.notificationListeners.delete(cb);
+          };
         }
         disconnect() {
           this.eventSource?.close();
@@ -167,9 +155,9 @@ var UX = (() => {
   function reportError(error, element, expression) {
     const errorMessage = `[UX Error] ${error.message}`;
     console.error(errorMessage, { element, expression, originalError: error });
-    const Nexus2 = globalThis.Nexus;
-    const coordinator = Nexus2?.coordinator;
-    const runtime = coordinator?.runtimeContext;
+    const uxGlobal = globalThis.UX || globalThis.Nexus;
+    const coordinator = uxGlobal?.coordinator;
+    const runtime = uxGlobal?.runtime || coordinator?.runtimeContext;
     if (runtime?.mcp && runtime.isDevMode) {
       runtime.mcp.sendRequest("sampling/createMessage", {
         messages: [{
@@ -207,7 +195,7 @@ ${suggestion}`);
       element?.dispatchEvent(errorEvent) || typeof document !== "undefined" && document.dispatchEvent(errorEvent);
     }
   }
-  function initError2(moduleName, message, element, expression) {
+  function initError(moduleName, message, element, expression) {
     const error = new UXError(`Initialization failed for ${moduleName}: ${message}`, element, expression);
     reportError(error, element, expression);
   }
@@ -228,49 +216,38 @@ ${suggestion}`);
     error.stack = originalError.stack;
     reportError(error, element, expression);
   }
+  function handleDebugAttributeChange(target, runtimeContext) {
+    const debugValue = target.getAttribute("data-debug");
+    runtimeContext.isDevMode = debugValue !== null;
+    if (debugValue && debugValue.trim().startsWith("{")) {
+      try {
+        const config = new Function(`return (${debugValue})`)();
+        if (config.mcp && !runtimeContext.mcp) {
+          Promise.resolve().then(() => (init_mcp(), mcp_exports)).then(({ MCPClient: MCPClient2 }) => {
+            runtimeContext.mcp = new MCPClient2(config.mcp);
+            runtimeContext.mcp.connect().catch(() => {
+              console.warn(`[UX Debug] MCP connection failed: ${config.mcp}`);
+            });
+          });
+        }
+      } catch {
+      }
+    }
+  }
   function initSanitizingEngine(runtimeContext) {
-    if (typeof MutationObserver === "undefined" || typeof document === "undefined")
+    if (typeof document === "undefined" || !document.documentElement)
       return;
     try {
-      sanitizingObserver = new MutationObserver((mutations) => {
-        try {
-          for (const mutation of mutations) {
-            if (mutation.type === "attributes" && mutation.attributeName === "data-debug") {
-              const target = mutation.target;
-              const debugValue = target.getAttribute("data-debug");
-              runtimeContext.isDevMode = debugValue !== null;
-              if (debugValue && debugValue.trim().startsWith("{")) {
-                try {
-                  const config = new Function(`return (${debugValue})`)();
-                  if (config.mcp && !runtimeContext.mcp) {
-                    Promise.resolve().then(() => (init_mcp(), mcp_exports)).then(({ MCPClient: MCPClient2 }) => {
-                      runtimeContext.mcp = new MCPClient2(config.mcp);
-                      runtimeContext.mcp.connect().catch(() => {
-                        console.warn(`[Nexus Debug] MCP connection failed: ${config.mcp}`);
-                      });
-                    });
-                  }
-                } catch {
-                }
-              }
-            }
-          }
-        } catch (e) {
-          console.error("[Nexus Sanitizer] Internal error (isolated):", e);
-        }
-      });
-      sanitizingObserver.observe(document.documentElement, { attributes: true, subtree: true });
+      if (document.documentElement.hasAttribute("data-debug")) {
+        handleDebugAttributeChange(document.documentElement, runtimeContext);
+      }
     } catch (e) {
-      console.error("[Nexus Sanitizer] Failed to initialize:", e);
+      console.error("[UX Sanitizer] Failed to initialize:", e);
     }
   }
   function disposeSanitizingEngine() {
-    if (sanitizingObserver) {
-      sanitizingObserver.disconnect();
-      sanitizingObserver = null;
-    }
   }
-  var errMsg, toError, UXError, logger, sanitizingObserver;
+  var errMsg, toError, UXError, logger;
   var init_debug = __esm({
     "src/engine/debug.ts"() {
       init_consts();
@@ -288,36 +265,25 @@ ${suggestion}`);
       logger = {
         log: (context, ...args) => {
           if (context.isDevMode)
-            console.log(`[Nexus]`, ...args);
+            /* @__PURE__ */ console.log(`[UX]`, ...args);
         },
         warn: (context, ...args) => {
           if (context.isDevMode)
-            console.warn(`[Nexus]`, ...args);
+            console.warn(`[UX]`, ...args);
         },
         info: (context, ...args) => {
           if (context.isDevMode)
-            console.info(`[Nexus]`, ...args);
+            console.info(`[UX]`, ...args);
         },
         debug: (context, ...args) => {
           if (context.isDevMode)
-            console.debug(`[Nexus Debug]`, ...args);
+            /* @__PURE__ */ console.debug(`[UX Debug]`, ...args);
         },
         error: (_context, ...args) => {
-          console.error(`[Nexus Error]`, ...args);
+          console.error(`[UX Error]`, ...args);
         }
       };
-      sanitizingObserver = null;
     }
-  });
-
-  // src/index.ts
-  var src_exports = {};
-  __export(src_exports, {
-    $id: () => $id,
-    $nextTick: () => $nextTick,
-    Nexus: () => Nexus,
-    UX: () => UX,
-    runInWorker: () => runInWorker
   });
 
   // src/engine/modules.ts
@@ -449,15 +415,16 @@ ${suggestion}`);
     _arrayHeap;
     _indexMap;
     _typeMap;
+    _freeSlots = [];
     _nextIndex = 0;
     _shared = false;
     constructor(size = 1024, shared = false) {
       this._shared = shared && ZCZS_SUPPORTED;
       if (this._shared) {
-        const sab = new SharedArrayBuffer(size * 8);
-        this._floatHeap = new Float64Array(sab);
-        this._intHeap = new Int32Array(sab, size * 4);
-        this._boolHeap = new Uint8Array(new SharedArrayBuffer(size));
+        const sab = new SharedArrayBuffer(size * 16);
+        this._floatHeap = new Float64Array(sab, 0, size);
+        this._intHeap = new Int32Array(sab, size * 8, size);
+        this._boolHeap = new Uint8Array(sab, size * 12, size);
       } else {
         this._floatHeap = new Float64Array(size);
         this._intHeap = new Int32Array(size);
@@ -475,7 +442,7 @@ ${suggestion}`);
         this._typeMap.set(key, type);
         return this._indexMap.get(key);
       }
-      const index = this._nextIndex++;
+      const index = this._freeSlots.length > 0 ? this._freeSlots.pop() : this._nextIndex++;
       this._indexMap.set(key, index);
       this._typeMap.set(key, type);
       return index;
@@ -551,27 +518,30 @@ ${suggestion}`);
     }
     setNumeric(key, value) {
       const index = this.allocateNumeric(key);
-      this._floatHeap[index] = value;
+      if (index < this._floatHeap.length)
+        this._floatHeap[index] = value;
     }
     getNumeric(key) {
       const index = this._indexMap.get(key);
-      return index !== void 0 ? this._floatHeap[index] : void 0;
+      return index !== void 0 && index < this._floatHeap.length ? this._floatHeap[index] : void 0;
     }
     setInt(key, value) {
       const index = this.allocateInt(key);
-      this._intHeap[index] = value;
+      if (index < this._intHeap.length)
+        this._intHeap[index] = value;
     }
     getInt(key) {
       const index = this._indexMap.get(key);
-      return index !== void 0 ? this._intHeap[index] : void 0;
+      return index !== void 0 && index < this._intHeap.length ? this._intHeap[index] : void 0;
     }
     setBoolean(key, value) {
       const index = this.allocateBoolean(key);
-      this._boolHeap[index] = value ? 1 : 0;
+      if (index < this._boolHeap.length)
+        this._boolHeap[index] = value ? 1 : 0;
     }
     getBoolean(key) {
       const index = this._indexMap.get(key);
-      return index !== void 0 ? this._boolHeap[index] === 1 : void 0;
+      return index !== void 0 && index < this._boolHeap.length ? this._boolHeap[index] === 1 : void 0;
     }
     setString(key, value) {
       this._allocateSlot(key, "string");
@@ -604,20 +574,49 @@ ${suggestion}`);
       return this._typeMap.get(key);
     }
     delete(key) {
+      const idx = this._indexMap.get(key);
+      if (idx !== void 0) {
+        this._freeSlots.push(idx);
+      }
+      const strVal = this._stringHeap.get(key);
       this._indexMap.delete(key);
       this._typeMap.delete(key);
       this._stringHeap.delete(key);
+      if (strVal !== void 0) {
+        let stillReferenced = false;
+        for (const existing of this._stringHeap.values()) {
+          if (existing === strVal) {
+            stillReferenced = true;
+            break;
+          }
+        }
+        if (!stillReferenced) {
+          this._stringPool.delete(strVal);
+        }
+      }
       this._objectHeap.delete(key);
       this._arrayHeap.delete(key);
     }
     attachSharedBuffer(sab) {
       if (this._shared)
         return;
+      const slotCount = Math.floor(sab.byteLength / 16);
+      if (slotCount <= 0)
+        return;
+      const prevFloat = this._floatHeap;
+      const prevInt = this._intHeap;
+      const prevBool = this._boolHeap;
+      const newFloat = new Float64Array(sab, 0, slotCount);
+      const newInt = new Int32Array(sab, slotCount * 8, slotCount);
+      const newBool = new Uint8Array(sab, slotCount * 12, slotCount);
+      newFloat.set(prevFloat.subarray(0, Math.min(prevFloat.length, slotCount)));
+      newInt.set(prevInt.subarray(0, Math.min(prevInt.length, slotCount)));
+      newBool.set(prevBool.subarray(0, Math.min(prevBool.length, slotCount)));
       this._shared = true;
-      this._floatHeap = new Float64Array(sab);
-      this._intHeap = new Int32Array(sab, this._floatHeap.length * 8);
-      this._boolHeap = new Uint8Array(sab, this._floatHeap.length * 8 + this._intHeap.length * 4);
-      console.log("[SignalHeap] Attached SharedArrayBuffer");
+      this._floatHeap = newFloat;
+      this._intHeap = newInt;
+      this._boolHeap = newBool;
+      /* @__PURE__ */ console.log("[SignalHeap] Attached SharedArrayBuffer");
     }
   };
   var heap = new SignalHeap();
@@ -685,7 +684,7 @@ ${suggestion}`);
     }
   };
   var ownership = new OwnershipTracker();
-  var ITERATE_KEY = Symbol("iterate");
+  var ITERATE_KEY = Symbol.for("iterate");
   var targetMap = /* @__PURE__ */ new WeakMap();
   var activeEffect = null;
   function track(target, key) {
@@ -1045,23 +1044,23 @@ ${suggestion}`);
   }
   function onEffectCleanup(fn) {
     if (activeEffect) {
-      let cleanupFns4 = activeEffect.cleanupFns;
-      if (!cleanupFns4) {
-        cleanupFns4 = [];
-        activeEffect.cleanupFns = cleanupFns4;
+      let cleanupFns5 = activeEffect.cleanupFns;
+      if (!cleanupFns5) {
+        cleanupFns5 = [];
+        activeEffect.cleanupFns = cleanupFns5;
         const originalRun = activeEffect.run;
         activeEffect.run = function() {
-          for (const cleanup of cleanupFns4) {
+          for (const cleanup of cleanupFns5) {
             try {
               cleanup();
             } catch {
             }
           }
-          cleanupFns4.length = 0;
+          cleanupFns5.length = 0;
           return originalRun.apply(this, arguments);
         };
       }
-      cleanupFns4.push(fn);
+      cleanupFns5.push(fn);
     }
   }
   var effectIdCounter = 0;
@@ -1080,14 +1079,14 @@ ${suggestion}`);
           if (pendingPromises.has(err))
             return;
           if (window._nexusDebug)
-            console.debug(`[Nexus Suspense] <${el.tagName}> suspended pending network resolution.`);
+            /* @__PURE__ */ console.debug(`[Nexus Suspense] <${el.tagName}> suspended pending network resolution.`);
           pendingCount++;
           pendingPromises.add(err);
           err.finally(() => {
             pendingCount--;
             pendingPromises.delete(err);
             if (window._nexusDebug)
-              console.debug(`[Nexus Suspense] <${el.tagName}> resumed.`);
+              /* @__PURE__ */ console.debug(`[Nexus Suspense] <${el.tagName}> resumed.`);
             if (runner) {
               let reEntryCount = 0;
               const MAX_REENTRY = 10;
@@ -1118,8 +1117,8 @@ ${suggestion}`);
             const enhanced = el;
             enhanced[EFFECT_RUNNERS_KEY]?.delete(runner);
           } else {
-            if (globalThis.Nexus?.coordinator?.runtimeContext?.isDevMode) {
-              console.debug(`[Nexus Transient] <${el.tagName}> effect attempt ${consecutiveFailures}/3:`, msg);
+            if (globalThis.UX?.runtime?.isDevMode || globalThis.Nexus?.coordinator?.runtimeContext?.isDevMode) {
+              /* @__PURE__ */ console.debug(`[UX Transient] <${el.tagName}> effect attempt ${consecutiveFailures}/3:`, msg);
             }
           }
         }
@@ -1191,16 +1190,14 @@ ${suggestion}`);
           heap.allocateNumeric(fullKey);
         else if (type === "boolean")
           heap.allocateBoolean(fullKey);
-        else if (type === "string")
-          heap.setString(fullKey, "");
       });
     } else {
       Object.entries(initialValue).forEach(([k, v]) => {
         const fullKey = `${heapKey}.${k}`;
         if (typeof v === "number")
-          heap.allocateNumeric(fullKey);
+          heap.set(fullKey, v);
         else if (typeof v === "boolean")
-          heap.allocateBoolean(fullKey);
+          heap.set(fullKey, v);
       });
     }
     let state = reactive(initialValue);
@@ -1216,8 +1213,9 @@ ${suggestion}`);
         ownership.validateBorrow(state, "mutable");
         if (newValue && typeof newValue === "object") {
           Object.entries(newValue).forEach(([k, v]) => {
-            const fullKey = `${heapKey}.${k}`;
-            heap.set(fullKey, v);
+            if (typeof v === "number" || typeof v === "boolean") {
+              heap.set(`${heapKey}.${k}`, v);
+            }
             state[k] = v;
           });
         } else {
@@ -1231,7 +1229,9 @@ ${suggestion}`);
     const heapKey = key || `computed_${Math.random().toString(36).slice(2)}`;
     return computed(() => {
       const value = getter();
-      heap.set(heapKey, value);
+      if (typeof value === "number" || typeof value === "boolean") {
+        heap.set(heapKey, value);
+      }
       return value;
     });
   }
@@ -1344,13 +1344,13 @@ ${suggestion}`);
       if (cachedEntry) {
         this.inMemoryCache.set(cacheKey, cachedEntry);
         if (typeof document !== "undefined" && document.documentElement.hasAttribute("data-debug")) {
-          console.log(`[Cache Engine] INSTANT HIT (0ms): ${url}`);
+          /* @__PURE__ */ console.log(`[Cache Engine] INSTANT HIT (0ms): ${url}`);
         }
         this.revalidateInBackground(url, cacheKey, cachedEntry, options);
         return cachedEntry.content;
       }
       if (typeof document !== "undefined" && document.documentElement.hasAttribute("data-debug")) {
-        console.log(`[Cache Engine] MISS: Fetching ${url}`);
+        /* @__PURE__ */ console.log(`[Cache Engine] MISS: Fetching ${url}`);
       }
       const freshEntry = await this.performNetworkFetch(url, options, void 0);
       await this.saveCacheEntry(cacheKey, freshEntry, storage, responseType);
@@ -1371,7 +1371,7 @@ ${suggestion}`);
           const res = await fetch(url, { headers, cache: isSameOrigin ? "no-cache" : "default" });
           if (res.status === 304) {
             if (typeof document !== "undefined" && document.documentElement.hasAttribute("data-debug")) {
-              console.log(`[Cache Engine] VERIFIED 304 (Not Modified): ${url}`);
+              /* @__PURE__ */ console.log(`[Cache Engine] VERIFIED 304 (Not Modified): ${url}`);
             }
             return;
           }
@@ -1397,7 +1397,7 @@ ${suggestion}`);
             await this.saveCacheEntry(cacheKey, newEntry, options.storage || "session", options.responseType || "text");
             this.inMemoryCache.set(cacheKey, newEntry);
             if (typeof document !== "undefined" && document.documentElement.hasAttribute("data-debug")) {
-              console.log(`[Cache Engine] UPDATE DETECTED (200 OK): ${url}`);
+              /* @__PURE__ */ console.log(`[Cache Engine] UPDATE DETECTED (200 OK): ${url}`);
             }
             if (options.onUpdate) {
               options.onUpdate(content);
@@ -1479,10 +1479,10 @@ ${suggestion}`);
         if (!result) {
           const msg = `Assertion failed: "${value}" evaluated to falsy value based on ${result}`;
           console.error(msg, el);
-          initError2("assert", msg, el, value);
+          initError("assert", msg, el, value);
         }
       } catch (e) {
-        initError2("assert", `Assertion error: ${errMsg(e)}`, el, value);
+        initError("assert", `Assertion error: ${errMsg(e)}`, el, value);
       }
     }
   };
@@ -1511,51 +1511,46 @@ ${suggestion}`);
     }
   }
   function applyBindingResult(result, el) {
-    if (result !== void 0 && result !== null) {
-      if (typeof result === "object" && !Array.isArray(result)) {
-        Object.entries(result).forEach(([param, val]) => {
-          if (param in el) {
-            if (el[param] !== val)
-              el[param] = val;
-          } else {
-            if (val === false || val === null || val === void 0) {
-              if (el.hasAttribute(param))
-                el.removeAttribute(param);
-            } else {
-              const strVal = String(val);
-              if (el.getAttribute(param) !== strVal)
-                el.setAttribute(param, strVal);
-            }
-          }
-        });
-      } else {
-        if (el instanceof HTMLInputElement) {
-          if (el.type === "checkbox") {
-            el.checked = Boolean(result);
-          } else if (el.type === "radio") {
-            el.checked = el.value === String(result);
-          } else {
-            const strVal = result !== void 0 && result !== null ? String(result) : "";
-            setValuePreservingCursor(el, strVal);
-          }
-        } else if (el instanceof HTMLSelectElement) {
-          const targetValue = result !== void 0 && result !== null ? String(result) : "";
-          const options = Array.from(el.options);
-          const found = options.some((opt) => opt.value === targetValue);
-          if (found || targetValue === "") {
-            if (el.value !== targetValue) {
-              el.value = targetValue;
-            }
-          }
-        } else if (el instanceof HTMLTextAreaElement) {
-          const strVal = result !== void 0 && result !== null ? String(result) : "";
-          setValuePreservingCursor(el, strVal);
+    if (typeof result === "object" && result !== null && !Array.isArray(result)) {
+      Object.entries(result).forEach(([param, val]) => {
+        if (param in el) {
+          if (el[param] !== val)
+            el[param] = val;
         } else {
-          const strVal = result !== void 0 && result !== null ? String(result) : "";
-          if (el.textContent !== strVal) {
-            el.textContent = strVal;
+          if (val === false || val === null || val === void 0) {
+            if (el.hasAttribute(param))
+              el.removeAttribute(param);
+          } else {
+            const strVal2 = String(val);
+            if (el.getAttribute(param) !== strVal2)
+              el.setAttribute(param, strVal2);
           }
         }
+      });
+      return;
+    }
+    const strVal = result !== void 0 && result !== null ? String(result) : "";
+    if (el instanceof HTMLInputElement) {
+      if (el.type === "checkbox") {
+        el.checked = Boolean(result);
+      } else if (el.type === "radio") {
+        el.checked = result !== void 0 && result !== null && el.value === strVal;
+      } else {
+        setValuePreservingCursor(el, strVal);
+      }
+    } else if (el instanceof HTMLSelectElement) {
+      const options = Array.from(el.options);
+      const found = options.some((opt) => opt.value === strVal);
+      if (found || strVal === "") {
+        if (el.value !== strVal) {
+          el.value = strVal;
+        }
+      }
+    } else if (el instanceof HTMLTextAreaElement) {
+      setValuePreservingCursor(el, strVal);
+    } else {
+      if (el.textContent !== strVal) {
+        el.textContent = strVal;
       }
     }
   }
@@ -1568,25 +1563,25 @@ ${suggestion}`);
       const parsed = parsedAttr || runtime.parseAttribute("data-bind", runtime, el);
       const target = parsed?.argument;
       if (!target) {
-        const cleanupFns5 = [];
+        const cleanupFns6 = [];
         try {
           const [runner, cleanup2] = runtime.elementBoundEffect(el, () => {
             const result = runtime.evaluate(el, value);
             applyBindingResult(result, el);
           });
-          cleanupFns5.push(cleanup2);
+          cleanupFns6.push(cleanup2);
           if (value.includes("innerWidth") || value.includes("innerHeight")) {
             const onResize = () => {
               runner();
             };
             globalThis.addEventListener("resize", onResize);
-            cleanupFns5.push(() => globalThis.removeEventListener("resize", onResize));
+            cleanupFns6.push(() => globalThis.removeEventListener("resize", onResize));
           } else if (value.includes("scrollX") || value.includes("scrollY")) {
             const onScroll = () => {
               runner();
             };
             globalThis.addEventListener("scroll", onScroll);
-            cleanupFns5.push(() => globalThis.removeEventListener("scroll", onScroll));
+            cleanupFns6.push(() => globalThis.removeEventListener("scroll", onScroll));
           }
           const isFormInput = el instanceof HTMLInputElement || el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement || el.isContentEditable;
           if (isFormInput) {
@@ -1608,7 +1603,7 @@ ${suggestion}`);
                 newValue = el.value;
               }
               const trimmedVal = value.trim();
-              const isValidLValue = /^[a-zA-Z_$][a-zA-Z0-9_$]*(\.[a-zA-Z_$][a-zA-Z0-9_$]*|\[[^\]]+\])*$/.test(trimmedVal);
+              const isValidLValue = /^#?[a-zA-Z_$][a-zA-Z0-9_$]*(\.[a-zA-Z_$][a-zA-Z0-9_$]*|\[[^\]]+\])*$/.test(trimmedVal);
               if (isValidLValue) {
                 try {
                   const current = runtime.evaluate(el, value);
@@ -1622,14 +1617,14 @@ ${suggestion}`);
               }
             };
             el.addEventListener(eventName, inputHandler);
-            cleanupFns5.push(() => el.removeEventListener(eventName, inputHandler));
+            cleanupFns6.push(() => el.removeEventListener(eventName, inputHandler));
           }
         } catch (e) {
           runtime.reportError(toError(e), el, `Auto-bind failed: ${value}`);
         }
-        return () => cleanupFns5.forEach((fn) => fn());
+        return () => cleanupFns6.forEach((fn) => fn());
       }
-      const cleanupFns4 = [];
+      const cleanupFns5 = [];
       const cleanup = runtime.bind(el, value, (result) => {
         const attrValue = result !== void 0 && result !== null ? String(result) : "";
         if (target === "value" || target === "checked") {
@@ -1678,7 +1673,7 @@ ${suggestion}`);
         }
       });
       if (cleanup)
-        cleanupFns4.push(cleanup);
+        cleanupFns5.push(cleanup);
       if (target === "value" || target === "checked") {
         const isLazy = el.hasAttribute("data-bind_lazy") || parsed?.modifiers?.includes("lazy") === true;
         const eventName = isLazy ? "change" : el instanceof HTMLInputElement && (el.type === "checkbox" || el.type === "radio") || el instanceof HTMLSelectElement ? "change" : "input";
@@ -1697,9 +1692,9 @@ ${suggestion}`);
           runtime.evaluate(el, `${value} = $newValue`, { $newValue: newValue });
         };
         el.addEventListener(eventName, inputHandler);
-        cleanupFns4.push(() => el.removeEventListener(eventName, inputHandler));
+        cleanupFns5.push(() => el.removeEventListener(eventName, inputHandler));
       }
-      return () => cleanupFns4.forEach((fn) => fn());
+      return () => cleanupFns5.forEach((fn) => fn());
     }
   };
   var bind_default = bindModule;
@@ -1814,62 +1809,85 @@ ${suggestion}`);
   var reactiveLocalStorage = typeof localStorage !== "undefined" ? createStorageProxy(localStorage) : void 0;
   var reactiveSessionStorage = typeof sessionStorage !== "undefined" ? createStorageProxy(sessionStorage) : void 0;
   var DEFAULT_IDB_DATABASE = "nexus-store";
+  var cachedIDB = null;
+  var idbOpenLock = Promise.resolve();
+  function openRawIDB(version, ensureStoreName) {
+    return new Promise((resolve, reject) => {
+      const req = version !== void 0 ? indexedDB.open(DEFAULT_IDB_DATABASE, version) : indexedDB.open(DEFAULT_IDB_DATABASE);
+      req.onupgradeneeded = (e) => {
+        const udb = e.target.result;
+        if (ensureStoreName && !udb.objectStoreNames.contains(ensureStoreName)) {
+          udb.createObjectStore(ensureStoreName);
+        }
+      };
+      req.onsuccess = () => {
+        const db = req.result;
+        db.onversionchange = () => {
+          db.close();
+          if (cachedIDB === db)
+            cachedIDB = null;
+        };
+        db.onclose = () => {
+          if (cachedIDB === db)
+            cachedIDB = null;
+        };
+        resolve(db);
+      };
+      req.onerror = () => reject(req.error);
+    });
+  }
   async function openAndEnsureStore(storeName) {
     if (typeof indexedDB === "undefined") {
       throw new Error("IndexedDB is not supported in this environment");
     }
-    const db = await new Promise((resolve, reject) => {
-      const req = indexedDB.open(DEFAULT_IDB_DATABASE);
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
-      req.onupgradeneeded = (e) => {
-        const udb = e.target.result;
-        if (!udb.objectStoreNames.contains(storeName)) {
-          udb.createObjectStore(storeName);
-        }
-      };
-    });
-    if (db.objectStoreNames.contains(storeName)) {
-      return db;
+    if (cachedIDB && cachedIDB.objectStoreNames.contains(storeName)) {
+      return cachedIDB;
     }
-    const nextVersion = db.version + 1;
-    db.close();
-    return new Promise((resolve, reject) => {
-      const req = indexedDB.open(DEFAULT_IDB_DATABASE, nextVersion);
-      req.onupgradeneeded = (e) => {
-        const udb = e.target.result;
-        if (!udb.objectStoreNames.contains(storeName)) {
-          udb.createObjectStore(storeName);
-        }
-      };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
+    let resultDb;
+    const run = async () => {
+      if (cachedIDB && cachedIDB.objectStoreNames.contains(storeName)) {
+        resultDb = cachedIDB;
+        return;
+      }
+      if (!cachedIDB) {
+        cachedIDB = await openRawIDB(void 0, storeName);
+      }
+      if (cachedIDB.objectStoreNames.contains(storeName)) {
+        resultDb = cachedIDB;
+        return;
+      }
+      const nextVersion = cachedIDB.version + 1;
+      cachedIDB.close();
+      cachedIDB = null;
+      cachedIDB = await openRawIDB(nextVersion, storeName);
+      resultDb = cachedIDB;
+    };
+    const next = idbOpenLock.then(run, run);
+    idbOpenLock = next.catch(() => {
     });
+    await next;
+    return resultDb;
   }
   function createStoreOperations(storeName) {
+    const ITERATE_KEY2 = Symbol.for("iterate");
     const baseOps = {
       async all() {
+        track(baseOps, ITERATE_KEY2);
         const db = await openAndEnsureStore(storeName);
         return new Promise((resolve) => {
           try {
             const tx = db.transaction(storeName, "readonly");
             const store = tx.objectStore(storeName);
             const req = store.getAll();
-            req.onsuccess = () => {
-              db.close();
-              resolve(req.result || []);
-            };
-            req.onerror = () => {
-              db.close();
-              resolve([]);
-            };
+            req.onsuccess = () => resolve(req.result || []);
+            req.onerror = () => resolve([]);
           } catch {
-            db.close();
             resolve([]);
           }
         });
       },
       async keys(prefix) {
+        track(baseOps, ITERATE_KEY2);
         const db = await openAndEnsureStore(storeName);
         return new Promise((resolve) => {
           try {
@@ -1877,16 +1895,11 @@ ${suggestion}`);
             const store = tx.objectStore(storeName);
             const req = store.getAllKeys();
             req.onsuccess = () => {
-              db.close();
               const rawKeys = (req.result || []).map(String);
               resolve(prefix ? rawKeys.filter((k) => k.startsWith(prefix)) : rawKeys);
             };
-            req.onerror = () => {
-              db.close();
-              resolve([]);
-            };
+            req.onerror = () => resolve([]);
           } catch {
-            db.close();
             resolve([]);
           }
         });
@@ -1895,22 +1908,16 @@ ${suggestion}`);
         return baseOps.keys(prefix);
       },
       async get(key) {
+        track(baseOps, String(key));
         const db = await openAndEnsureStore(storeName);
         return new Promise((resolve) => {
           try {
             const tx = db.transaction(storeName, "readonly");
             const store = tx.objectStore(storeName);
             const req = store.get(key);
-            req.onsuccess = () => {
-              db.close();
-              resolve(req.result ?? null);
-            };
-            req.onerror = () => {
-              db.close();
-              resolve(null);
-            };
+            req.onsuccess = () => resolve(req.result ?? null);
+            req.onerror = () => resolve(null);
           } catch {
-            db.close();
             resolve(null);
           }
         });
@@ -1934,15 +1941,13 @@ ${suggestion}`);
               }
             }
             tx.oncomplete = () => {
-              db.close();
+              if (key !== void 0)
+                trigger(baseOps, String(key));
+              trigger(baseOps, ITERATE_KEY2);
               resolve();
             };
-            tx.onerror = () => {
-              db.close();
-              reject(tx.error);
-            };
+            tx.onerror = () => reject(tx.error);
           } catch (e) {
-            db.close();
             reject(e);
           }
         });
@@ -1955,15 +1960,12 @@ ${suggestion}`);
             const store = tx.objectStore(storeName);
             store.delete(key);
             tx.oncomplete = () => {
-              db.close();
+              trigger(baseOps, String(key));
+              trigger(baseOps, ITERATE_KEY2);
               resolve();
             };
-            tx.onerror = () => {
-              db.close();
-              reject(tx.error);
-            };
+            tx.onerror = () => reject(tx.error);
           } catch (e) {
-            db.close();
             reject(e);
           }
         });
@@ -1976,15 +1978,11 @@ ${suggestion}`);
             const store = tx.objectStore(storeName);
             store.clear();
             tx.oncomplete = () => {
-              db.close();
+              trigger(baseOps, ITERATE_KEY2);
               resolve();
             };
-            tx.onerror = () => {
-              db.close();
-              reject(tx.error);
-            };
+            tx.onerror = () => reject(tx.error);
           } catch (e) {
-            db.close();
             reject(e);
           }
         });
@@ -1993,7 +1991,8 @@ ${suggestion}`);
     return new Proxy(baseOps, {
       set(target, prop, value) {
         if (typeof prop === "string" && !(prop in target)) {
-          target.put(value, prop);
+          target.put(value, prop).catch(() => {
+          });
           return true;
         }
         target[prop] = value;
@@ -2660,19 +2659,8 @@ ${scripts}
       this._cleanupFunctions.push(fn);
     }
   };
-  function teardownComponentSubtree(root) {
-    const disposeNode = (node) => {
-      if (node instanceof Element) {
-        const enhanced = node;
-        if (enhanced[CLEANUP_FUNCTIONS_KEY]) {
-          enhanced[CLEANUP_FUNCTIONS_KEY].forEach((cleanup) => cleanup());
-          enhanced[CLEANUP_FUNCTIONS_KEY].clear();
-        }
-        delete enhanced[MARKER_KEY];
-        Array.from(node.children).forEach(disposeNode);
-      }
-    };
-    Array.from(root.childNodes).forEach(disposeNode);
+  function clearComponentRoot(root) {
+    Array.from(root.childNodes).forEach((child) => teardownSubtree(child, true));
     if (root instanceof Element) {
       root.replaceChildren();
     } else {
@@ -2875,9 +2863,9 @@ ${scripts}
             }
           }
         }
-        addScopeToNode(el, ctx);
+        const scopeCleanup = addScopeToNode(el, ctx);
         let __lastPath;
-        runtime.effect(() => {
+        const [, effectCleanup] = runtime.elementBoundEffect(el, () => {
           let config;
           const evaluated = runtime.evaluate(el, value);
           if (typeof evaluated === "object" && evaluated !== null) {
@@ -2917,7 +2905,7 @@ ${scripts}
               if (targetPath.startsWith("<")) {
                 html = targetPath;
               } else {
-                console.log("[Component load]:", targetPath, "tag:", el.tagName);
+                /* @__PURE__ */ console.log("[Component load]:", targetPath, "tag:", el.tagName);
               }
               if (targetPath.startsWith("<")) {
               } else if (targetPath.startsWith("#")) {
@@ -2957,7 +2945,7 @@ ${scripts}
                 throw new Error(`Invalid component fragment returned for "${targetPath}": received full HTML shell.`);
               }
               if (runtime.isDevMode) {
-                console.log(`[Component] Template loaded for <${el.tagName}>, length: ${html.length}`);
+                /* @__PURE__ */ console.log(`[Component] Template loaded for <${el.tagName}>, length: ${html.length}`);
               }
               componentState.templateContent = html;
               const extracted = extractResourceMetadata(rawText, config.path, runtime);
@@ -2969,7 +2957,7 @@ ${scripts}
               if (isPathChange) {
                 const targetRoot = config.shadowrootmode ? el.shadowRoot : el;
                 if (targetRoot)
-                  teardownComponentSubtree(targetRoot);
+                  clearComponentRoot(targetRoot);
               }
               if (config.shadowrootmode) {
                 if (!el.shadowRoot)
@@ -3019,7 +3007,7 @@ ${scripts}
             } catch (e) {
               componentState.hasError = true;
               componentState.errorMessage = errMsg(e);
-              initError2("component", componentState.errorMessage, el, value);
+              initError("component", componentState.errorMessage, el, value);
               if (config.fallback) {
                 const fb = runtime.evaluate(el, config.fallback);
                 runtime.morphDOM(el, String(fb));
@@ -3042,13 +3030,18 @@ ${scripts}
           load();
         });
         return () => {
+          effectCleanup?.();
+          scopeCleanup?.();
+          if (el.shadowRoot)
+            clearComponentRoot(el.shadowRoot);
+          teardownSubtree(el, false);
           delete el.__component_init;
           if (el instanceof BaseComponent) {
             el.disconnectedCallback();
           }
         };
       } catch (e) {
-        initError2(
+        initError(
           "component",
           `Failed to init component: ${errMsg(e)}`,
           el,
@@ -3064,23 +3057,31 @@ ${scripts}
   __export(computed_exports, {
     default: () => computed_default
   });
+  var attrComputedStateMap = /* @__PURE__ */ new WeakMap();
   var computedModule = {
     name: "computed",
     attribute: "computed",
     metadata: { after: ["signal"] },
-    handle: (el, value, runtime) => {
+    handle: (el, value, runtime, parsedAttr) => {
       const computedCleanup = [];
-      const isGlobal = el.hasAttribute("data-computed_global");
-      const { ghostKeys } = parseGhostKeys(value);
-      const initialGhostState = {};
-      ghostKeys.forEach((key) => initialGhostState[key] = void 0);
-      const stateRef = unifiedRef(initialGhostState);
-      const scopeId = el.id || `computed_${Math.random().toString(36).slice(2)}`;
-      if (el.hasAttribute("data-computed")) {
+      const isGlobal = el.hasAttribute("data-computed_global") || !!parsedAttr?.modifiers?.includes("global");
+      const propArg = parsedAttr?.argument;
+      if (!propArg && el.hasAttribute("data-computed")) {
+        const { ghostKeys } = parseGhostKeys(value);
+        const initialGhostState = {};
+        ghostKeys.forEach((key) => initialGhostState[key] = void 0);
+        const stateRef = unifiedRef(initialGhostState);
         const scopeProxy = createScopeProxy(stateRef);
         const addCleanup = addScopeToNode(el, scopeProxy);
         computedCleanup.push(addCleanup);
+        let activeWatchers = [];
+        computedCleanup.push(() => {
+          activeWatchers.forEach((stop2) => stop2());
+          activeWatchers = [];
+        });
         const effectCleanup = runtime.bind(el, value || "{}", (computedDefs) => {
+          activeWatchers.forEach((stop2) => stop2());
+          activeWatchers = [];
           if (typeof computedDefs === "object" && computedDefs !== null) {
             Object.entries(computedDefs).forEach(([propName, getter]) => {
               if (typeof getter !== "function")
@@ -3097,67 +3098,62 @@ ${scripts}
               const stop2 = runtime.watch(computedVal, (val) => {
                 stateRef.value[propName] = val;
               }, { immediate: true });
-              computedCleanup.push(stop2);
+              activeWatchers.push(stop2);
             });
           }
         });
         if (effectCleanup)
           computedCleanup.push(effectCleanup);
       }
-      const attrs = Array.from(el.attributes).filter((a) => a.name.startsWith("data-computed-"));
-      if (attrs.length > 0) {
-        const attrStateRef = unifiedRef({}, `computed_${scopeId}`);
-        const scopeProxy = new Proxy({}, {
-          has(_, key) {
-            return Reflect.has(attrStateRef.value, key);
-          },
-          get(_, key) {
-            return Reflect.get(attrStateRef.value, key);
-          },
-          set(_, key, value2) {
-            return Reflect.set(attrStateRef.value, key, value2);
-          },
-          ownKeys() {
-            return Reflect.ownKeys(attrStateRef.value);
-          },
-          getOwnPropertyDescriptor(_, key) {
-            return Reflect.getOwnPropertyDescriptor(attrStateRef.value, key);
-          }
-        });
-        let addCleanup;
-        if (!isGlobal) {
-          addCleanup = addScopeToNode(el, scopeProxy);
-          computedCleanup.push(addCleanup);
-        }
-        attrs.forEach((attr) => {
-          const propName = attr.name.substring("data-computed-".length);
-          if (!propName)
-            return;
-          const [_, effectCleanup] = runtime.elementBoundEffect(el, () => {
-            const expression = attr.value;
-            const computedVal = runtime.computed(() => {
-              try {
-                return runtime.evaluate(el, expression);
-              } catch (e) {
-                if (runtime.isDevMode)
-                  runtime.warn(`[Computed Error] Failed to evaluate expression for "${propName}":`, e);
-                return null;
-              }
-            });
-            if (isGlobal || !addCleanup) {
-              const stop2 = runtime.watch(computedVal, (val) => {
-                runtime.setGlobalSignal(propName, val);
-              }, { immediate: true });
-              computedCleanup.push(stop2);
-            } else {
-              const stop2 = runtime.watch(computedVal, (val) => {
-                attrStateRef.value[propName] = val;
-              }, { immediate: true });
-              computedCleanup.push(stop2);
+      if (propArg) {
+        let stateObj = attrComputedStateMap.get(el);
+        if (!isGlobal && !stateObj) {
+          const scopeId = el.id || `computed_${Math.random().toString(36).slice(2)}`;
+          const attrStateRef = unifiedRef({}, `computed_${scopeId}`);
+          const scopeProxy = new Proxy({}, {
+            has(_, key) {
+              return Reflect.has(attrStateRef.value, key);
+            },
+            get(_, key) {
+              return Reflect.get(attrStateRef.value, key);
+            },
+            set(_, key, val) {
+              return Reflect.set(attrStateRef.value, key, val);
+            },
+            ownKeys() {
+              return Reflect.ownKeys(attrStateRef.value);
+            },
+            getOwnPropertyDescriptor(_, key) {
+              return Reflect.getOwnPropertyDescriptor(attrStateRef.value, key);
             }
           });
-          computedCleanup.push(effectCleanup);
+          stateObj = attrStateRef.value;
+          attrComputedStateMap.set(el, stateObj);
+          const addCleanup = addScopeToNode(el, scopeProxy);
+          computedCleanup.push(addCleanup);
+        }
+        const expression = value;
+        const computedVal = runtime.computed(() => {
+          try {
+            return runtime.evaluate(el, expression);
+          } catch (e) {
+            if (runtime.isDevMode)
+              runtime.warn(`[Computed Error] Failed to evaluate expression for "${propArg}":`, e);
+            return null;
+          }
         });
+        if (isGlobal || !stateObj) {
+          const stop2 = runtime.watch(computedVal, (val) => {
+            runtime.setGlobalSignal(propArg, val);
+          }, { immediate: true });
+          computedCleanup.push(stop2);
+        } else {
+          const targetState = stateObj;
+          const stop2 = runtime.watch(computedVal, (val) => {
+            targetState[propArg] = val;
+          }, { immediate: true });
+          computedCleanup.push(stop2);
+        }
       }
       return () => {
         computedCleanup.forEach((c) => c());
@@ -3177,14 +3173,14 @@ ${scripts}
     handle: (el, value, runtime) => {
       const stack = getDataStack(el);
       console.group(`[Nexus Debug] Element:`, el);
-      console.log("Value:", value);
-      console.log("Data Stack:", stack);
-      console.log("Global Signals:", runtime.globalSignals());
+      /* @__PURE__ */ console.log("Value:", value);
+      /* @__PURE__ */ console.log("Data Stack:", stack);
+      /* @__PURE__ */ console.log("Global Signals:", runtime.globalSignals());
       console.groupEnd();
       if (value) {
         try {
           const result = runtime.evaluate(el, value);
-          console.log(`[Nexus Debug] Expression "${value}" result:`, result);
+          /* @__PURE__ */ console.log(`[Nexus Debug] Expression "${value}" result:`, result);
         } catch (e) {
           console.error(`[Nexus Debug] Evaluation failed:`, e);
         }
@@ -4737,11 +4733,9 @@ ${scripts}
   };
   var FLOW_CSS = `[data-flow]{position:relative;overflow:hidden;user-select:none;cursor:grab}[data-flow]:active{cursor:grabbing}[data-flow-viewport],[data-flow]>.flow-viewport,[data-flow]>[data-flow="viewport"]{position:absolute;inset:0;width:100%;height:100%;transform-origin:0 0}[data-flow-edges],.flow-edges{position:absolute;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none;z-index:10}[data-flow-node]{position:absolute;top:0;left:0;cursor:grab;user-select:none}[data-flow-node]:active{cursor:grabbing}[data-flow-node].selected>*:first-child{box-shadow:0 0 0 2px var(--color-primary,#3b82f6),0 20px 25px -5px rgba(0,0,0,0.25)}[data-flow-handle]{position:absolute;width:0.75rem;height:0.75rem;border-radius:9999px;background-color:var(--color-primary,currentColor);border:2px solid var(--color-base-100,#ffffff);cursor:crosshair;z-index:20;box-sizing:border-box;transition:transform 0.15s ease}[data-flow-handle]:hover{transform:scale(1.25)}[data-flow-handle-side="left"],[data-flow-side="left"],[data-flow-handle="target"]:not([data-flow-side]):not([data-flow-handle-side]){left:0;top:50%;transform:translate(-50%,-50%)}[data-flow-handle-side="left"]:hover,[data-flow-side="left"]:hover,[data-flow-handle="target"]:not([data-flow-side]):not([data-flow-handle-side]):hover{transform:translate(-50%,-50%) scale(1.25)}[data-flow-handle-side="right"],[data-flow-side="right"],[data-flow-handle="source"]:not([data-flow-side]):not([data-flow-handle-side]){right:0;top:50%;transform:translate(50%,-50%)}[data-flow-handle-side="right"]:hover,[data-flow-side="right"]:hover,[data-flow-handle="source"]:not([data-flow-side]):not([data-flow-handle-side]):hover{transform:translate(50%,-50%) scale(1.25)}[data-flow-handle-side="top"],[data-flow-side="top"]{top:0;left:50%;transform:translate(-50%,-50%)}[data-flow-handle-side="top"]:hover,[data-flow-side="top"]:hover{transform:translate(-50%,-50%) scale(1.25)}[data-flow-handle-side="bottom"],[data-flow-side="bottom"]{bottom:0;left:50%;transform:translate(-50%,50%)}[data-flow-handle-side="bottom"]:hover,[data-flow-side="bottom"]:hover{transform:translate(-50%,50%) scale(1.25)}.flow-edge-interaction{fill:none;stroke:transparent;stroke-width:20px;cursor:pointer;pointer-events:stroke}.flow-edge{fill:none;stroke:currentColor;stroke-width:2px;opacity:0.75;cursor:pointer;pointer-events:stroke;transition:opacity 0.15s ease,stroke-width 0.15s ease,stroke 0.15s ease}.flow-edge:hover,.flow-edge-interaction:hover + .flow-edge{opacity:1;stroke-width:3.5px;stroke:var(--color-primary,#3b82f6)}.flow-edge.selected{opacity:1;stroke:var(--color-accent,#00cdb7) !important;stroke-width:4px !important;filter:drop-shadow(0 0 6px var(--color-accent,#00cdb7))}.flow-edge-label-group.selected .flow-edge-label-bg{stroke:var(--color-accent,#00cdb7) !important;stroke-width:2px !important;fill:var(--color-base-200,#334155)}.flow-node-toolbar{position:absolute;z-index:40;pointer-events:auto;transition:opacity 0.15s ease,transform 0.15s ease}.flow-node-toolbar-top{bottom:100%;left:50%;transform:translate(-50%,-8px)}.flow-node-toolbar-bottom{top:100%;left:50%;transform:translate(-50%,8px)}.flow-edge-reconnect-handle{width:12px;height:12px;border-radius:9999px;background-color:var(--color-accent,#00cdb7);border:2px solid var(--color-base-100,#1e293b);cursor:grab;position:absolute;transform:translate(-50%,-50%);z-index:60;box-shadow:0 0 8px var(--color-accent,#00cdb7);pointer-events:auto}.flow-edge-reconnect-handle:active{cursor:grabbing}.flow-edge-animated{stroke-dasharray:6 4;animation:flow-edge-dash 0.8s linear infinite}@keyframes flow-edge-dash{from{stroke-dashoffset:20}to{stroke-dashoffset:0}}.flow-edge-preview{pointer-events:none;stroke-dasharray:4 4}.flow-selection-rect{position:absolute;border:1.5px dashed var(--color-primary,#3b82f6);background-color:color-mix(in srgb,var(--color-primary,#3b82f6) 12%,transparent);pointer-events:none;z-index:50;border-radius:4px}[data-flow-node].selected>*{outline:2px solid var(--color-primary,#3b82f6);outline-offset:2px}.flow-resizer{position:absolute;inset:-2px;pointer-events:none;opacity:0;transition:opacity 0.15s ease}[data-flow-node]:hover .flow-resizer,[data-flow-node].selected .flow-resizer{opacity:1}.flow-resize-handle{position:absolute;width:8px;height:8px;background-color:var(--color-base-100,#ffffff);border:1.5px solid var(--color-primary,#3b82f6);border-radius:2px;z-index:30;box-sizing:border-box;pointer-events:all}.flow-resize-handle.top-left{top:-4px;left:-4px;cursor:nwse-resize}.flow-resize-handle.top-right{top:-4px;right:-4px;cursor:nesw-resize}.flow-resize-handle.bottom-left{bottom:-4px;left:-4px;cursor:nesw-resize}.flow-resize-handle.bottom-right{bottom:-4px;right:-4px;cursor:nwse-resize}.flow-resize-handle.top{top:-4px;left:50%;transform:translateX(-50%);cursor:ns-resize}.flow-resize-handle.bottom{bottom:-4px;left:50%;transform:translateX(-50%);cursor:ns-resize}.flow-resize-handle.left{left:-4px;top:50%;transform:translateY(-50%);cursor:ew-resize}.flow-resize-handle.right{right:-4px;top:50%;transform:translateY(-50%);cursor:ew-resize}.flow-minimap{position:absolute;bottom:1rem;right:1rem;width:160px;height:100px;background-color:color-mix(in srgb,var(--color-base-100,#ffffff) 85%,transparent);backdrop-filter:blur(8px);border:1px solid color-mix(in srgb,var(--color-base-content,#000) 15%,transparent);border-radius:0.75rem;overflow:hidden;box-shadow:0 4px 6px -1px rgba(0,0,0,0.1);z-index:35}.flow-minimap-svg{width:100%;height:100%}.flow-minimap-node{fill:var(--color-primary,#3b82f6);opacity:0.7}.flow-minimap-lens{fill:color-mix(in srgb,var(--color-primary,#3b82f6) 15%,transparent);stroke:var(--color-primary,#3b82f6);stroke-width:1.5px;cursor:grab}.flow-minimap-lens:active{cursor:grabbing}.flow-edge-label-group{pointer-events:all;cursor:pointer}.flow-edge-label-bg{fill:var(--color-base-100,#1e293b);stroke:color-mix(in srgb,currentColor 15%,transparent);stroke-width:1px;rx:4px}.flow-edge-label-text{fill:currentColor;font-size:10px;font-weight:600;text-anchor:middle;dominant-baseline:central}`;
   var flowSheetRef = { sheet: null };
+  var activeFlowElement = null;
   function ensureFlowStyles(root) {
     ensureAdoptedStylesheet(FLOW_CSS, flowSheetRef, root);
-  }
-  if (typeof document !== "undefined") {
-    ensureFlowStyles();
   }
   var flowViewportAttribute = {
     name: "flowViewport",
@@ -4938,8 +4932,18 @@ ${scripts}
         state.y = py - fy * nextZoom;
         state.zoom = nextZoom;
       };
+      const onActivate = () => {
+        activeFlowElement = element;
+      };
+      element.addEventListener("pointerdown", onActivate, { passive: true });
+      element.addEventListener("focusin", onActivate, { passive: true });
       const onKeyDown = (e) => {
         const active = document.activeElement;
+        if (!element.isConnected)
+          return;
+        const isTargeted = active && element.contains(active) || element.matches(":hover") || activeFlowElement === element;
+        if (!isTargeted)
+          return;
         if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.isContentEditable)) {
           return;
         }
@@ -5035,7 +5039,11 @@ ${scripts}
         stop2();
         stopCanvasDrag();
         element.removeEventListener("wheel", onWheel);
+        element.removeEventListener("pointerdown", onActivate);
+        element.removeEventListener("focusin", onActivate);
         window.removeEventListener("keydown", onKeyDown);
+        if (activeFlowElement === element)
+          activeFlowElement = null;
         delete element.__flowViewport;
       };
     }
@@ -5492,10 +5500,17 @@ ${scripts}
               labelG.setAttribute("class", "flow-edge-label-group");
               labelG.setAttribute("data-edge-label-key", key);
               labelG.setAttribute("data-flow-nodrag", "");
-              labelG.innerHTML = `
-              <rect class="flow-edge-label-bg" x="-32" y="-10" width="64" height="20" />
-              <text class="flow-edge-label-text">${edge.label}</text>
-            `;
+              const labelBg = document.createElementNS(SVG_NS, "rect");
+              labelBg.setAttribute("class", "flow-edge-label-bg");
+              labelBg.setAttribute("x", "-32");
+              labelBg.setAttribute("y", "-10");
+              labelBg.setAttribute("width", "64");
+              labelBg.setAttribute("height", "20");
+              const labelText = document.createElementNS(SVG_NS, "text");
+              labelText.setAttribute("class", "flow-edge-label-text");
+              labelText.textContent = String(edge.label);
+              labelG.appendChild(labelBg);
+              labelG.appendChild(labelText);
               element.appendChild(labelG);
             } else {
               const textEl = labelG.querySelector("text");
@@ -5978,7 +5993,7 @@ ${scripts}
       let itemsExpr = "";
       const inIdx = value.indexOf(" in ");
       if (inIdx === -1) {
-        initError2("for", `Invalid syntax: ${value}. Expected "item in items"`, el, value);
+        initError("for", `Invalid syntax: ${value}. Expected "item in items"`, el, value);
         return;
       }
       const lhs = value.substring(0, inIdx).trim();
@@ -6001,19 +6016,10 @@ ${scripts}
         el.style.display = "none";
         el[IS_TEMPLATE_KEY] = true;
       }
+      const keyExpr = el.getAttribute("data-key") || el.getAttribute(":key");
       const disposeNodes = (nodes) => {
         nodes.forEach((n) => {
-          if (n instanceof HTMLElement || n instanceof SVGElement) {
-            const enhanced = n;
-            const elRemovals = enhanced[CLEANUP_FUNCTIONS_KEY];
-            if (elRemovals) {
-              elRemovals.forEach((cleanup2) => cleanup2());
-              delete enhanced[CLEANUP_FUNCTIONS_KEY];
-            }
-            delete enhanced[LOCAL_SCOPES_KEY];
-            delete enhanced[DATA_STACK_KEY];
-            disposeNodes(Array.from(n.childNodes));
-          }
+          teardownSubtree(n, true);
           n.parentNode?.removeChild(n);
         });
       };
@@ -6026,7 +6032,22 @@ ${scripts}
         const nextNodes = [];
         const newlyCreatedNodes = [];
         items.forEach((item, index) => {
-          let key = item?.id ?? (typeof item === "object" && item !== null ? index : item);
+          let key;
+          if (keyExpr) {
+            try {
+              const extras = { [itemKey]: item };
+              if (indexKey)
+                extras[indexKey] = index;
+              const evaluatedKey = runtime.evaluate(el, keyExpr, extras);
+              if (evaluatedKey !== void 0 && evaluatedKey !== null) {
+                key = evaluatedKey;
+              }
+            } catch {
+            }
+          }
+          if (key === void 0 || key === null) {
+            key = item?.id ?? (typeof item === "object" && item !== null ? index : item);
+          }
           if (currentKeys.has(key)) {
             key = `${String(key)}__${index}`;
           }
@@ -6048,6 +6069,8 @@ ${scripts}
             nodes = isTemplate ? Array.from(clone.childNodes).filter(isFlowNode) : [clone];
             nodes.forEach((n) => {
               if (isFlowNode(n)) {
+                n._ux_key = key;
+                n._nexus_key = key;
                 const scope = { [itemKey]: item };
                 if (indexKey)
                   scope[indexKey] = index;
@@ -6149,6 +6172,7 @@ ${scripts}
         if (content !== lastContent) {
           lastContent = content;
           const html = content === void 0 || content === null ? "" : String(content);
+          teardownSubtree(el, false);
           el.innerHTML = html;
           Array.from(el.children).forEach((child) => {
             if (child instanceof HTMLElement || child instanceof SVGElement) {
@@ -6167,25 +6191,6 @@ ${scripts}
     default: () => if_default
   });
   init_consts();
-  function teardownTree(node) {
-    if (!(node instanceof HTMLElement))
-      return;
-    const children = Array.from(node.childNodes);
-    for (const child of children)
-      teardownTree(child);
-    const enhanced = node;
-    const removals = enhanced[CLEANUP_FUNCTIONS_KEY];
-    if (removals) {
-      removals.forEach((c) => {
-        try {
-          c();
-        } catch {
-        }
-      });
-      delete enhanced[CLEANUP_FUNCTIONS_KEY];
-    }
-    delete enhanced[MARKER_KEY];
-  }
   var ifModule = {
     name: "if",
     attribute: "if",
@@ -6205,23 +6210,25 @@ ${scripts}
       let isMounted = false;
       const disposeNodes = (nodes) => {
         nodes.forEach((n) => {
-          teardownTree(n);
+          teardownSubtree(n, true);
           n.parentNode?.removeChild(n);
         });
       };
       const mount = () => {
         const clone = blueprint.cloneNode(true);
-        if (clone instanceof HTMLElement) {
+        if (clone instanceof Element) {
           clone.removeAttribute("data-if");
           delete clone[IS_TEMPLATE_KEY];
-          clone.style.removeProperty("display");
+          if (clone instanceof HTMLElement || clone instanceof SVGElement) {
+            clone.style.removeProperty("display");
+          }
           currentNodes = [clone];
         } else {
           currentNodes = Array.from(clone.childNodes);
         }
         currentNodes.forEach((n) => {
           anchor.parentNode?.insertBefore(n, anchor);
-          if (n instanceof HTMLElement)
+          if (n instanceof Element)
             runtime.processElement(n);
         });
       };
@@ -6317,9 +6324,9 @@ ${scripts}
         el.setAttribute(key, String(value));
     });
   }
-  async function importLink(id, payload, cleanupFns4, runtime, el) {
+  async function importLink(id, payload, cleanupFns5, runtime, el) {
     const items = Array.isArray(payload) ? payload : [payload];
-    const tasks2 = items.map(async (item) => {
+    const tasks = items.map(async (item) => {
       let attrs;
       if (typeof item === "string") {
         const parsed = parseInlineAttrs(item);
@@ -6334,7 +6341,7 @@ ${scripts}
         const cssText = await resolveContent(href);
         if (cssText) {
           const cleanup = await stylesheet.adoptRawCSS(cssText, `import-${id}-${href}`);
-          cleanupFns4.push(cleanup);
+          cleanupFns5.push(cleanup);
           runtime.log(`Nexus Import [${id}]: CSS adopted (idb): ${href}`);
           return;
         }
@@ -6364,11 +6371,11 @@ ${scripts}
         runtime.log(`Nexus Import [${id}]: Link tag injected: ${href}`);
       });
     });
-    await Promise.all(tasks2);
+    await Promise.all(tasks);
   }
-  async function importAdopt(id, payload, cleanupFns4, runtime, _el) {
+  async function importAdopt(id, payload, cleanupFns5, runtime, _el) {
     const items = Array.isArray(payload) ? payload : [payload];
-    const tasks2 = items.map(async (item) => {
+    const tasks = items.map(async (item) => {
       let href;
       if (typeof item === "string") {
         href = item;
@@ -6381,14 +6388,14 @@ ${scripts}
       if (!cssText)
         return;
       const cleanup = await stylesheet.adoptRawCSS(cssText, `import-adopt-${id}-${href}`);
-      cleanupFns4.push(cleanup);
+      cleanupFns5.push(cleanup);
       runtime.log(`Nexus Import [${id}]: CSS adopted (constructable): ${href}`);
     });
-    await Promise.all(tasks2);
+    await Promise.all(tasks);
   }
-  async function importScript(id, payload, cleanupFns4, runtime, el) {
+  async function importScript(id, payload, cleanupFns5, runtime, el) {
     const items = Array.isArray(payload) ? payload : [payload];
-    const tasks2 = items.map(async (item) => {
+    const tasks = items.map(async (item) => {
       let attrs = typeof item === "string" ? { src: item } : item;
       if (typeof item === "string" && !attrs.src) {
         attrs = parseInlineAttrs(item);
@@ -6405,7 +6412,7 @@ ${scripts}
           const blob = new Blob([content], { type: attrs.type || "text/javascript" });
           const url = URL.createObjectURL(blob);
           finalSrc = url;
-          cleanupFns4.push(() => URL.revokeObjectURL(url));
+          cleanupFns5.push(() => URL.revokeObjectURL(url));
         }
       }
       if (src.includes("tailwindcss/browser") && !document.querySelector("style[data-nexus-tailwind-bridge]")) {
@@ -6417,7 +6424,7 @@ ${scripts}
           bridgeStyle.setAttribute("data-nexus-tailwind-bridge", "");
           bridgeStyle.textContent = bridge;
           document.head.appendChild(bridgeStyle);
-          cleanupFns4.push(() => bridgeStyle.remove());
+          cleanupFns5.push(() => bridgeStyle.remove());
           runtime.log(`Nexus Import [${id}]: Tailwind theme bridge injected (${tokens.size} color tokens discovered)`);
         }
       }
@@ -6439,9 +6446,9 @@ ${scripts}
         runtime.log(`Nexus Import [${id}]: Script injected: ${src}`);
       });
     });
-    await Promise.all(tasks2);
+    await Promise.all(tasks);
   }
-  async function importESModule(id, payload, cleanupFns4, runtime, el) {
+  async function importESModule(id, payload, cleanupFns5, runtime, el) {
     const globalWin = globalThis;
     const targetObj = {};
     try {
@@ -6489,7 +6496,7 @@ ${scripts}
         }
       }
       globalWin[id] = Object.assign(globalWin[id] || {}, targetObj);
-      cleanupFns4.push(() => {
+      cleanupFns5.push(() => {
       });
       if (typeof window !== "undefined") {
         window.dispatchEvent(new CustomEvent(`nexus:${id.toLowerCase()}-ready`, { detail: globalWin[id] }));
@@ -6502,27 +6509,27 @@ ${scripts}
       reportError(new Error(`Nexus Import [${id}]: Module import error: ${err}`), el);
     }
   }
-  async function importStyle(id, payload, cleanupFns4, runtime, el) {
+  async function importStyle(id, payload, cleanupFns5, runtime, el) {
     const items = Array.isArray(payload) ? payload : [payload];
-    const tasks2 = items.map(async (item) => {
+    const tasks = items.map(async (item) => {
       const attrs = typeof item === "string" ? { content: item } : item;
       const content = attrs.content || (typeof item === "string" ? item : "");
       if (!content && !attrs.href)
         return;
       if (attrs.href) {
-        await importLink(id, attrs, cleanupFns4, runtime, el);
+        await importLink(id, attrs, cleanupFns5, runtime, el);
         return;
       }
       const cssText = isVFSUri(content) ? await resolveContent(content) : content;
       if (!cssText)
         return;
       const cleanup = await stylesheet.adoptCSS(cssText, `import-style-${id}`);
-      cleanupFns4.push(cleanup);
+      cleanupFns5.push(cleanup);
       runtime.log(`Nexus Import [${id}]: Style adopted (ZCZS)`);
     });
-    await Promise.all(tasks2);
+    await Promise.all(tasks);
   }
-  async function importPattern(id, uri, el, item, cleanupFns4, runtime) {
+  async function importPattern(id, uri, el, item, cleanupFns5, runtime) {
     const content = await resolveContent(uri);
     if (!content)
       throw new Error(`Pattern not found: ${uri}`);
@@ -6549,10 +6556,10 @@ ${scripts}
         target.parentElement?.insertBefore(wrapper, target.nextSibling);
         break;
     }
-    cleanupFns4.push(() => wrapper.remove());
+    cleanupFns5.push(() => wrapper.remove());
     runtime.log(`Nexus Import [${id}]: Pattern loaded from ${uri}`);
   }
-  async function importComponent(id, uri, cleanupFns4, runtime) {
+  async function importComponent(id, uri, cleanupFns5, runtime) {
     const content = await resolveContent(uri);
     if (!content)
       throw new Error(`Component template not found: ${uri}`);
@@ -6566,7 +6573,7 @@ ${scripts}
         templateEl.id = `component-${name}`;
         templateEl.innerHTML = template.innerHTML;
         document.body.appendChild(templateEl);
-        cleanupFns4.push(() => templateEl.remove());
+        cleanupFns5.push(() => templateEl.remove());
         runtime.log(`Nexus Import [${id}]: Component "${name}" registered from ${uri}`);
       });
     } else {
@@ -6574,7 +6581,7 @@ ${scripts}
       templateEl.id = `component-${id}`;
       templateEl.innerHTML = content;
       document.body.appendChild(templateEl);
-      cleanupFns4.push(() => templateEl.remove());
+      cleanupFns5.push(() => templateEl.remove());
       runtime.log(`Nexus Import [${id}]: Component registered from ${uri}`);
     }
   }
@@ -6583,19 +6590,31 @@ ${scripts}
     attribute: "import",
     handle: (el, expression, runtime) => {
       let activeCleanup = null;
-      let lastConfigStr = "";
+      let hasLastConfig = false;
+      let lastConfig = void 0;
+      const cloneSnapshot = (v) => {
+        if (Array.isArray(v))
+          return v.map(cloneSnapshot);
+        if (v && typeof v === "object") {
+          const out = {};
+          for (const [k, val] of Object.entries(v))
+            out[k] = cloneSnapshot(val);
+          return out;
+        }
+        return v;
+      };
       const stopEffect = runtime.effect(() => {
         const attrExpr = el.getAttribute("data-import") || expression;
         const config = runtime.evaluate(el, attrExpr);
-        const configStr = JSON.stringify(config);
-        if (configStr === lastConfigStr) {
+        if (hasLastConfig && deepEqual(config, lastConfig)) {
           el.classList.remove("nexus-loading");
           el.classList.add("nexus-ready");
           el.removeAttribute("data-nexus-loading");
           el.setAttribute("data-nexus-ready", "");
           return;
         }
-        lastConfigStr = configStr;
+        hasLastConfig = true;
+        lastConfig = cloneSnapshot(config);
         if (activeCleanup) {
           activeCleanup();
           activeCleanup = null;
@@ -6622,7 +6641,7 @@ ${scripts}
         const iterationCleanupFns = [];
         activeCleanup = () => iterationCleanupFns.forEach((fn) => fn());
         const runImports = async () => {
-          const tasks2 = ids.map(async (id) => {
+          const tasks = ids.map(async (id) => {
             const item = config[id];
             try {
               const itemTasks = [];
@@ -6636,8 +6655,8 @@ ${scripts}
                 itemTasks.push(importESModule(id, item.module, iterationCleanupFns, runtime, el));
               }
               if (item.script) {
-                importScript(id, item.script, iterationCleanupFns, runtime, el).catch(() => {
-                });
+                itemTasks.push(importScript(id, item.script, iterationCleanupFns, runtime, el).catch(() => {
+                }));
               }
               const stylePayload = item.style || item.theme;
               if (stylePayload) {
@@ -6652,7 +6671,7 @@ ${scripts}
               reportError(new Error(`Nexus Import [${id}]: Error ${e}`), el);
             }
           });
-          await Promise.all(tasks2);
+          await Promise.all(tasks);
         };
         runImports().then(finalize).catch(() => finalize());
       });
@@ -6677,9 +6696,6 @@ ${scripts}
   function ensureMarkdownStyles(root) {
     ensureAdoptedStylesheet(MARKDOWN_BASE_CSS, markdownSheetRef, root);
   }
-  if (typeof document !== "undefined") {
-    ensureMarkdownStyles();
-  }
   var ALERT_CONFIGS = {
     NOTE: ["nexus-alert-note", "material-symbols-light:info-outline", "Note"],
     TIP: ["nexus-alert-tip", "material-symbols-light:lightbulb-outline", "Tip"],
@@ -6688,6 +6704,14 @@ ${scripts}
     CAUTION: ["nexus-alert-caution", "material-symbols-light:dangerous-outline", "Caution"]
   };
   var escapeHtml = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  var sanitizeMarkdownUrl = (rawUrl) => {
+    const trimmed = rawUrl.trim();
+    const normalized = trimmed.replace(/[\u0000-\u0020]+/g, "").toLowerCase();
+    if (normalized.startsWith("javascript:") || normalized.startsWith("vbscript:") || normalized.startsWith("data:text/html")) {
+      return "#";
+    }
+    return trimmed.replace(/"/g, "&quot;");
+  };
   function slugify(text) {
     return text.toLowerCase().replace(/<[^>]*>/g, "").replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "-");
   }
@@ -6700,7 +6724,7 @@ ${scripts}
       const lang = (rawLang || "text").trim();
       const escaped = escapeHtml(code);
       codeBlocks.push(
-        `<div class="nexus-code-block"><div class="nexus-code-header"><span class="nexus-code-lang">${lang}</span><button type="button" class="nexus-copy-btn" onclick="navigator.clipboard.writeText(this.closest('.nexus-code-block').querySelector('code').textContent).then(()=>{ const self=this; const prev=self.innerText; self.innerText='Copied!'; setTimeout(()=>self.innerText=prev, 1500); })"><svg width="14" height="14" style="display:inline-block; vertical-align: middle;" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg> <span>Copy</span></button></div><pre data-ignore class="nexus-code-pre"><code data-ignore class="language-${lang}">${escaped}</code></pre></div>`
+        `<div class="nexus-code-block"><div class="nexus-code-header"><span class="nexus-code-lang">${lang}</span><button type="button" class="nexus-copy-btn" data-on-click="navigator.clipboard?.writeText($el.closest('.nexus-code-block')?.querySelector('code')?.textContent || '').then(() => { const s = $el.querySelector('span'); if (s) { s.textContent = 'Copied!'; setTimeout(() => s.textContent = 'Copy', 1500); } })"><svg width="14" height="14" style="display:inline-block; vertical-align: middle;" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg> <span>Copy</span></button></div><pre data-ignore class="nexus-code-pre"><code data-ignore class="language-${lang}">${escaped}</code></pre></div>`
       );
       return id;
     });
@@ -6777,10 +6801,11 @@ ${match}</ul>
     html = html.replace(/(\*\*|__)(.*?)\1/g, "<strong>$2</strong>");
     html = html.replace(/\*(.*?)\*/g, "<em>$1</em>");
     html = html.replace(/(^|\s)_(.*?)_(\s|$)/g, "$1<em>$2</em>$3");
-    html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" class="nexus-img" loading="lazy" />');
+    html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_m, alt, url) => `<img src="${sanitizeMarkdownUrl(url)}" alt="${escapeHtml(alt)}" class="nexus-img" loading="lazy" />`);
     html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, text, url) => {
-      const isExt = url.startsWith("http://") || url.startsWith("https://");
-      return `<a href="${url}" class="nexus-link"${isExt ? ' target="_blank" rel="noopener noreferrer"' : ""}>${text}</a>`;
+      const safeUrl = sanitizeMarkdownUrl(url);
+      const isExt = safeUrl.startsWith("http://") || safeUrl.startsWith("https://");
+      return `<a href="${safeUrl}" class="nexus-link"${isExt ? ' target="_blank" rel="noopener noreferrer"' : ""}>${text}</a>`;
     });
     html = html.replace(/(^|[^"'])(https?:\/\/[^\s<]+)/g, '$1<a href="$2" class="nexus-link" target="_blank" rel="noopener noreferrer">$2</a>');
     html = html.split("\n\n").map((block) => {
@@ -6799,11 +6824,6 @@ ${match}</ul>
   var markdownModule = {
     name: "markdown",
     attribute: "markdown",
-    onRegister(_context) {
-      if (typeof document !== "undefined") {
-        ensureMarkdownStyles(document);
-      }
-    },
     handle: (el, value, runtime) => {
       ensureMarkdownStyles(el.getRootNode());
       const cleanupState = () => {
@@ -6827,6 +6847,10 @@ ${match}</ul>
         const transpiled = parseMarkdown(mdText);
         if (el.innerHTML !== transpiled) {
           el.innerHTML = transpiled;
+          el.querySelectorAll(".nexus-copy-btn").forEach((btn) => {
+            if (btn instanceof HTMLElement)
+              runtime.processElement(btn, true);
+          });
         }
       };
       if (value) {
@@ -6983,7 +7007,7 @@ ${match}</ul>
           return runtime.evaluate(el, value, extras);
         };
         let target = el;
-        let options = false;
+        let options = {};
         const targetModifiers = /* @__PURE__ */ new Set(["window", "document", "outside"]);
         const optionModifiers = /* @__PURE__ */ new Set(["passive", "capture"]);
         modifiers.forEach((mod) => {
@@ -7008,14 +7032,17 @@ ${match}</ul>
           }
           if (optionModifiers.has(modName)) {
             if (modName === "passive")
-              options = { passive: true };
+              options.passive = true;
             if (modName === "capture")
-              options = true;
+              options.capture = true;
             return;
           }
           const modifierModule = runtime.getModifier(modName);
           if (modifierModule) {
-            handler = modifierModule.handle(handler, el, fullArg, runtime);
+            const wrapped = modifierModule.handle(handler, el, fullArg, runtime);
+            if (typeof wrapped === "function") {
+              handler = wrapped;
+            }
           }
         });
         target.addEventListener(eventName, handler, options);
@@ -7029,7 +7056,7 @@ ${match}</ul>
         }
         return () => target.removeEventListener(eventName, handler, options);
       } catch (e) {
-        initError2("on", `Failed to attach listener ${eventName}: ${errMsg(e)}`, el, value);
+        initError("on", `Failed to attach listener ${eventName}: ${errMsg(e)}`, el, value);
       }
     }
   };
@@ -7098,13 +7125,13 @@ ${match}</ul>
         }
       });
       runtime.setGlobalSignal("$pwa", pwaState);
-      const cleanupFns4 = [];
+      const cleanupFns5 = [];
       const updateOnlineStatus = () => {
         pwaState.isOnline = navigator.onLine;
       };
       globalThis.addEventListener("online", updateOnlineStatus);
       globalThis.addEventListener("offline", updateOnlineStatus);
-      cleanupFns4.push(
+      cleanupFns5.push(
         () => globalThis.removeEventListener("online", updateOnlineStatus),
         () => globalThis.removeEventListener("offline", updateOnlineStatus)
       );
@@ -7135,7 +7162,7 @@ ${match}</ul>
           }
         };
         navigator.serviceWorker.addEventListener("controllerchange", onControllerChange);
-        cleanupFns4.push(() => navigator.serviceWorker.removeEventListener("controllerchange", onControllerChange));
+        cleanupFns5.push(() => navigator.serviceWorker.removeEventListener("controllerchange", onControllerChange));
       }
       if (config.themeColor) {
         let meta = document.querySelector('meta[name="theme-color"]');
@@ -7169,14 +7196,14 @@ ${match}</ul>
         pwaState.deferredPrompt = e;
       };
       globalThis.addEventListener("beforeinstallprompt", onBeforeInstall);
-      cleanupFns4.push(() => globalThis.removeEventListener("beforeinstallprompt", onBeforeInstall));
+      cleanupFns5.push(() => globalThis.removeEventListener("beforeinstallprompt", onBeforeInstall));
       const onAppInstalled = () => {
         pwaState.isInstalled = true;
         pwaState.deferredPrompt = null;
       };
       globalThis.addEventListener("appinstalled", onAppInstalled);
-      cleanupFns4.push(() => globalThis.removeEventListener("appinstalled", onAppInstalled));
-      return () => cleanupFns4.forEach((fn) => fn());
+      cleanupFns5.push(() => globalThis.removeEventListener("appinstalled", onAppInstalled));
+      return () => cleanupFns5.forEach((fn) => fn());
     }
   };
   var pwa_default = pwaModule;
@@ -7491,19 +7518,29 @@ ${match}</ul>
           const globs = Array.isArray(shadows) ? shadows : [shadows];
           return globs.some((g) => globToRegex(g).test(path));
         };
+        let cachedManifestUrl = null;
+        let cachedManifestList = null;
         const buildManifest = async () => {
           const entries = routeList.slice();
           const manifestUrl = state.config.manifest;
           if (manifestUrl) {
+            const resolvedManifestUrl = applyBase(manifestUrl);
             try {
-              let raw;
-              if (runtime.fetch) {
-                raw = await runtime.fetch.request(applyBase(manifestUrl), { responseType: "text" }, el);
+              let list;
+              if (cachedManifestList && cachedManifestUrl === resolvedManifestUrl) {
+                list = cachedManifestList;
               } else {
-                raw = await (await fetch(applyBase(manifestUrl))).text();
+                let raw;
+                if (runtime.fetch) {
+                  raw = await runtime.fetch.request(resolvedManifestUrl, { responseType: "text" }, el);
+                } else {
+                  raw = await (await fetch(resolvedManifestUrl)).text();
+                }
+                const parsed = JSON.parse(raw);
+                list = Array.isArray(parsed) ? parsed : parsed.routes ?? [];
+                cachedManifestUrl = resolvedManifestUrl;
+                cachedManifestList = list;
               }
-              const parsed = JSON.parse(raw);
-              const list = Array.isArray(parsed) ? parsed : parsed.routes ?? [];
               for (const entry of list) {
                 if (!entry || typeof entry !== "object")
                   continue;
@@ -7712,18 +7749,25 @@ ${match}</ul>
               return;
             const pDir = (state.config.pagesDir || pagesDir || "_pages").replace(/^\/+|\/+$/g, "");
             const manifestUrl = state.config.manifest || `/${pDir}/manifest.json`;
+            const resolvedManifestUrl = applyBase(manifestUrl);
             let rawList = [];
-            try {
-              const manifestRes = await fetchFn(applyBase(manifestUrl));
-              if (manifestRes && manifestRes.ok) {
-                const json = await manifestRes.json();
-                if (Array.isArray(json)) {
-                  rawList = json;
-                } else if (Array.isArray(json.routes)) {
-                  rawList = json.routes;
+            if (cachedManifestList && cachedManifestUrl === resolvedManifestUrl) {
+              rawList = cachedManifestList;
+            } else {
+              try {
+                const manifestRes = await fetchFn(resolvedManifestUrl);
+                if (manifestRes && manifestRes.ok) {
+                  const json = await manifestRes.json();
+                  if (Array.isArray(json)) {
+                    rawList = json;
+                  } else if (Array.isArray(json.routes)) {
+                    rawList = json.routes;
+                  }
+                  cachedManifestUrl = resolvedManifestUrl;
+                  cachedManifestList = rawList;
                 }
+              } catch {
               }
-            } catch {
             }
             const discovered = [];
             if (rawList.length > 0) {
@@ -8330,7 +8374,7 @@ ${match}</ul>
           runtime.setGlobalSignal("activeTabId", id);
         };
         let tabSwitching = false;
-        runtime.watch(
+        const stopTabWatch = runtime.watch(
           () => globals.activePageTabId || globals.activeTabId,
           () => {
             if (tabSwitching)
@@ -8475,17 +8519,13 @@ ${match}</ul>
           const toInfo = buildInfo(matched, path, params, query, url.hash);
           const fromRoute = state.currentRoute;
           const fromInfo = previousInfo;
-          const resolvedComponent = matched?.component ?? null;
-          state.route = resolvedComponent;
-          state.layout = matched?.layout ?? null;
-          publishOutlet(state.layout ?? state.route);
-          state.path = path;
+          const prevPath = state.path;
           if (path !== cleanErrorPath && url.pathname !== applyBase(cleanErrorPath)) {
             state.error = null;
             state.errorCode = null;
           }
           state.loading = true;
-          if (fromRoute) {
+          if (fromRoute?.beforeLeave) {
             const r = await runHook(fromRoute.beforeLeave, toInfo, fromInfo);
             if (token !== navToken) {
               state.loading = false;
@@ -8502,40 +8542,45 @@ ${match}</ul>
             }
           }
           if (matched) {
-            const r = await runHook(matched.beforeEnter, toInfo, fromInfo);
-            if (token !== navToken) {
-              state.loading = false;
-              return;
+            if (matched.beforeEnter) {
+              const r = await runHook(matched.beforeEnter, toInfo, fromInfo);
+              if (token !== navToken) {
+                state.loading = false;
+                return;
+              }
+              if (r.abort) {
+                state.loading = false;
+                return;
+              }
+              if (r.redirect) {
+                state.loading = false;
+                state.navigate(r.redirect, { replace: true });
+                return;
+              }
             }
-            if (r.abort) {
-              state.loading = false;
-              return;
-            }
-            if (r.redirect) {
-              state.loading = false;
-              state.navigate(r.redirect, { replace: true });
-              return;
-            }
-            const h = await runHook(matched.handler, toInfo, fromInfo);
-            if (token !== navToken) {
-              state.loading = false;
-              return;
-            }
-            if (h.abort) {
-              state.loading = false;
-              return;
-            }
-            if (h.redirect) {
-              state.loading = false;
-              state.navigate(h.redirect, { replace: true });
-              return;
+            if (matched.handler) {
+              const h = await runHook(matched.handler, toInfo, fromInfo);
+              if (token !== navToken) {
+                state.loading = false;
+                return;
+              }
+              if (h.abort) {
+                state.loading = false;
+                return;
+              }
+              if (h.redirect) {
+                state.loading = false;
+                state.navigate(h.redirect, { replace: true });
+                return;
+              }
             }
           }
           if (token !== navToken) {
             state.loading = false;
             return;
           }
-          const outgoingPrevious = fromRoute ? { path: state.path, meta: fromRoute.meta } : previousInfo ? { path: previousInfo.path, meta: previousInfo.meta } : null;
+          const outgoingPrevious = fromRoute ? { path: prevPath, meta: fromRoute.meta } : previousInfo ? { path: previousInfo.path, meta: previousInfo.meta } : null;
+          state.path = path;
           state.hash = url.hash;
           state.query = query;
           state.params = params;
@@ -8620,7 +8665,7 @@ ${match}</ul>
           globalThis.navigation.addEventListener("navigate", onNavigate);
         }
         const onPopState = (event) => {
-          const st = event && event.state;
+          const st = event?.detail && event.detail.state !== void 0 ? event.detail.state : event && event.state;
           const tab = st && (typeof st.pageTabId === "string" ? st.pageTabId : typeof st.tabId === "string" ? st.tabId : null);
           if (tab && tab !== state.activePageTabId) {
             state.switchPageTab(tab);
@@ -8631,16 +8676,13 @@ ${match}</ul>
           updateRoute(globalThis.location.href);
         };
         const popStateEvent = `${CUSTOM_EVENT_PREFIX}popstate`;
-        if (!("navigation" in globalThis)) {
-          globalThis.addEventListener("popstate", onPopState);
-        }
         document.addEventListener(popStateEvent, onPopState);
         queueMicrotask(async () => {
           await buildManifest();
           await state.discoverPages();
           updateRoute(globalThis.location.href);
         });
-        runtime.effect(() => {
+        const stopRecentEffect = runtime.effect(() => {
           const activeTab = state.activePageTab;
           if (!activeTab || !activeTab.route || activeTab.route.startsWith("/_internal"))
             return;
@@ -8662,7 +8704,7 @@ ${match}</ul>
             }
           }
         });
-        runtime.effect(() => {
+        const stopTitleEffect = runtime.effect(() => {
           const activeTab = state.activePageTab;
           if (!activeTab || typeof document === "undefined")
             return;
@@ -8673,11 +8715,11 @@ ${match}</ul>
           }
         });
         return () => {
+          stopTabWatch?.();
+          stopRecentEffect?.();
+          stopTitleEffect?.();
           if ("navigation" in globalThis) {
             globalThis.navigation.removeEventListener("navigate", onNavigate);
-          }
-          if (!("navigation" in globalThis)) {
-            globalThis.removeEventListener("popstate", onPopState);
           }
           document.removeEventListener(popStateEvent, onPopState);
         };
@@ -8727,10 +8769,6 @@ ${match}</ul>
       scrollbarSheetRef.sheet.replaceSync(css);
     }
     ensureAdoptedStylesheet(css, scrollbarSheetRef, root);
-  }
-  if (typeof document !== "undefined") {
-    ensureScrollbarStyles();
-    setupGlobalListeners();
   }
   var overlayInstances = /* @__PURE__ */ new WeakMap();
   var activeInstances = /* @__PURE__ */ new Set();
@@ -9098,7 +9136,7 @@ ${match}</ul>
       }
     };
     document.addEventListener("pointerover", onPointerOver, { capture: true, passive: true });
-    document.addEventListener("nexus:dom-mutated", () => {
+    document.addEventListener("ux:dom-mutated", () => {
       requestAnimationFrame(scanScrollContainers);
     }, { passive: true });
     window.addEventListener("hashchange", () => {
@@ -9131,6 +9169,8 @@ ${match}</ul>
         }
         return;
       }
+      ensureScrollbarStyles(el.getRootNode(), globalConfig);
+      setupGlobalListeners();
       const isGlobal = el.hasAttribute("data-scrollbar_global") || parsedAttr?.modifiers && parsedAttr.modifiers.includes("global") || el.tagName.toLowerCase() === "html";
       let config = {};
       if (value && value.trim()) {
@@ -9187,6 +9227,20 @@ ${match}</ul>
     handle: (el, value, runtime) => {
       const originalDisplay = el.style.display === "none" ? "" : el.style.display;
       return runtime.bind(el, value, (result) => {
+        if (typeof HTMLDialogElement !== "undefined" && el instanceof HTMLDialogElement) {
+          if (result) {
+            if (!el.open && typeof el.showModal === "function") {
+              try {
+                el.showModal();
+              } catch {
+                el.setAttribute("open", "");
+              }
+            }
+          } else if (el.open && typeof el.close === "function") {
+            el.close();
+          }
+          return;
+        }
         if (result) {
           if (originalDisplay) {
             el.style.display = originalDisplay;
@@ -9292,6 +9346,7 @@ ${match}</ul>
   __export(switcher_exports, {
     default: () => switcher_default
   });
+  init_debug();
   var switcherModule = {
     name: "switcher",
     attribute: "switcher",
@@ -9321,9 +9376,9 @@ ${match}</ul>
           const nextValue = nextItem.id || nextItem;
           runtime.log(`Nexus Switcher [${expression}]: Cycling ${current} -> ${nextValue}`);
           try {
-            runtime.evaluate(el, `${expression} = ${JSON.stringify(nextValue)}`);
+            runtime.evaluate(el, `${expression} = $next`, { $next: nextValue });
           } catch (e) {
-            console.error("Nexus Switcher: Failed to update signal", expression, e);
+            console.error("UX Switcher: Failed to update signal", expression, e);
           }
         },
         $isActive: (id) => {
@@ -9339,11 +9394,11 @@ ${match}</ul>
           return items.find((item) => (item.id || item) === current) || null;
         }
       };
-      runtime.log(`Nexus Switcher [${expression}]: Injecting helpers on`, el);
-      addScopeToNode(el, helpers);
-      return runtime.bind(el, expression, (currentVal) => {
+      runtime.log(`UX Switcher [${expression}]: Injecting helpers on`, el);
+      const removeScope = addScopeToNode(el, helpers);
+      const unbind = runtime.bind(el, expression, (currentVal) => {
         const items = runtime.evaluate(el, optionsAttr);
-        runtime.log(`Nexus Switcher [${expression}]: Active state changed to:`, currentVal, "options:", items);
+        runtime.log(`UX Switcher [${expression}]: Active state changed to:`, currentVal, "options:", items);
         Array.from(el.children).forEach((child) => {
           if (child instanceof HTMLElement) {
             child.classList.add("switcher-transitioning");
@@ -9357,6 +9412,11 @@ ${match}</ul>
           }
         });
       });
+      return () => {
+        if (typeof unbind === "function")
+          unbind();
+        removeScope();
+      };
     }
   };
   var switcher_default = switcherModule;
@@ -9581,6 +9641,7 @@ ${match}</ul>
       const cleanup = runtime.bind(element, value, () => updateTarget(), { raw: true });
       return () => {
         cleanup?.();
+        teardownSubtree(clone, true);
         if (clone.parentNode) {
           clone.parentNode.removeChild(clone);
         }
@@ -9664,17 +9725,17 @@ ${match}</ul>
         initialModeState = 1;
       let savedLight = rawConfig.light?.theme || "light";
       let savedDark = rawConfig.dark?.theme || "dark";
-      if (isRoot && typeof localStorage !== "undefined") {
+      if (isRoot && reactiveLocalStorage) {
         try {
-          const savedState = localStorage.getItem("ux_theme_state");
+          const savedState = reactiveLocalStorage.getItem("ux_theme_state");
           if (savedState !== null)
             initialModeState = Number(savedState);
-          const l = localStorage.getItem("ux_theme_light");
+          const l = reactiveLocalStorage.getItem("ux_theme_light");
           if (l)
-            savedLight = l;
-          const d = localStorage.getItem("ux_theme_dark");
+            savedLight = String(l);
+          const d = reactiveLocalStorage.getItem("ux_theme_dark");
           if (d)
-            savedDark = d;
+            savedDark = String(d);
         } catch (_) {
         }
       }
@@ -9755,9 +9816,9 @@ ${match}</ul>
         },
         $switchTheme: () => {
           modeState.value = (modeState.value + 1) % 3;
-          if (isRoot && typeof localStorage !== "undefined") {
+          if (isRoot && reactiveLocalStorage) {
             try {
-              localStorage.setItem("ux_theme_state", String(modeState.value));
+              reactiveLocalStorage.setItem("ux_theme_state", String(modeState.value));
             } catch (_) {
             }
           }
@@ -9766,17 +9827,17 @@ ${match}</ul>
           const isDark = modeState.value === 1 || modeState.value === 2 && systemDark.value;
           if (isDark) {
             darkSelected.value = t;
-            if (isRoot && typeof localStorage !== "undefined") {
+            if (isRoot && reactiveLocalStorage) {
               try {
-                localStorage.setItem("ux_theme_dark", t);
+                reactiveLocalStorage.setItem("ux_theme_dark", t);
               } catch (_) {
               }
             }
           } else {
             lightSelected.value = t;
-            if (isRoot && typeof localStorage !== "undefined") {
+            if (isRoot && reactiveLocalStorage) {
               try {
-                localStorage.setItem("ux_theme_light", t);
+                reactiveLocalStorage.setItem("ux_theme_light", t);
               } catch (_) {
               }
             }
@@ -10545,6 +10606,11 @@ ${match}</ul>
             return "Error: No MCP Server configured.";
           const output = reactive({ value: "" });
           const buffer = new StreamBuffer(output);
+          const unsubscribe = client.onNotification("notifications/sampling/delta", (params) => {
+            if (params.delta?.text) {
+              buffer.append(params.delta.text);
+            }
+          });
           client.sendRequest("sampling/createMessage", {
             messages: [{ role: "user", content: { type: "text", text: prompt } }]
           }).then((res) => {
@@ -10552,11 +10618,8 @@ ${match}</ul>
               buffer.append(res.content.text);
               buffer.flush();
             }
-          });
-          client.onNotification("notifications/sampling/delta", (params) => {
-            if (params.delta?.text) {
-              buffer.append(params.delta.text);
-            }
+          }).finally(() => {
+            unsubscribe?.();
           });
           return output;
         },
@@ -10723,8 +10786,8 @@ ${match}</ul>
       } else {
         this.currentTier = 0;
       }
-      console.log(`[Nexus Topology] Boot: Detected ${cores} cores, SAB: ${isCrossOriginIsolated}, NexusIO: ${hasNexusIO}`);
-      console.log(`[Nexus Topology] Selected Tier: ${this.currentTier} (${TIER_CONFIGS[this.currentTier].name})`);
+      /* @__PURE__ */ console.log(`[Nexus Topology] Boot: Detected ${cores} cores, SAB: ${isCrossOriginIsolated}, NexusIO: ${hasNexusIO}`);
+      /* @__PURE__ */ console.log(`[Nexus Topology] Selected Tier: ${this.currentTier} (${TIER_CONFIGS[this.currentTier].name})`);
       this.initializeTier();
     }
     /**
@@ -10738,7 +10801,7 @@ ${match}</ul>
           if (heap) {
             heap.attachSharedBuffer(this.sharedBuffer);
           }
-          console.log("[Nexus Topology] SharedArrayBuffer initialized");
+          /* @__PURE__ */ console.log("[Nexus Topology] SharedArrayBuffer initialized");
         } catch (e) {
           console.warn("[Nexus Topology] Failed to initialize SAB, falling back:", e);
           this.currentTier = Math.max(0, this.currentTier - 1);
@@ -10812,7 +10875,7 @@ ${match}</ul>
           console.warn(`[Nexus Topology] Failed to spawn worker ${i}:`, e);
         }
       }
-      console.log(`[Nexus Topology] Spawned ${this.workers.length} worker(s) for Tier ${tier}`);
+      /* @__PURE__ */ console.log(`[Nexus Topology] Spawned ${this.workers.length} worker(s) for Tier ${tier}`);
     }
     /**
      * Terminate all worker threads
@@ -10844,25 +10907,26 @@ ${match}</ul>
      * Measure frame lag and trigger scale up/down
      */
     measureLag() {
-      const frameStart = performance.now();
-      requestAnimationFrame(() => {
-        const frameEnd = performance.now();
-        const frameTime = frameEnd - frameStart;
-        const lagRatio = frameTime / this.FRAME_BUDGET;
-        this.lagHistory.push(lagRatio);
-        if (this.lagHistory.length > this.LAG_SAMPLE_SIZE) {
-          this.lagHistory.shift();
-        }
-        const avgLag = this.lagHistory.reduce((a, b) => a + b, 0) / this.lagHistory.length;
-        const now = performance.now();
-        if (now - this.lastScaleTime < this.SCALE_COOLDOWN_MS) {
-          return;
-        }
-        if (avgLag > this.LAG_THRESHOLD && this.currentTier < 3 && this.lagHistory.length >= this.MIN_SAMPLES_FOR_SCALE_UP) {
-          this.scaleUp();
-        } else if (avgLag < 0.1 && this.currentTier > 0 && this.lagHistory.length >= this.LAG_SAMPLE_SIZE) {
-          this.scaleDown();
-        }
+      requestAnimationFrame((t1) => {
+        requestAnimationFrame((t2) => {
+          const frameTime = t2 - t1;
+          const lag = Math.max(0, frameTime - this.FRAME_BUDGET);
+          const lagRatio = lag / this.FRAME_BUDGET;
+          this.lagHistory.push(lagRatio);
+          if (this.lagHistory.length > this.LAG_SAMPLE_SIZE) {
+            this.lagHistory.shift();
+          }
+          const avgLag = this.lagHistory.reduce((a, b) => a + b, 0) / this.lagHistory.length;
+          const now = performance.now();
+          if (now - this.lastScaleTime < this.SCALE_COOLDOWN_MS) {
+            return;
+          }
+          if (avgLag > this.LAG_THRESHOLD && this.currentTier < 3 && this.lagHistory.length >= this.MIN_SAMPLES_FOR_SCALE_UP) {
+            this.scaleUp();
+          } else if (avgLag < 0.1 && this.currentTier > 0 && this.lagHistory.length >= this.LAG_SAMPLE_SIZE) {
+            this.scaleDown();
+          }
+        });
       });
     }
     /**
@@ -10870,13 +10934,13 @@ ${match}</ul>
      */
     async scaleUp() {
       const newTier = this.currentTier + 1;
-      console.log(`[Nexus Topology] Scaling UP from Tier ${this.currentTier} to Tier ${newTier}`);
+      /* @__PURE__ */ console.log(`[UX Topology] Scaling UP from Tier ${this.currentTier} to Tier ${newTier}`);
       this.lagHistory = [];
       this.lastScaleTime = performance.now();
       this.currentTier = newTier;
       await this.initializeTier();
       if (typeof window !== "undefined") {
-        window.dispatchEvent(new CustomEvent("nexus:topology-scale", {
+        window.dispatchEvent(new CustomEvent("ux:topology-scale", {
           detail: { tier: this.currentTier, direction: "up" }
         }));
       }
@@ -10888,12 +10952,13 @@ ${match}</ul>
       const newTier = this.currentTier - 1;
       if (newTier < 0)
         return;
-      console.log(`[Nexus Topology] Scaling DOWN from Tier ${this.currentTier} to Tier ${newTier}`);
+      /* @__PURE__ */ console.log(`[UX Topology] Scaling DOWN from Tier ${this.currentTier} to Tier ${newTier}`);
       this.lagHistory = [];
+      this.lastScaleTime = performance.now();
       this.currentTier = newTier;
       await this.initializeTier();
       if (typeof window !== "undefined") {
-        window.dispatchEvent(new CustomEvent("nexus:topology-scale", {
+        window.dispatchEvent(new CustomEvent("ux:topology-scale", {
           detail: { tier: this.currentTier, direction: "down" }
         }));
       }
@@ -10954,7 +11019,7 @@ ${match}</ul>
     async setTier(tier) {
       if (tier === this.currentTier)
         return;
-      console.log(`[Nexus Topology] Manual tier change: ${this.currentTier} -> ${tier}`);
+      /* @__PURE__ */ console.log(`[Nexus Topology] Manual tier change: ${this.currentTier} -> ${tier}`);
       this.currentTier = tier;
       await this.initializeTier();
     }
@@ -11214,7 +11279,7 @@ ${match}</ul>
         setupDebugTracker();
       }
       const onDomMutated = () => this.scheduleQuadtreeRebuild();
-      document.addEventListener("nexus:dom-mutated", onDomMutated, { passive: true });
+      document.addEventListener("ux:dom-mutated", onDomMutated, { passive: true });
       let predictionRaf = null;
       const schedulePrediction = () => {
         if (predictionRaf !== null)
@@ -11292,7 +11357,7 @@ ${match}</ul>
       window.addEventListener("pointermove", onPointerMove, { passive: true });
       window.addEventListener("focusin", onFocusIn, { passive: true });
       this.cleanupFns.push(() => {
-        document.removeEventListener("nexus:dom-mutated", onDomMutated);
+        document.removeEventListener("ux:dom-mutated", onDomMutated);
         window.removeEventListener("gamepadconnected", onGamepadConnected);
         window.removeEventListener("gamepaddisconnected", onGamepadDisconnected);
         window.removeEventListener("mousemove", onMouseMove);
@@ -11609,13 +11674,13 @@ ${match}</ul>
     enableEyeTracking(options = {}) {
       this.eyeTrackingActive = true;
       if (typeof document !== "undefined" && document.documentElement.hasAttribute("data-debug")) {
-        console.log("[Predictive Core] Opt-In Eye-Tracking activated with options:", options);
+        /* @__PURE__ */ console.log("[Predictive Core] Opt-In Eye-Tracking activated with options:", options);
       }
     }
     enableVoiceIntent(options = {}) {
       this.voiceIntentActive = true;
       if (typeof document !== "undefined" && document.documentElement.hasAttribute("data-debug")) {
-        console.log("[Predictive Core] Opt-In Voice Intent activated with options:", options);
+        /* @__PURE__ */ console.log("[Predictive Core] Opt-In Voice Intent activated with options:", options);
       }
     }
     dispose() {
@@ -11652,7 +11717,7 @@ ${match}</ul>
     const padding = "=".repeat((4 - base64String.length % 4) % 4);
     const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
     const rawData = atob(base64);
-    const outputArray = new Uint8Array(rawData.length);
+    const outputArray = new Uint8Array(new ArrayBuffer(rawData.length));
     for (let i = 0; i < rawData.length; ++i) {
       outputArray[i] = rawData.charCodeAt(i);
     }
@@ -11782,13 +11847,17 @@ ${match}</ul>
     setupGlobalHandlers() {
       if (typeof window === "undefined")
         return;
-      this.globalErrorHandler = (error, context) => {
-        this.captureBeacon(error, "error", context);
+      this.globalErrorHandler = (eventOrError, context) => {
+        const error = eventOrError instanceof Error ? eventOrError : eventOrError?.error instanceof Error ? eventOrError.error : new Error(eventOrError?.message || String(eventOrError));
+        this.captureBeacon(error, "error", context ?? eventOrError);
       };
       globalThis.addEventListener("error", this.globalErrorHandler);
-      this.globalRejectionHandler = (reason, promise) => {
+      this.globalRejectionHandler = (eventOrReason, promise) => {
+        const isRejectionEvent = typeof PromiseRejectionEvent !== "undefined" && eventOrReason instanceof PromiseRejectionEvent;
+        const reason = isRejectionEvent ? eventOrReason.reason : eventOrReason?.reason ?? eventOrReason;
+        const rejectionPromise = isRejectionEvent ? eventOrReason.promise : promise;
         const error = toError(reason);
-        this.captureBeacon(error, "unhandledRejection", { promise });
+        this.captureBeacon(error, "unhandledRejection", { promise: rejectionPromise });
       };
       globalThis.addEventListener("unhandledrejection", this.globalRejectionHandler);
     }
@@ -11856,16 +11925,16 @@ ${match}</ul>
             const h = heap;
             if (h._floatHeap instanceof Float64Array)
               numericSignals = new Float64Array(h._floatHeap);
-            if (h._intHeap instanceof Int32Array)
-              booleanSignals = new Int32Array(h._intHeap);
-            signalIndexMap = { ...h._indexMap || {} };
+            if (h._boolHeap instanceof Uint8Array)
+              booleanSignals = new Uint8Array(h._boolHeap);
+            signalIndexMap = h._indexMap instanceof Map ? Object.fromEntries(h._indexMap) : { ...h._indexMap || {} };
           }
           const globalState = this.runtime.globalSignals();
           if (globalState) {
             objectSignals = [globalState];
           }
         }
-      } catch (e) {
+      } catch (_e) {
       }
       const size = (numericSignals?.byteLength || 0) + (booleanSignals?.byteLength || 0);
       return {
@@ -12219,8 +12288,12 @@ ${match}</ul>
       }
     });
   }
+  var reactiveElementProxyCache = /* @__PURE__ */ new WeakMap();
   function createReactiveElementProxy(el) {
-    return new Proxy(el, {
+    const cached = reactiveElementProxyCache.get(el);
+    if (cached)
+      return cached;
+    const proxy = new Proxy(el, {
       get(target, key) {
         if (typeof key === "symbol")
           return target[key];
@@ -12251,6 +12324,8 @@ ${match}</ul>
         return true;
       }
     });
+    reactiveElementProxyCache.set(el, proxy);
+    return proxy;
   }
   function resolveTargetElements(contextEl, selector) {
     if (!selector || !selector.trim())
@@ -12545,7 +12620,16 @@ ${match}</ul>
          */
         connect: (elA, elB, options = {}) => {
           const type = options.type || "bezier";
-          const pathData = reactive({ d: "" });
+          let rafId = 0;
+          let stopped = false;
+          const disconnect = () => {
+            stopped = true;
+            if (rafId && typeof cancelAnimationFrame === "function") {
+              cancelAnimationFrame(rafId);
+              rafId = 0;
+            }
+          };
+          const pathData = reactive({ d: "", disconnect });
           const update = () => {
             if (!elA || !elB)
               return;
@@ -12564,10 +12648,19 @@ ${match}</ul>
             }
           };
           const ticker = () => {
+            if (stopped || !elA?.isConnected || !elB?.isConnected) {
+              disconnect();
+              return;
+            }
             update();
-            requestAnimationFrame(ticker);
+            if (!stopped && typeof requestAnimationFrame === "function") {
+              rafId = requestAnimationFrame(ticker);
+            }
           };
-          ticker();
+          update();
+          if (!stopped && elA?.isConnected && elB?.isConnected && typeof requestAnimationFrame === "function") {
+            rafId = requestAnimationFrame(ticker);
+          }
           return pathData;
         },
         /**
@@ -12651,7 +12744,8 @@ ${match}</ul>
         state.status = sw.controller ? "active" : "idle";
       });
       sw.addEventListener("message", (event) => {
-        runtime.evaluate(document.body, `$dispatch('sw:message', ${JSON.stringify(event.data)})`, {});
+        const target = document.body || document.documentElement;
+        target?.dispatchEvent(new CustomEvent("sw:message", { bubbles: true, cancelable: true, detail: event.data }));
       });
     }
     return {
@@ -12799,7 +12893,7 @@ ${match}</ul>
     if (q === "isAuthenticated")
       return authScope.isAuthenticated ? body() : void 0;
     if (authScope.roles.includes(q))
-      return body() ? body() : void 0;
+      return body();
     return void 0;
   };
   var authScopeModule = {
@@ -12814,13 +12908,20 @@ ${match}</ul>
   __export(container_exports, {
     containerScopeModule: () => containerScopeModule,
     default: () => container_default,
+    dispose: () => dispose,
     getContainerSignal: () => getContainerSignal,
     scopeRule: () => scopeRule2
   });
   var containerSignals = /* @__PURE__ */ new Map();
+  var cleanupFns = [];
   function getContainerSignal(query, _element) {
     if (containerSignals.has(query)) {
       return containerSignals.get(query);
+    }
+    if (typeof globalThis.matchMedia !== "function") {
+      const s2 = ref(false);
+      containerSignals.set(query, s2);
+      return s2;
     }
     const mql = globalThis.matchMedia(query);
     const s = ref(mql.matches);
@@ -12828,8 +12929,15 @@ ${match}</ul>
       s.value = e.matches;
     };
     mql.addEventListener("change", listener);
+    cleanupFns.push(() => mql.removeEventListener("change", listener));
     containerSignals.set(query, s);
     return s;
+  }
+  function dispose() {
+    while (cleanupFns.length > 0) {
+      cleanupFns.pop()?.();
+    }
+    containerSignals.clear();
   }
   var scopeRule2 = (q, body) => getContainerSignal(q).value ? body() : void 0;
   var containerScopeModule = {
@@ -12843,13 +12951,13 @@ ${match}</ul>
   var media_exports = {};
   __export(media_exports, {
     default: () => media_default,
-    dispose: () => dispose,
+    dispose: () => dispose2,
     getMediaSignal: () => getMediaSignal,
     mediaScopeModule: () => mediaScopeModule,
     scopeRule: () => scopeRule3
   });
   var mediaSignals = /* @__PURE__ */ new Map();
-  var cleanupFns = [];
+  var cleanupFns2 = [];
   function getMediaSignal(query) {
     if (mediaSignals.has(query)) {
       return mediaSignals.get(query);
@@ -12864,13 +12972,13 @@ ${match}</ul>
       s.value = e.matches;
     };
     mql.addEventListener("change", listener);
-    cleanupFns.push(() => mql.removeEventListener("change", listener));
+    cleanupFns2.push(() => mql.removeEventListener("change", listener));
     mediaSignals.set(query, s);
     return s;
   }
   var scopeRule3 = (q, body) => getMediaSignal(q).value ? body() : void 0;
-  function dispose() {
-    disposeScope(cleanupFns);
+  function dispose2() {
+    disposeScope(cleanupFns2);
   }
   var mediaScopeModule = {
     name: "media",
@@ -12914,7 +13022,7 @@ ${match}</ul>
   var os_exports = {};
   __export(os_exports, {
     default: () => os_default,
-    dispose: () => dispose2,
+    dispose: () => dispose3,
     getOSScope: () => getOSScope,
     onGlobalInit: () => onGlobalInit,
     osScope: () => osScope,
@@ -12942,13 +13050,14 @@ ${match}</ul>
       return "light";
     return globalThis.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   };
+  var getUserAgent = () => typeof navigator !== "undefined" ? navigator.userAgent : "";
   var osScope = reactive({
     platform: getOS(),
     theme: getTheme(),
-    isMobile: /Android|iPhone|iPad|iPod/i.test(navigator.userAgent),
-    isDesktop: !/Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+    isMobile: /Android|iPhone|iPad|iPod/i.test(getUserAgent()),
+    isDesktop: !/Android|iPhone|iPad|iPod/i.test(getUserAgent())
   });
-  var cleanupFns2 = [];
+  var cleanupFns3 = [];
   function onGlobalInit() {
     if (typeof window !== "undefined") {
       const mq = globalThis.matchMedia("(prefers-color-scheme: dark)");
@@ -12956,7 +13065,7 @@ ${match}</ul>
         osScope.theme = e.matches ? "dark" : "light";
       };
       mq.addEventListener("change", onThemeChange);
-      cleanupFns2.push(() => mq.removeEventListener("change", onThemeChange));
+      cleanupFns3.push(() => mq.removeEventListener("change", onThemeChange));
     }
   }
   function getOSScope() {
@@ -12967,8 +13076,8 @@ ${match}</ul>
       return osScope[q] ? body() : void 0;
     return osScope.platform === q ? body() : void 0;
   };
-  function dispose2() {
-    disposeScope(cleanupFns2);
+  function dispose3() {
+    disposeScope(cleanupFns3);
   }
   var osScopeModule = {
     name: "os",
@@ -12982,7 +13091,7 @@ ${match}</ul>
   var view_exports = {};
   __export(view_exports, {
     default: () => view_default,
-    dispose: () => dispose3,
+    dispose: () => dispose4,
     onGlobalInit: () => onGlobalInit2,
     scopeRule: () => scopeRule6,
     viewScope: () => viewScope,
@@ -12998,7 +13107,7 @@ ${match}</ul>
     isPortrait: typeof window !== "undefined" ? globalThis.innerHeight > globalThis.innerWidth : false,
     isLandscape: typeof window !== "undefined" ? globalThis.innerWidth >= globalThis.innerHeight : true
   });
-  var cleanupFns3 = [];
+  var cleanupFns4 = [];
   var viewRafScheduled = false;
   function scheduleViewUpdate(apply) {
     if (viewRafScheduled)
@@ -13030,7 +13139,7 @@ ${match}</ul>
       const updateViewCoalesced = () => scheduleViewUpdate(updateView);
       globalThis.addEventListener("resize", updateViewCoalesced);
       globalThis.addEventListener("scroll", updateViewCoalesced);
-      cleanupFns3.push(
+      cleanupFns4.push(
         () => globalThis.removeEventListener("resize", updateViewCoalesced),
         () => globalThis.removeEventListener("scroll", updateViewCoalesced)
       );
@@ -13040,7 +13149,7 @@ ${match}</ul>
         viewScope.orientation = globalThis.screen.orientation.type;
       };
       globalThis.screen.orientation.addEventListener("change", onOrientationChange);
-      cleanupFns3.push(() => globalThis.screen.orientation.removeEventListener("change", onOrientationChange));
+      cleanupFns4.push(() => globalThis.screen.orientation.removeEventListener("change", onOrientationChange));
     }
   }
   var scopeRule6 = (q, body) => {
@@ -13048,8 +13157,8 @@ ${match}</ul>
       return viewScope[q] ? body() : void 0;
     return void 0;
   };
-  function dispose3() {
-    disposeScope(cleanupFns3);
+  function dispose4() {
+    disposeScope(cleanupFns4);
   }
   var viewScopeModule = {
     name: "view",
@@ -13226,7 +13335,6 @@ ${match}</ul>
     "delay",
     DEFAULT_DEBOUNCE_TIME,
     (run, wait, _el, rec, map) => {
-      clearTimer(rec);
       const runner = () => {
         map.delete("delay");
         run();
@@ -13274,7 +13382,8 @@ ${match}</ul>
   });
   var dragModifier = {
     name: "drag",
-    handle: (_payload, _element, _argument, _runtime) => {
+    handle: (payload, _element, _argument, _runtime) => {
+      return payload;
     },
     interceptPipeline: (evaluate2, element, _argument, _runtime) => {
       let startX = 0;
@@ -13584,7 +13693,8 @@ ${match}</ul>
   });
   var zoomModifier = {
     name: "zoom",
-    handle: (_payload, _element, _argument, _runtime) => {
+    handle: (payload, _element, _argument, _runtime) => {
+      return payload;
     },
     interceptPipeline: (evaluate2, _element, _argument, _runtime) => {
       return (el, expression, extras) => {
@@ -13889,17 +13999,12 @@ ${match}</ul>
                   });
                 }
                 mutation.removedNodes.forEach((node) => {
-                  if (node instanceof HTMLElement) {
-                    if (isExternalOverlay(node))
+                  if (node instanceof Element) {
+                    if (node instanceof HTMLElement && isExternalOverlay(node))
                       return;
                     if (node.isConnected || addedThisBatch.has(node) || movedNodes.has(node))
                       return;
-                    const enhancedTarget = node;
-                    if (enhancedTarget[CLEANUP_FUNCTIONS_KEY]) {
-                      enhancedTarget[CLEANUP_FUNCTIONS_KEY].forEach((cleanup) => cleanup());
-                      delete enhancedTarget[CLEANUP_FUNCTIONS_KEY];
-                    }
-                    delete enhancedTarget[MARKER_KEY];
+                    teardownSubtree(node, true);
                   }
                 });
               } else if (mutation.type === "attributes") {
@@ -13914,6 +14019,9 @@ ${match}</ul>
                   if (target === document.documentElement) {
                     markExternalStylesSettled();
                   }
+                }
+                if (attrName === "data-debug") {
+                  handleDebugAttributeChange(target, context);
                 }
                 if (attrName === "style" || attrName === "draggable" || attrName?.startsWith("data-") || attrName?.startsWith("nexus-"))
                   return;
@@ -13932,7 +14040,7 @@ ${match}</ul>
               }
             }
             if (hasChildListMutations) {
-              document.dispatchEvent(new CustomEvent("nexus:dom-mutated", { bubbles: true }));
+              document.dispatchEvent(new CustomEvent("ux:dom-mutated", { bubbles: true }));
             }
             addedThisBatch.forEach((node) => {
               movedNodes.add(node);
@@ -13950,6 +14058,10 @@ ${match}</ul>
     }
   };
   var mutation_default = mutationObserverModule;
+
+  // src/engine/styleConstants.ts
+  var PACKED_COMPONENTS = ".draggable-chosen{background-color:var(--color-base-300,#d4d4d8);box-shadow:inset 0 0 0 2px var(--color-primary,#3b82f6)}.draggable-drag{opacity:1;background-color:var(--color-base-300,#d4d4d8);box-shadow:0 25px 50px -12px rgba(0,0,0,.25);transform:scale(1.05);cursor:grabbing;z-index:9999}.draggable-ghost{opacity:1;background-color:var(--color-base-300,#d4d4d8);border:2px solid var(--color-primary,#3b82f6);box-shadow:0 25px 50px -12px rgba(0,0,0,.25)}.draggable-selected{box-shadow:inset 0 0 0 2px var(--color-accent,var(--color-secondary,#ec4899))}.draggable-swap-highlight{background-color:color-mix(in srgb,var(--color-warning,#eab308) 20%,transparent);box-shadow:inset 0 0 0 2px var(--color-warning,#eab308)}.drop-target-before{background:linear-gradient(to bottom,color-mix(in srgb,var(--color-primary,#3b82f6) 30%,transparent) 0%,transparent 20%);box-shadow:inset 0 2px 0 0 var(--color-primary,#3b82f6)}.drop-target-after{background:linear-gradient(to top,color-mix(in srgb,var(--color-primary,#3b82f6) 30%,transparent) 0%,transparent 20%);box-shadow:inset 0 -2px 0 0 var(--color-primary,#3b82f6)}";
+  var PACKED_KEYFRAMES = "@keyframes spin{to{transform:rotate(360deg)}}@keyframes ping{75%,100%{transform:scale(2);opacity:0}}@keyframes pulse{50%{opacity:.5}}@keyframes bounce{0%,100%{transform:translateY(-25%);animation-timing-function:cubic-bezier(.8,0,1,1)}50%{transform:none;animation-timing-function:cubic-bezier(0,0,.2,1)}}";
 
   // src/manifest.ts
   var autoAttributes = [
@@ -14033,8 +14145,6 @@ ${match}</ul>
     { name: "linkRewriter", module: linkRewriter_exports }
   ];
   var autoObservers = [{ name: "mutation", module: mutation_exports }];
-  var PACKED_COMPONENTS = ".draggable-chosen{background-color:var(--color-base-300,#d4d4d8);box-shadow:inset 0 0 0 2px var(--color-primary,#3b82f6)}.draggable-drag{opacity:1;background-color:var(--color-base-300,#d4d4d8);box-shadow:0 25px 50px -12px rgba(0,0,0,.25);transform:scale(1.05);cursor:grabbing;z-index:9999}.draggable-ghost{opacity:1;background-color:var(--color-base-300,#d4d4d8);border:2px solid var(--color-primary,#3b82f6);box-shadow:0 25px 50px -12px rgba(0,0,0,.25)}.draggable-selected{box-shadow:inset 0 0 0 2px var(--color-accent,var(--color-secondary,#ec4899))}.draggable-swap-highlight{background-color:color-mix(in srgb,var(--color-warning,#eab308) 20%,transparent);box-shadow:inset 0 0 0 2px var(--color-warning,#eab308)}.drop-target-before{background:linear-gradient(to bottom,color-mix(in srgb,var(--color-primary,#3b82f6) 30%,transparent) 0%,transparent 20%);box-shadow:inset 0 2px 0 0 var(--color-primary,#3b82f6)}.drop-target-after{background:linear-gradient(to top,color-mix(in srgb,var(--color-primary,#3b82f6) 30%,transparent) 0%,transparent 20%);box-shadow:inset 0 -2px 0 0 var(--color-primary,#3b82f6)}";
-  var PACKED_KEYFRAMES = "@keyframes spin{to{transform:rotate(360deg)}}@keyframes ping{75%,100%{transform:scale(2);opacity:0}}@keyframes pulse{50%{opacity:.5}}@keyframes bounce{0%,100%{transform:translateY(-25%);animation-timing-function:cubic-bezier(.8,0,1,1)}50%{transform:none;animation-timing-function:cubic-bezier(0,0,.2,1)}}";
 
   // src/modules/attributes/stylesheet.ts
   var PREFLIGHT_CSS = PACKED_COMPONENTS;
@@ -14372,7 +14482,7 @@ ${bridge}`, {
         jitSheet.replaceSync(compiledCSS);
         this._knownClasses.add(className);
       } catch (err) {
-        console.debug(`Nexus-UX JIT compile check: "${className}":`, err);
+        /* @__PURE__ */ console.debug(`Nexus-UX JIT compile check: "${className}":`, err);
       }
     }
     adoptSignalBinding(el, signalName, runtime) {
@@ -14382,7 +14492,7 @@ ${bridge}`, {
           currentBindings.push(signalName);
           el._signalBindings = currentBindings;
           const varName = signalName.replace(/[#.]/g, "-");
-          runtime.effect(() => {
+          runtime.elementBoundEffect(el, () => {
             const val = runtime.evaluate(el, signalName);
             el.style.setProperty(`--nx-${varName}`, String(val !== void 0 ? val : ""));
           });
@@ -14532,10 +14642,10 @@ ${bridge}`, {
       }
     },
     handle(el, expression, _runtime) {
-      const cleanupFns4 = [];
+      const cleanupFns5 = [];
       if (expression && expression.trim()) {
         const css = expression.trim();
-        cleanupFns4.push(stylesheet.adoptCSSSync(css, void 0, document));
+        cleanupFns5.push(stylesheet.adoptCSSSync(css, void 0, document));
       }
       const root = el.getRootNode();
       if (root && "adoptedStyleSheets" in root) {
@@ -14545,10 +14655,7 @@ ${bridge}`, {
         }
       }
       stylesheet.emitPreflightAndTheme(el);
-      cleanupFns4.push(() => {
-        stylesheet.emitPreflightAndTheme(el);
-      });
-      return () => cleanupFns4.forEach((fn) => fn());
+      return () => cleanupFns5.forEach((fn) => fn());
     }
   };
   var stylesheet_default = stylesheetModule;
@@ -14630,6 +14737,32 @@ ${bridge}`, {
   }
 
   // src/engine/reconciler.ts
+  function teardownSubtree(root, includeRoot = true) {
+    if (!(root instanceof Element))
+      return;
+    const children = root.children;
+    for (let i = 0; i < children.length; i++) {
+      teardownSubtree(children[i], true);
+    }
+    if (!includeRoot)
+      return;
+    const enhanced = root;
+    const cleanups = enhanced[CLEANUP_FUNCTIONS_KEY];
+    if (cleanups) {
+      cleanups.forEach((cleanup) => {
+        try {
+          cleanup();
+        } catch {
+        }
+      });
+      cleanups.clear();
+      delete enhanced[CLEANUP_FUNCTIONS_KEY];
+    }
+    delete enhanced[LOCAL_SCOPES_KEY];
+    delete enhanced[DATA_STACK_KEY];
+    delete enhanced[COMPONENT_CONTEXT_KEY];
+    delete enhanced[MARKER_KEY];
+  }
   var noOp = () => true;
   var defaults = {
     morphStyle: "innerHTML",
@@ -14657,6 +14790,9 @@ ${bridge}`, {
           if (from.style.viewTransitionName) {
             to.style.viewTransitionName = from.style.viewTransitionName;
           }
+          if ("_ux_key" in from) {
+            to._ux_key = from._ux_key;
+          }
           if ("_nexus_key" in from) {
             to._nexus_key = from._nexus_key;
           }
@@ -14673,13 +14809,7 @@ ${bridge}`, {
       },
       afterNodeMorphed: noOp,
       beforeNodeRemoved: (node) => {
-        if (node instanceof Element) {
-          const enhancedNode = node;
-          if (enhancedNode[CLEANUP_FUNCTIONS_KEY]) {
-            enhancedNode[CLEANUP_FUNCTIONS_KEY].forEach((cleanup) => cleanup());
-            enhancedNode[CLEANUP_FUNCTIONS_KEY].clear();
-          }
-        }
+        teardownSubtree(node, true);
         return true;
       },
       afterNodeRemoved: noOp,
@@ -14774,7 +14904,11 @@ ${bridge}`, {
   function getElementKey(node) {
     if (node.nodeType === Node.ELEMENT_NODE) {
       const el = node;
-      return el.id || null;
+      const internalKey = el._ux_key ?? el._nexus_key;
+      if (internalKey !== void 0 && internalKey !== null && internalKey !== "") {
+        return String(internalKey);
+      }
+      return el.getAttribute("data-key") || el.id || null;
     }
     return null;
   }
@@ -14879,6 +15013,7 @@ ${bridge}`, {
       return;
     }
     if (from.nodeType !== to.nodeType) {
+      teardownSubtree(from, true);
       from.parentElement?.replaceChild(to.cloneNode(true), from);
       return;
     }
@@ -14893,6 +15028,7 @@ ${bridge}`, {
     const fromEl = from;
     const toEl = to;
     if (fromEl.tagName !== toEl.tagName) {
+      teardownSubtree(fromEl, true);
       fromEl.parentElement?.replaceChild(toEl.cloneNode(true), fromEl);
       return;
     }
@@ -14978,7 +15114,7 @@ ${bridge}`, {
         }
       }
     }
-    from.dispatchEvent(new CustomEvent("nexus:dom-morphed", { bubbles: true }));
+    from.dispatchEvent(new CustomEvent("ux:dom-morphed", { bubbles: true }));
   }
   var nexusClassMap = /* @__PURE__ */ new WeakMap();
   function reconcileClass(el, value) {
@@ -15023,27 +15159,29 @@ ${bridge}`, {
   }
   var nexusStyleMap = /* @__PURE__ */ new WeakMap();
   function reconcileStyle(el, value) {
-    if (!value)
-      return;
     const currentAdded = nexusStyleMap.get(el) || /* @__PURE__ */ new Set();
-    const toAdd = /* @__PURE__ */ new Set();
     let styleObj = {};
-    if (typeof value === "string") {
+    if (!value) {
+      styleObj = {};
+    } else if (typeof value === "string") {
       value.split(";").forEach((pair) => {
-        const [prop, val] = pair.split(":").map((s) => s.trim());
-        if (prop && val)
-          styleObj[prop] = val;
+        const colonIdx = pair.indexOf(":");
+        if (colonIdx !== -1) {
+          const prop = pair.slice(0, colonIdx).trim();
+          const val = pair.slice(colonIdx + 1).trim();
+          if (prop && val)
+            styleObj[prop] = val;
+        }
       });
-    } else if (typeof value === "object" && value !== null) {
+    } else if (typeof value === "object") {
       styleObj = value;
     } else {
-      return;
+      styleObj = {};
     }
     Object.entries(styleObj).forEach(([prop, val]) => {
       const cssProp = prop.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
       if (val !== null && val !== void 0 && val !== false) {
         el.style.setProperty(cssProp, String(val));
-        toAdd.add(cssProp);
         currentAdded.add(cssProp);
       } else {
         el.style.removeProperty(cssProp);
@@ -15056,15 +15194,45 @@ ${bridge}`, {
         currentAdded.delete(prop);
       }
     });
-    if (currentAdded.size > 0)
+    if (currentAdded.size > 0) {
       nexusStyleMap.set(el, currentAdded);
+    } else {
+      nexusStyleMap.delete(el);
+    }
+  }
+  function deepEqual(a, b) {
+    if (a === b)
+      return true;
+    if (typeof a !== "object" || a === null || typeof b !== "object" || b === null)
+      return false;
+    if (Array.isArray(a)) {
+      if (!Array.isArray(b) || a.length !== b.length)
+        return false;
+      for (let i = 0; i < a.length; i++) {
+        if (!deepEqual(a[i], b[i]))
+          return false;
+      }
+      return true;
+    }
+    if (Array.isArray(b))
+      return false;
+    const keysA = Object.keys(a);
+    const keysB = Object.keys(b);
+    if (keysA.length !== keysB.length)
+      return false;
+    for (let i = 0; i < keysA.length; i++) {
+      const key = keysA[i];
+      if (!Object.prototype.hasOwnProperty.call(b, key) || !deepEqual(a[key], b[key])) {
+        return false;
+      }
+    }
+    return true;
   }
 
   // src/engine/fetch.ts
   init_debug();
   init_consts();
   var fetchCache = /* @__PURE__ */ new Map();
-  var fetchCacheTimers = /* @__PURE__ */ new Map();
   var fetchUtilities = {
     request: (url, options, el) => {
       const isGetOrHead = !options.method || options.method.toUpperCase() === "GET" || options.method.toUpperCase() === "HEAD";
@@ -15081,9 +15249,10 @@ ${bridge}`, {
           }
         });
       }
-      const cacheKey = `${url}:${options.method || "GET"}:${options.responseType || "text"}`;
-      if (fetchCache.has(cacheKey))
+      const cacheKey = `${url}:${options.method || "POST"}:${options.responseType || "text"}`;
+      if (!options.body && fetchCache.has(cacheKey)) {
         return fetchCache.get(cacheKey);
+      }
       const promise = (async () => {
         let controller;
         try {
@@ -15138,34 +15307,45 @@ ${bridge}`, {
           throw e;
         }
       })();
-      fetchCache.set(cacheKey, promise);
-      promise.then(
-        () => {
-        },
-        () => {
-          if (fetchCacheTimers.has(cacheKey))
-            clearTimeout(fetchCacheTimers.get(cacheKey));
-          fetchCacheTimers.set(cacheKey, setTimeout(() => {
-            fetchCache.delete(cacheKey);
-            fetchCacheTimers.delete(cacheKey);
-          }, 2e3));
-        }
-      );
+      if (!options.body) {
+        fetchCache.set(cacheKey, promise);
+        promise.finally(() => {
+          fetchCache.delete(cacheKey);
+        });
+      }
       return promise;
     },
     /**
      * Creates a deeply reactive Suspense proxy that throws its pending Promise when accessed.
-     * This allows Nexus-UX to gracefully pause elementBoundEffect until the fetch completes.
+     * This allows UX to gracefully pause elementBoundEffect until the fetch completes.
      */
     createSuspenseProxy: (promise) => {
       let isResolved = false;
       let isRejected = false;
-      let result;
+      let parsedResult = void 0;
       let error;
       promise.then(
         (res) => {
           isResolved = true;
-          result = res;
+          if (typeof res === "string") {
+            try {
+              parsedResult = JSON.parse(res);
+            } catch {
+              parsedResult = res;
+            }
+          } else {
+            parsedResult = res;
+          }
+          if (parsedResult && typeof parsedResult === "object") {
+            const obj = parsedResult;
+            const envelopes = ["data", "results", "items", "value", "_embedded", "entries"];
+            for (const envelope of envelopes) {
+              if (obj[envelope] !== void 0) {
+                parsedResult = obj[envelope];
+                break;
+              }
+            }
+          }
         },
         (err) => {
           isRejected = true;
@@ -15186,26 +15366,10 @@ ${bridge}`, {
             throw error;
           if (!isResolved)
             throw promise;
-          if (result === void 0 || result === null)
+          if (parsedResult === void 0 || parsedResult === null)
             return void 0;
-          let finalResult = result;
-          if (typeof result === "string") {
-            try {
-              finalResult = JSON.parse(result);
-            } catch (_e) {
-            }
-          }
-          if (finalResult && typeof finalResult === "object") {
-            const envelopes = ["data", "results", "items", "value", "_embedded", "entries"];
-            for (const envelope of envelopes) {
-              if (finalResult[envelope] !== void 0) {
-                finalResult = finalResult[envelope];
-                break;
-              }
-            }
-          }
-          const val = finalResult && typeof finalResult === "object" ? finalResult[prop] : void 0;
-          return typeof val === "function" ? val.bind(finalResult) : val;
+          const val = typeof parsedResult === "object" ? parsedResult[prop] : void 0;
+          return typeof val === "function" ? val.bind(parsedResult) : val;
         }
       });
     }
@@ -15220,7 +15384,6 @@ ${bridge}`, {
   // src/engine/evaluator.ts
   init_debug();
   registerScopeProvider("__global", (_, runtime) => runtime.globalSignals());
-  var shouldAutoEvaluateFunctions = true;
   var currentEvalDepth = 0;
   var MAX_EVAL_DEPTH = 50;
   function evaluate(el, expression, runtime, extras = {}) {
@@ -15231,20 +15394,201 @@ ${bridge}`, {
     runner((v) => res = v, extras);
     return res;
   }
+  function replaceScopeRules(expr) {
+    if (!expr.includes("@"))
+      return expr;
+    let out = "";
+    let i = 0;
+    let inQuote = null;
+    let escape = false;
+    while (i < expr.length) {
+      const ch = expr[i];
+      if (escape) {
+        out += ch;
+        escape = false;
+        i++;
+        continue;
+      }
+      if (inQuote) {
+        out += ch;
+        if (ch === "\\")
+          escape = true;
+        else if (ch === inQuote)
+          inQuote = null;
+        i++;
+        continue;
+      }
+      if (ch === "'" || ch === '"' || ch === "`") {
+        inQuote = ch;
+        out += ch;
+        i++;
+        continue;
+      }
+      if (ch === "@") {
+        const rest = expr.slice(i);
+        const header = /^@(\w+)\s*\(/.exec(rest);
+        if (header) {
+          const name = header[1];
+          let j = i + header[0].length;
+          let parenDepth = 1;
+          let q = null;
+          let esc = false;
+          while (j < expr.length && parenDepth > 0) {
+            const c = expr[j];
+            if (esc) {
+              esc = false;
+              j++;
+              continue;
+            }
+            if (q) {
+              if (c === "\\")
+                esc = true;
+              else if (c === q)
+                q = null;
+              j++;
+              continue;
+            }
+            if (c === "'" || c === '"' || c === "`")
+              q = c;
+            else if (c === "(")
+              parenDepth++;
+            else if (c === ")")
+              parenDepth--;
+            j++;
+          }
+          if (parenDepth === 0) {
+            const rawArg = expr.slice(i + header[0].length, j - 1);
+            let k = j;
+            while (k < expr.length && /\s/.test(expr[k]))
+              k++;
+            if (expr[k] === "{") {
+              k++;
+              const bodyStart = k;
+              let braceDepth = 1;
+              let bq = null;
+              let besc = false;
+              while (k < expr.length && braceDepth > 0) {
+                const c = expr[k];
+                if (besc) {
+                  besc = false;
+                  k++;
+                  continue;
+                }
+                if (bq) {
+                  if (c === "\\")
+                    besc = true;
+                  else if (c === bq)
+                    bq = null;
+                  k++;
+                  continue;
+                }
+                if (c === "'" || c === '"' || c === "`")
+                  bq = c;
+                else if (c === "{")
+                  braceDepth++;
+                else if (c === "}")
+                  braceDepth--;
+                k++;
+              }
+              if (braceDepth === 0) {
+                let safeArg = rawArg.trim();
+                if (safeArg.startsWith("'") && safeArg.endsWith("'") || safeArg.startsWith('"') && safeArg.endsWith('"')) {
+                  safeArg = safeArg.slice(1, -1);
+                }
+                safeArg = safeArg.replace(/`/g, "\\`");
+                const innerBody = replaceScopeRules(expr.slice(bodyStart, k - 1).trim());
+                out += `_scopes.${name}(\`${safeArg}\`, () => { return ${innerBody} })`;
+                i = k;
+                continue;
+              }
+            }
+          }
+        }
+      }
+      out += ch;
+      i++;
+    }
+    return out;
+  }
+  function replaceGlobalShorthand(expr) {
+    if (!expr.includes("#"))
+      return expr;
+    let out = "";
+    let i = 0;
+    let inQuote = null;
+    let escape = false;
+    const templateBraceDepths = [];
+    let braceDepth = 0;
+    while (i < expr.length) {
+      const ch = expr[i];
+      if (escape) {
+        out += ch;
+        escape = false;
+        i++;
+        continue;
+      }
+      if (inQuote) {
+        out += ch;
+        if (ch === "\\") {
+          escape = true;
+        } else if (inQuote === "`" && ch === "$" && expr[i + 1] === "{") {
+          out += "{";
+          i += 2;
+          templateBraceDepths.push(braceDepth);
+          braceDepth++;
+          inQuote = null;
+          continue;
+        } else if (ch === inQuote) {
+          inQuote = null;
+        }
+        i++;
+        continue;
+      }
+      if (ch === "'" || ch === '"' || ch === "`") {
+        inQuote = ch;
+        out += ch;
+        i++;
+        continue;
+      }
+      if (ch === "{") {
+        braceDepth++;
+        out += ch;
+        i++;
+        continue;
+      }
+      if (ch === "}") {
+        braceDepth--;
+        out += ch;
+        if (templateBraceDepths.length > 0 && templateBraceDepths[templateBraceDepths.length - 1] === braceDepth) {
+          templateBraceDepths.pop();
+          inQuote = "`";
+        }
+        i++;
+        continue;
+      }
+      if (ch === "#") {
+        const prev = i > 0 ? expr[i - 1] : "";
+        if (!prev || !/[a-zA-Z0-9_$]/.test(prev)) {
+          const match = /^#([a-zA-Z_$][\w$]*)/.exec(expr.slice(i));
+          if (match) {
+            out += `__global.${match[1]}`;
+            i += match[0].length;
+            continue;
+          }
+        }
+      }
+      out += ch;
+      i++;
+    }
+    return out;
+  }
   function preProcessExpression(expression) {
     let processed = expression;
     if (processed.includes("@")) {
-      processed = processed.replace(/@(\w+)\s*\((.*?)\)\s*\{([^}]*)\}/g, (_match, name, arg, body) => {
-        let safeArg = arg.trim();
-        if (safeArg.startsWith("'") && safeArg.endsWith("'") || safeArg.startsWith('"') && safeArg.endsWith('"')) {
-          safeArg = safeArg.slice(1, -1);
-        }
-        safeArg = safeArg.replace(/`/g, "\\`");
-        return `_scopes.${name}(\`${safeArg}\`, () => { return ${body.trim()} })`;
-      });
+      processed = replaceScopeRules(processed);
     }
     if (processed.includes("#")) {
-      processed = processed.replace(/(^|[^a-zA-Z0-9_$'"`])#([a-zA-Z_$][\w$]*)/g, "$1__global.$2");
+      processed = replaceGlobalShorthand(processed);
     }
     return processed;
   }
@@ -15379,7 +15723,7 @@ ${bridge}`, {
       try {
         const currentScope = callExtras && Object.keys(callExtras).length > 0 ? Object.assign(Object.create(scope), callExtras) : scope;
         const result = func.call(el, currentScope);
-        if (shouldAutoEvaluateFunctions && typeof result === "function") {
+        if (typeof result === "function") {
           receiver(result.call(el, currentScope));
         } else {
           receiver(result);
@@ -15421,7 +15765,7 @@ ${bridge}`, {
         value: element.getAttribute(name) || "",
         directive: cached.directive,
         argument: cached.argument,
-        modifiers: cached.modifiers,
+        modifiers: [...cached.modifiers],
         target: cached.target
       };
     }
@@ -15452,7 +15796,7 @@ ${bridge}`, {
     for (let i = 0; i <= len; i++) {
       const isEnd = i === len;
       const char = isEnd ? "" : rest[i];
-      const isModifierDelim = char === MODIFIER_DELIMITER || char === "_";
+      const isModifierDelim = char === MODIFIER_DELIMITER || char === "_" || char === ":";
       const isArgDelim = char === "-" && state < 2;
       const isDelim = isModifierDelim || isArgDelim;
       if (isDelim || isEnd) {
@@ -15490,7 +15834,8 @@ ${bridge}`, {
     return {
       name,
       value: element.getAttribute(name) || "",
-      ...structure
+      ...structure,
+      modifiers: [...structure.modifiers]
     };
   }
 
@@ -15532,7 +15877,6 @@ ${bridge}`, {
   }
 
   // src/engine/modules.ts
-  init_mcp();
   init_debug();
   var globalReactiveState = reactive({});
   var ModuleCoordinator = class {
@@ -15549,6 +15893,7 @@ ${bridge}`, {
     runtimeContext;
     initContext;
     markerDispenser = 1;
+    isBooting = true;
     constructor() {
       registerScopeProvider("_scopes", () => this._scopesRegistry);
       this.runtimeContext = {
@@ -15582,7 +15927,7 @@ ${bridge}`, {
             });
             return cleanup;
           } catch (e) {
-            initError2("bind", `Reactive bind failed on <${el.tagName}>: ${errMsg(e)}`, el, value);
+            initError("bind", `Reactive bind failed on <${el.tagName}>: ${errMsg(e)}`, el, value);
           }
         },
         morphDOM,
@@ -15639,9 +15984,12 @@ ${bridge}`, {
       if (typeof document !== "undefined") {
         const mcpUrl = document.querySelector('meta[name="nexus-mcp-server"]')?.getAttribute("content");
         if (mcpUrl) {
-          this.runtimeContext.mcp = new MCPClient(mcpUrl);
-          this.runtimeContext.mcp.connect().catch(() => {
-            this.runtimeContext.debug(`[Coordinator] MCP Connection skipped: ${mcpUrl}`);
+          Promise.resolve().then(() => (init_mcp(), mcp_exports)).then(({ MCPClient: MCPClient2 }) => {
+            this.runtimeContext.mcp = new MCPClient2(mcpUrl);
+            this.runtimeContext.mcp.connect().catch(() => {
+              this.runtimeContext.debug(`[Coordinator] MCP Connection skipped: ${mcpUrl}`);
+            });
+          }).catch(() => {
           });
         }
       }
@@ -15707,6 +16055,10 @@ ${bridge}`, {
           );
         }
       });
+      this.isBooting = false;
+    }
+    finishBooting() {
+      this.isBooting = false;
     }
     registerModifierModule(name, module) {
       this.modifierModules.set(name, module);
@@ -15742,7 +16094,9 @@ ${bridge}`, {
           this.directiveOrder.push(key);
         }
       }
-      this.triggerScan();
+      if (!this.isBooting) {
+        this.triggerScan();
+      }
     }
     registerActionModule(name, module) {
       this.actionModules.set(name, module);
@@ -15970,125 +16324,6 @@ ${bridge}`, {
 
   // src/index.ts
   init_consts();
-
-  // src/engine/logic.worker.ts
-  var _heapView = null;
-  function describeWorkerFnError(err) {
-    if (err instanceof ReferenceError) {
-      return `${err.message} \u2014 runInWorker() cannot see variables closed over from the caller's scope; pass them explicitly via the "args" parameter instead.`;
-    }
-    return err instanceof Error ? err.message : String(err);
-  }
-  function handleWorkerMessage(e) {
-    const { type, payload, id, taskName, fn, args } = e.data || {};
-    switch (type) {
-      case "INIT_HEAP":
-        if (payload instanceof SharedArrayBuffer || payload instanceof ArrayBuffer) {
-          _heapView = new Float64Array(payload);
-          postLog("Heap initialized in worker");
-        }
-        break;
-      case "EXECUTE":
-        try {
-          const result = executeTask(taskName, payload);
-          self.postMessage({ type: "RESULT", id, payload: result });
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          self.postMessage({ type: "ERROR", id, error: message });
-        }
-        break;
-      case "EXECUTE_FN":
-        (async () => {
-          try {
-            const compiledFn = new Function(`return (${fn})`)();
-            const callArgs = Array.isArray(args) ? args : [];
-            const result = await compiledFn(...callArgs);
-            self.postMessage({ type: "RESULT", id, payload: result });
-          } catch (err) {
-            const message = describeWorkerFnError(err);
-            self.postMessage({ type: "ERROR", id, error: message });
-          }
-        })();
-        break;
-    }
-  }
-  self.onmessage = handleWorkerMessage;
-  function postLog(...args) {
-    self.postMessage({ type: "LOG", payload: args });
-  }
-  var tasks = {
-    "fibonacci": (data) => {
-      const n = Number(data);
-      const fib = (num) => num <= 1 ? num : fib(num - 1) + fib(num - 2);
-      return fib(n);
-    },
-    "processData": (data) => {
-      const numbers = data;
-      return numbers.map((x) => x * 2).filter((x) => x > 10);
-    },
-    "PREDICT_TRAJECTORY": (data) => {
-      const { history, candidates } = data;
-      if (!history || history.length < 3)
-        return { matchedIds: [] };
-      const p0 = history[history.length - 3];
-      const p2 = history[history.length - 1];
-      const dt = (p2.t - p0.t) / 1e3;
-      if (dt <= 0)
-        return { matchedIds: [] };
-      const vx = (p2.x - p0.x) / dt;
-      const vy = (p2.y - p0.y) / dt;
-      const speed = Math.sqrt(vx * vx + vy * vy);
-      if (speed < 50)
-        return { matchedIds: [], speed };
-      const timeHorizon = 0.15;
-      const projX = p2.x + vx * timeHorizon;
-      const projY = p2.y + vy * timeHorizon;
-      const minX = Math.min(p2.x, projX) - 20;
-      const minY = Math.min(p2.y, projY) - 20;
-      const maxX = Math.max(p2.x, projX) + 20;
-      const maxY = Math.max(p2.y, projY) + 20;
-      const matchedIds = [];
-      let minD = Infinity;
-      let snappedId = void 0;
-      let snappedCx = 0;
-      let snappedCy = 0;
-      const len = candidates ? candidates.length : 0;
-      for (let i = 0; i < len; i++) {
-        const c = candidates[i];
-        const cx = c.left + c.width / 2;
-        const cy = c.top + c.height / 2;
-        if (cx >= minX && cx <= maxX && cy >= minY && cy <= maxY) {
-          matchedIds.push(c.id);
-          const d = Math.hypot(cx - projX, cy - projY);
-          if (d < minD) {
-            minD = d;
-            snappedId = c.id;
-            snappedCx = cx;
-            snappedCy = cy;
-          }
-        }
-      }
-      return {
-        matchedIds,
-        snappedId,
-        snappedTarget: snappedId ? { cx: snappedCx, cy: snappedCy } : void 0,
-        speed,
-        vx,
-        vy,
-        projX,
-        projY
-      };
-    }
-  };
-  function executeTask(taskName, data) {
-    if (taskName in tasks) {
-      return tasks[taskName](data);
-    }
-    throw new Error(`Unknown task: ${taskName}`);
-  }
-  postLog("Worker ready");
-
-  // src/index.ts
   var _idCounters = {};
   function $id(groupName = "default") {
     if (!_idCounters[groupName]) {
@@ -16098,17 +16333,36 @@ ${bridge}`, {
     }
     return `${groupName}-${_idCounters[groupName]}`;
   }
-  function $nextTick() {
+  function $nextTick(cb) {
     return new Promise((resolve) => {
-      Promise.resolve().then(() => {
-        requestAnimationFrame(() => resolve());
+      scheduler.nextTick(() => {
+        cb?.();
+        resolve();
       });
     });
   }
-  var UX = class {
-    coordinator;
+  var UX = class _UX {
+    _coordinator;
+    reactive = reactive;
+    ref = ref;
+    computed = computed;
+    effect = effect;
+    elementBoundEffect = elementBoundEffect;
+    watch = watch;
+    nextTick = $nextTick;
+    id = $id;
+    storage = {
+      local: reactiveLocalStorage,
+      session: reactiveSessionStorage
+    };
+    predictive = corePredictiveEngine;
+    cache = cacheEngine;
+    topology = topology;
+    selfHeal = { getHistory: getBeaconHistory };
+    runInWorker = runInWorker;
+    UX = _UX;
     constructor() {
-      this.coordinator = new ModuleCoordinator();
+      this._coordinator = new ModuleCoordinator();
       registerScopeProvider("$el", (el) => el);
       registerScopeProvider("$dispatch", (el) => (eventName, detail) => {
         if (!(el instanceof Element))
@@ -16117,58 +16371,58 @@ ${bridge}`, {
       });
       registerScopeProvider("$global", (_el, runtime) => runtime.globalSignals());
       registerScopeProvider("$actions", (_el, runtime) => runtime.globalActions());
-      this.coordinator.registerActionModule("$id", {
+      this._coordinator.registerActionModule("$id", {
         name: "$id",
         handle: (_el, ...args) => $id(...args)
       });
-      this.coordinator.registerActionModule("$nextTick", {
+      this._coordinator.registerActionModule("$nextTick", {
         name: "$nextTick",
         handle: (_el, ...args) => $nextTick(...args)
       });
       this.registerFromManifest();
-      this.coordinator.runtimeContext.setGlobalSignal("$predictive", corePredictiveEngine);
-      this.predictive = corePredictiveEngine;
-      this.cache = cacheEngine;
-      this.coordinator.registerUtilityModule("fetch", fetchModule);
-      initSelfHeal(this.coordinator.runtimeContext, {
+      this._coordinator.finishBooting();
+      this._coordinator.runtimeContext.setGlobalSignal("$predictive", corePredictiveEngine);
+      this._coordinator.registerUtilityModule("fetch", fetchModule);
+      initSelfHeal(this._coordinator.runtimeContext, {
         enabled: true,
-        emitToConsole: this.coordinator.runtimeContext.isDevMode ?? false,
+        emitToConsole: this._coordinator.runtimeContext.isDevMode ?? false,
         emitToPlatform: false
       });
       this.init();
       if (typeof document !== "undefined") {
+        document.dispatchEvent(new CustomEvent("ux:ready", { bubbles: true }));
         document.dispatchEvent(new CustomEvent("nexus-ready", { bubbles: true }));
       }
     }
     registerFromManifest() {
       autoAttributes.forEach(({ name, module }) => {
-        this.coordinator.registerAttributeModule(name, module.default || module);
+        this._coordinator.registerAttributeModule(name, module.default || module);
       });
       autoSprites.forEach(({ name, module }) => {
         const spriteMod = module.default || Object.values(module).find((m) => m && typeof m.sprites === "function");
         if (spriteMod && typeof spriteMod.sprites === "function") {
-          this.coordinator.registerSpriteModule(spriteMod.name || name, spriteMod);
+          this._coordinator.registerSpriteModule(spriteMod.name || name, spriteMod);
         }
       });
       autoScopes.forEach(({ name, module }) => {
         const scopeMod = module.default || Object.values(module)[0];
         if (scopeMod) {
-          this.coordinator.registerScopeModule(scopeMod.name || name, scopeMod);
+          this._coordinator.registerScopeModule(scopeMod.name || name, scopeMod);
         }
       });
       autoModifiers.forEach(({ name, module }) => {
-        this.coordinator.registerModifierModule(name, module.default || module);
+        this._coordinator.registerModifierModule(name, module.default || module);
       });
       autoObservers.forEach(({ name, module }) => {
         const obsMod = module.default || Object.values(module)[0];
         if (obsMod) {
-          this.coordinator.registerObserverModule(obsMod.name || name, obsMod);
+          this._coordinator.registerObserverModule(obsMod.name || name, obsMod);
         }
       });
       autoListeners.forEach(({ name, module }) => {
         const listenerMod = module.default || Object.values(module)[0];
         if (listenerMod) {
-          this.coordinator.registerListenerModule(listenerMod.name || name, listenerMod);
+          this._coordinator.registerListenerModule(listenerMod.name || name, listenerMod);
         }
       });
     }
@@ -16185,15 +16439,60 @@ ${bridge}`, {
       const roots = document.querySelectorAll(ROOT_SELECTOR);
       roots.forEach((root) => {
         if (root instanceof HTMLElement) {
-          this.coordinator.initializeModules(root);
+          this._coordinator.initializeModules(root);
         }
       });
     }
+    get coordinator() {
+      return this._coordinator;
+    }
     get coordinate() {
-      return this.coordinator;
+      return this._coordinator;
+    }
+    get runtime() {
+      return this._coordinator.runtimeContext;
+    }
+    get signals() {
+      return this._coordinator.runtimeContext.globalSignals();
+    }
+    get sprites() {
+      return this._coordinator.runtimeContext.sprites;
+    }
+    get idb() {
+      return getIndexedDBProxy();
+    }
+    getSignal(key) {
+      return this._coordinator.runtimeContext.globalSignals()[key];
+    }
+    setSignal(key, value) {
+      this._coordinator.runtimeContext.setGlobalSignal(key, value);
+    }
+    scope(el, extras) {
+      return getElementScope(el, this._coordinator.runtimeContext, extras);
+    }
+    localSignals(el) {
+      return this._coordinator.runtimeContext.localSignals(el);
+    }
+    evaluate(el, expr, extras) {
+      return this._coordinator.runtimeContext.evaluate(el, expr, extras);
+    }
+    process(el, forceReWalk = false) {
+      return this._coordinator.processElement(el, forceReWalk);
+    }
+    teardown(el, includeRoot = true) {
+      return teardownSubtree(el, includeRoot);
+    }
+    morph(el, htmlOrNode, options) {
+      return morphDOM(el, htmlOrNode, options);
+    }
+    action(name, fn) {
+      this._coordinator.registerActionModule(name, {
+        name,
+        handle: (_el, ...args) => fn(...args)
+      });
     }
     register(type, name, module) {
-      const c = this.coordinator;
+      const c = this._coordinator;
       switch (type) {
         case "attribute":
           c.registerAttributeModule(name, module);
@@ -16216,18 +16515,45 @@ ${bridge}`, {
       }
     }
   };
-  var isWorker = typeof globalThis.WorkerGlobalScope !== "undefined" && typeof document === "undefined";
-  var Nexus = typeof document !== "undefined" ? new UX() : null;
-  if (isWorker) {
-    self.onmessage = handleWorkerMessage;
-  } else if (typeof document !== "undefined") {
+  var uxInstance = typeof document !== "undefined" ? new UX() : null;
+  var Nexus = uxInstance;
+  var src_default = uxInstance;
+  if (typeof document !== "undefined") {
     topology.start();
   }
-  if (typeof window !== "undefined" && Nexus) {
-    globalThis.Nexus = Nexus;
-    globalThis.Nexus.selfHeal = { getHistory: getBeaconHistory };
-    globalThis.Nexus.runInWorker = runInWorker;
-    globalThis._NEXUS_RUNTIME = Nexus.coordinator.runtimeContext;
+  var elementUxBridgeCache = /* @__PURE__ */ new WeakMap();
+  if (typeof Element !== "undefined" && !Object.getOwnPropertyDescriptor(Element.prototype, "ux")) {
+    Object.defineProperty(Element.prototype, "ux", {
+      configurable: true,
+      get() {
+        let bridge = elementUxBridgeCache.get(this);
+        if (!bridge && uxInstance) {
+          const el = this;
+          bridge = {
+            get state() {
+              return el instanceof HTMLElement ? uxInstance.localSignals(el) : {};
+            },
+            get scope() {
+              return uxInstance.scope(el);
+            },
+            evaluate: (expr, extras) => uxInstance.evaluate(el, expr, extras),
+            morph: (htmlOrNode, options) => uxInstance.morph(el, htmlOrNode, options),
+            process: (forceReWalk = false) => {
+              if (el instanceof HTMLElement)
+                uxInstance.process(el, forceReWalk);
+            },
+            teardown: (includeRoot = true) => uxInstance.teardown(el, includeRoot)
+          };
+          elementUxBridgeCache.set(el, bridge);
+        }
+        return bridge;
+      }
+    });
   }
-  return __toCommonJS(src_exports);
+  if (typeof window !== "undefined" && uxInstance) {
+    globalThis.UX = uxInstance;
+    globalThis.Nexus = uxInstance;
+    globalThis._UX_RUNTIME = uxInstance.runtime;
+    globalThis._NEXUS_RUNTIME = uxInstance.runtime;
+  }
 })();

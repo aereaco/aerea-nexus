@@ -157,12 +157,6 @@ async function buildBundle(options: BuildOptions = {}) {
     let analysisResult: any = null;
     let packedThemeCss = "";
 
-    // AOT Style Layer Fetch — only generates framework-specific constants
-    // (PACKED_COMPONENTS, PACKED_KEYFRAMES). Preflight and theme are fetched
-    // at runtime from CDN so they don't inflate the bundle.
-    console.log("\n🎨 Generating AOT style layer constants...");
-    const packedStyleLayers = await fetchStyleLayerPrimitives();
-
     if (appDir) {
       console.log(`\n🔍 Analyzing app: ${appDir}`);
       analysisResult = await analyzeAppFiles(appDir);
@@ -345,11 +339,10 @@ async function buildBundle(options: BuildOptions = {}) {
       manifestLines.push("export const autoObservers: any[] = [];");
     }
 
-    // Only PACKED_COMPONENTS and PACKED_KEYFRAMES go into the bundle.
+    // Re-export packed style primitives from engine/styleConstants.ts (single source of truth).
     // PACKED_PREFLIGHT and PACKED_THEME are fetched at runtime from CDN to
     // avoid embedding ~22KB of Tailwind CSS strings in the bundle.
-    manifestLines.push(`export const PACKED_COMPONENTS = "${packedStyleLayers.components}";`);
-    manifestLines.push(`export const PACKED_KEYFRAMES = "${packedStyleLayers.keyframes}";`);
+    manifestLines.push("export { PACKED_COMPONENTS, PACKED_KEYFRAMES } from './engine/styleConstants.ts';");
     manifestLines.push(`export const PACKED_THEME_CSS = "${packedThemeCss}";`);
 
 
@@ -365,10 +358,11 @@ async function buildBundle(options: BuildOptions = {}) {
       outfile: outFile,
       bundle: true,
       format: "iife",
-      globalName: "UX",
       target: "es2022",
       legalComments: "none",
       minify: false,
+      treeShaking: true,
+      pure: ["console.log", "console.debug"],
     };
 
     console.log("Starting esbuild...");
@@ -387,6 +381,8 @@ async function buildBundle(options: BuildOptions = {}) {
       target: "es2022",
       legalComments: "none",
       minify: false,
+      treeShaking: true,
+      pure: ["console.log", "console.debug"],
     });
     console.log(`Worker build complete: ${workerOutFile}`);
 
@@ -398,7 +394,7 @@ async function buildBundle(options: BuildOptions = {}) {
       const code = await Deno.readTextFile(outFile);
       const result = await swcMinify(code, {
         module: true,
-        compress: { passes: 2 },
+        compress: { passes: 3 },
         mangle: true
       });
       const minified = result.code || code;
@@ -414,7 +410,7 @@ async function buildBundle(options: BuildOptions = {}) {
       const workerCode = await Deno.readTextFile(workerOutFile);
       const workerResult = await swcMinify(workerCode, {
         module: true,
-        compress: { passes: 2 },
+        compress: { passes: 3 },
         mangle: true
       });
       const workerMinified = workerResult.code || workerCode;

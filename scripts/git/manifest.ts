@@ -1,5 +1,3 @@
-import { join } from "std/path";
-
 /**
  * Auto-generates site/_pages/manifest.json by scanning site/_pages/ and site/_internal/
  * Extracts self-describing HTML <head> metadata:
@@ -16,7 +14,6 @@ const PAGES_DIR = "site/_pages";
 const INTERNAL_DIR = "site/_internal";
 const MANIFEST_PATH = "site/_pages/manifest.json";
 const SEARCH_INDEX_PATH = "site/_pages/search-index.json";
-const SEARCH_SHARDS_DIR = "site/_pages/search-shards";
 const VALID_EXTENSIONS = [".html", ".htm", ".md", ".markdown"];
 
 export interface RouteManifestEntry {
@@ -444,86 +441,7 @@ export function generateManifest(): RouteManifestEntry[] {
   Deno.writeTextFileSync(SEARCH_INDEX_PATH, JSON.stringify(searchIndex, null, 2) + "\n");
   console.log(`[search-index] Generated ${SEARCH_INDEX_PATH} with ${searchIndex.length} entry(ies)`);
 
-  // Generate lightweight search shards
-  generateSearchShards(searchIndex, rawMap);
-
   return routes;
-}
-
-function generateSearchShards(searchIndex: SearchIndexEntry[], rawMap: Map<string, RawManifestEntry>) {
-  Deno.mkdirSync(SEARCH_SHARDS_DIR, { recursive: true });
-
-  // 1. Lightweight manifest: metadata only, no heavy content
-  const shardManifest = searchIndex.map((entry) => {
-    const raw = rawMap.get(entry.route) || rawMap.get("/" + entry.id);
-    return {
-      id: entry.id,
-      route: entry.route,
-      path: entry.path,
-      title: entry.title,
-      icon: raw?.icon || "material-symbols-light:description-outline",
-      category: entry.category,
-      keywords: entry.keywords,
-    };
-  });
-  Deno.writeTextFileSync(
-    join(SEARCH_SHARDS_DIR, "manifest.json"),
-    JSON.stringify(shardManifest, null, 2) + "\n",
-  );
-
-  // 2. Prefix shards: grouped by starting letter (a-z, 0-9, and other)
-  const prefixes = "abcdefghijklmnopqrstuvwxyz0123456789".split("");
-  const shards: Record<string, (SearchIndexEntry & { icon?: string })[]> = {};
-  for (const p of prefixes) {
-    shards[p] = [];
-  }
-  shards["other"] = [];
-
-  for (const entry of searchIndex) {
-    const raw = rawMap.get(entry.route) || rawMap.get("/" + entry.id);
-    const enrichedEntry = {
-      ...entry,
-      icon: raw?.icon || "material-symbols-light:description-outline",
-    };
-
-    const tokens = new Set<string>();
-    const textToTokenize = `${entry.title} ${entry.id} ${entry.route} ${entry.keywords.join(" ")} ${entry.content}`;
-    const words = textToTokenize.toLowerCase().split(/[^a-z0-9_-]+/).filter(Boolean);
-    for (const w of words) {
-      if (w.length >= 2) tokens.add(w);
-    }
-
-    const assignedPrefixes = new Set<string>();
-    for (const token of tokens) {
-      const firstChar = token.charAt(0);
-      if (prefixes.includes(firstChar)) {
-        assignedPrefixes.add(firstChar);
-      } else {
-        assignedPrefixes.add("other");
-      }
-    }
-
-    const titleFirst = (entry.title || "").charAt(0).toLowerCase();
-    if (prefixes.includes(titleFirst)) assignedPrefixes.add(titleFirst);
-    const idFirst = (entry.id || "").charAt(0).toLowerCase();
-    if (prefixes.includes(idFirst)) assignedPrefixes.add(idFirst);
-
-    for (const p of assignedPrefixes) {
-      shards[p].push(enrichedEntry);
-    }
-  }
-
-  let totalShards = 0;
-  for (const [prefix, entries] of Object.entries(shards)) {
-    if (entries.length > 0) {
-      Deno.writeTextFileSync(
-        join(SEARCH_SHARDS_DIR, `${prefix}.json`),
-        JSON.stringify(entries, null, 2) + "\n",
-      );
-      totalShards++;
-    }
-  }
-  console.log(`[search-shards] Generated ${totalShards} prefix shard(s) in ${SEARCH_SHARDS_DIR}`);
 }
 
 if (import.meta.main) {

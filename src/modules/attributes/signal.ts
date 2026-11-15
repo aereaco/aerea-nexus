@@ -33,23 +33,8 @@ import { AttributeModule } from '../../engine/modules.ts';
 import { RuntimeContext } from '../../engine/composition.ts';
 import { addScopeToNode, parseGhostKeys, createScopeProxy } from '../../engine/scope.ts';
 import { unifiedRef, Ref } from '../../engine/reactivity.ts';
-import { deepEqual } from '../../engine/reconciler.ts';
 import { ParsedAttribute } from '../../engine/attributeParser.ts';
 import { toError } from '../../engine/debug.ts';
-
-function cloneValue(val: unknown): unknown {
-  if (Array.isArray(val)) {
-    return val.map(cloneValue);
-  }
-  if (val !== null && typeof val === 'object') {
-    const res: Record<string, unknown> = {};
-    for (const key of Object.keys(val)) {
-      res[key] = cloneValue((val as Record<string, unknown>)[key]);
-    }
-    return res;
-  }
-  return val;
-}
 
 const signalModule: AttributeModule = {
   name: 'signal',
