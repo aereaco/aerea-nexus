@@ -13,14 +13,17 @@ const CustomPlugin = {
 };
 
 // Decentralized Registration via the Public API
-if (globalThis.Nexus) {
-    globalThis.Nexus.register('attribute', 'test-plugin', CustomPlugin);
-    globalThis.Nexus.register('attribute', 'test', CustomPlugin);
-    if (globalThis.Nexus.coordinator) {
-        document.querySelectorAll('[data-test-plugin]').forEach(el => {
-            globalThis.Nexus.coordinator.processElement(el, true);
-        });
-    }
+const ux = globalThis.UX || globalThis.Nexus;
+if (ux) {
+    ux.register('attribute', 'test-plugin', CustomPlugin);
+    ux.register('attribute', 'test', CustomPlugin);
+    document.querySelectorAll('[data-test-plugin]').forEach(el => {
+        if (typeof ux.process === 'function') {
+            ux.process(el, true);
+        } else if (ux.coordinator) {
+            ux.coordinator.processElement(el, true);
+        }
+    });
 } else {
-    console.error("[Plugin Error] Global Nexus instance not found!");
+    console.error("[Plugin Error] Global UX instance not found!");
 }

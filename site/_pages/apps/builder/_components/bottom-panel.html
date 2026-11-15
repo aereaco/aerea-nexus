@@ -70,7 +70,7 @@
         </label>
 
         <button class="btn btn-ghost btn-xs h-6 px-2 min-h-0 text-gray-300 hover:text-white hover:bg-white/10 text-[11px] gap-1"
-          data-on-click="applyDraftToCanvas()"
+          data-on-click="applyHtmlToCanvas()"
           title="Apply Changes to Canvas">
           <iconify-icon icon="material-symbols-light:check" class="text-success text-sm"></iconify-icon>
           <span>Apply</span>
@@ -95,7 +95,7 @@
         <textarea class="flex-1 w-full h-full bg-[#1e1e1e] text-gray-200 font-mono text-xs p-2 leading-5 resize-none outline-none border-0 focus:ring-0 selection:bg-blue-600"
           spellcheck="false"
           data-bind-value="canvasHtmlDraft"
-          data-on-input="canvasHtmlDraft = $evt.target.value; if (runJsOnEdit) applyDraftToCanvas()"></textarea>
+          data-on-input="canvasHtmlDraft = $evt.target.value; if (runJsOnEdit) applyHtmlToCanvas()"></textarea>
       </div>
 
       <!-- CSS Editor Pane -->

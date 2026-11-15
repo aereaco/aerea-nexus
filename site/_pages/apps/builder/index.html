@@ -1118,37 +1118,6 @@
       syncCanvasHtmlToDraft();
     },
 
-    updateClassAttribute: function(val) {
-      const el = toRawNode(selectedEl);
-      if (!el) return;
-      el.className = val;
-      inspector.className = val;
-      updateSelectedBox();
-      syncCanvasHtmlToDraft();
-    },
-
-    toggleDaisyClass: function(cls) {
-      const el = toRawNode(selectedEl);
-      if (!el) return;
-      el.classList.toggle(cls);
-      inspector.className = el.className;
-      updateSelectedBox();
-      syncCanvasHtmlToDraft();
-    },
-
-    updateTextContent: function(val) {
-      const el = toRawNode(selectedEl);
-      if (!el) return;
-      el.textContent = val;
-      inspector.textContent = val;
-      updateSelectedBox();
-      syncCanvasHtmlToDraft();
-    },
-
-    updateInspectorText: function(val) {
-      updateTextContent(val);
-    },
-
     refreshTree: function() {
       const root = getCanvasRoot();
       if (!root) { domTree = []; return; }

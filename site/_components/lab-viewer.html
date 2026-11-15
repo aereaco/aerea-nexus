@@ -34,10 +34,11 @@
         manageError: '',
         activeModulePath: '',
         askCopilot() {
-            if (window.Nexus?.coordinator?.runtimeContext?.globalSignals) {
-                const g = window.Nexus.coordinator.runtimeContext.globalSignals();
+            const g = window.UX?.signals || window.Nexus?.coordinator?.runtimeContext?.globalSignals?.();
+            if (g) {
                 if (typeof g.openSession === 'function') g.openSession('session-copilot');
-                g.newChatMessage = '@Nexus Copilot Can you explain how ' + (doc?.Title || 'this directive') + ' works and show an advanced example?';
+                g.chatInputText = '@Nexus Copilot Can you explain how ' + (doc?.Title || 'this directive') + ' works and show an advanced example?';
+                if (typeof g.sendChatMessage === 'function') g.sendChatMessage();
             }
         }
      }" data-effect="
@@ -246,7 +247,7 @@
         <!-- ──── LEFT COLUMN: HEADER & MODULE SPECIFICATION ──── -->
         <div class="flex-1 flex flex-col gap-4 min-h-0 overflow-hidden">
             <!-- 1. HEADER TOOLBAR -->
-            <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 pb-4" data-if="doc">
+            <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 pb-4" data-show="doc">
                 <div>
                     <h1 class="text-3xl font-extrabold tracking-tight text-base-content flex items-center gap-3">
                         <iconify-icon data-bind-icon="doc.Icon || 'material-symbols-light:code-blocks-outline'"
@@ -268,7 +269,7 @@
 
             <!-- 2. TAB GROUP 1: MODULE SPECIFICATION -->
             <div class="card bg-base-100 border border-base-content/10 shadow-sm flex-1 flex flex-col min-h-0 overflow-hidden"
-                data-if="doc">
+                data-show="doc">
                 <div
                     class="card-header bg-base-200/40 px-6 py-3 border-b border-base-content/10 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div class="flex items-center gap-2">
@@ -395,7 +396,7 @@
         <div class="flex-1 flex flex-col min-h-0 overflow-hidden">
             <!-- 3. TAB GROUP 2: INTERACTIVE LAB -->
             <div class="card bg-base-100 border border-base-content/10 shadow-sm flex-1 flex flex-col min-h-0 overflow-hidden"
-                data-if="doc.Snippet || doc.Examples">
+                data-show="doc && (doc.Snippet || doc.Examples)">
                 <div
                     class="card-header bg-base-200/40 px-6 py-3 border-b border-base-content/10 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div class="flex items-center gap-2">
@@ -457,7 +458,8 @@
                         <div class="dropdown dropdown-top sm:dropdown-bottom">
                             <div tabindex="0" role="button"
                                 class="btn btn-outline btn-xs w-44 justify-between bg-base-100 font-bold overflow-hidden"
-                                data-bind="{ disabled: (baseSnippets.length + snippets.length) <= 1 }"
+                                data-bind-aria-disabled="(baseSnippets.length + snippets.length) <= 1"
+                                data-class-pointer-events-none="(baseSnippets.length + snippets.length) <= 1"
                                 data-class-btn-disabled="(baseSnippets.length + snippets.length) <= 1">
                                 <span data-bind="activeSnippet" class="truncate me-2"></span>
                                 <iconify-icon icon="material-symbols-light:arrow-drop-down"
@@ -466,14 +468,14 @@
                             <ul tabindex="0"
                                 class="dropdown-content z-[100] menu menu-xs p-2 shadow-2xl bg-base-100 rounded-box w-56 border border-base-content/10">
                                 <template data-for="bs in baseSnippets">
-                                    <li><a data-on-click="activeSnippet = bs; $el.blur()"
+                                    <li><a data-on-click="activeSnippet = bs; snippetCode = (doc?.Examples && doc.Examples[bs]) || doc?.Snippet || ''; $el.blur()"
                                             data-class-active="activeSnippet === bs" class="font-bold"
                                             data-bind="bs"></a></li>
                                 </template>
                                 <div class="divider my-1 opacity-20" data-show="snippets.length > 0"></div>
                                 <template data-for="s in snippets">
                                     <li class="group flex flex-row items-center justify-between">
-                                        <a data-on-click="activeSnippet = s; $el.blur()"
+                                        <a data-on-click="activeSnippet = s; if (doc?.SnippetModule && indexedDB?.snippets) { indexedDB.snippets.get(doc.SnippetModule + '_' + s).then(v => { snippetCode = v || (doc?.Examples && doc.Examples[s]) || doc?.Snippet || ''; }); } $el.blur()"
                                             data-class-active="activeSnippet === s"
                                             class="flex-1 flex items-center justify-between">
                                             <span data-bind="s" class="truncate"></span>

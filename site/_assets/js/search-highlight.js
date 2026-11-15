@@ -62,12 +62,15 @@
   function syncPageHighlights(container, tabId, tokens) {
     if (typeof window === 'undefined' || typeof window.CSS === 'undefined' || !window.CSS.highlights || typeof window.Highlight === 'undefined') return;
     if (!container) return;
-    const g = window.Nexus?.coordinator?.runtimeContext?.globalSignals?.() || {};
+    const g = window.UX?.signals || window.Nexus?.coordinator?.runtimeContext?.globalSignals?.() || {};
     const effectiveTabId = tabId || (typeof g.router !== 'undefined' ? g.router.activePageTabId : '');
 
     if (!tokens || tokens.length === 0 || !g.searchTabs || !g.searchTabs[effectiveTabId]) {
       window.CSS.highlights.delete('page-match');
-      if (g.setGlobalSignal) {
+      if (window.UX?.setSignal) {
+        window.UX.setSignal('searchHighlightCount', 0);
+        window.UX.setSignal('searchTicks', []);
+      } else if (g.setGlobalSignal) {
         g.setGlobalSignal('searchHighlightCount', 0);
         g.setGlobalSignal('searchTicks', []);
       }
@@ -126,7 +129,10 @@
             g.searchTabs[effectiveTabId].count = ranges.length;
             g.searchTabs[effectiveTabId].ticks = ticks;
           }
-          if (g.setGlobalSignal) {
+          if (window.UX?.setSignal) {
+            window.UX.setSignal('searchHighlightCount', ranges.length);
+            window.UX.setSignal('searchTicks', ticks);
+          } else if (g.setGlobalSignal) {
             g.setGlobalSignal('searchHighlightCount', ranges.length);
             g.setGlobalSignal('searchTicks', ticks);
           }
@@ -136,7 +142,10 @@
             g.searchTabs[effectiveTabId].count = 0;
             g.searchTabs[effectiveTabId].ticks = [];
           }
-          if (g.setGlobalSignal) {
+          if (window.UX?.setSignal) {
+            window.UX.setSignal('searchHighlightCount', 0);
+            window.UX.setSignal('searchTicks', []);
+          } else if (g.setGlobalSignal) {
             g.setGlobalSignal('searchHighlightCount', 0);
             g.setGlobalSignal('searchTicks', []);
           }
@@ -148,5 +157,6 @@
   window.getSearchTokens = getSearchTokens;
   window.syncHighlights = syncHighlights;
   window.syncPageHighlights = syncPageHighlights;
+  if (window.UX) window.UX.Highlights = { getSearchTokens, syncHighlights, syncPageHighlights };
   window.NexusHighlights = { getSearchTokens, syncHighlights, syncPageHighlights };
 })();

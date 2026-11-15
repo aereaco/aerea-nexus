@@ -20,7 +20,7 @@
       <iconify-icon icon="material-symbols-light:star-outline" class="text-xl"></iconify-icon>
       Favorites
     </h2>
-    <div data-if="!favorites || favorites.length === 0" class="text-sm text-base-content/50">
+    <div data-show="!favorites || favorites.length === 0" class="text-sm text-base-content/50">
       No favorites yet. Right-click a tab or link and choose <span class="font-medium">Save to Favorites</span>.
     </div>
     <ul class="menu w-full rounded-box bg-base-100/50" data-show="favorites && favorites.length > 0">
@@ -28,7 +28,7 @@
         <li>
           <a data-bind-href="fav.href || fav.url || fav" data-bind-title="fav.title || fav"
              data-bind-data-tab-title="fav.title || fav" data-bind-data-tab-icon="fav.icon || 'material-symbols-light:star-outline'"
-             data-on-contextmenu_prevent="openFavContextMenu(fav, $evt)">
+             data-on-contextmenu_prevent_stop="ctxMenu = { open: true, x: $evt.clientX, y: $evt.clientY, type: 'fav', target: fav, source: 'newtab' }">
             <iconify-icon data-bind-icon="fav.icon || 'material-symbols-light:star-outline'" class="text-xl"></iconify-icon>
             <span data-bind="fav.title || fav"></span>
           </a>
@@ -43,7 +43,7 @@
       <iconify-icon icon="material-symbols-light:history" class="text-xl"></iconify-icon>
       Recently Visited
     </h2>
-    <div data-if="!recent || recent.length === 0" class="text-sm text-base-content/50">
+    <div data-show="!recent || recent.length === 0" class="text-sm text-base-content/50">
       Pages you visit will show up here.
     </div>
     <ul class="menu w-full rounded-box bg-base-100/50" data-show="recent && recent.length > 0">

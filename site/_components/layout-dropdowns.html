@@ -198,7 +198,7 @@
             data-bind="'$' + (cartItems || []).reduce((acc, i) => acc + (i.price * i.qty), 0).toFixed(2)"></span>
         </div>
         <button type="button" class="btn btn-warning btn-sm w-full text-xs font-semibold"
-          data-on-click="notify('Order placed successfully!', 'success'); cartItems = []; headerDropdownOpen = false">
+          data-on-click="notify('Order placed successfully!', '', 'success'); cartItems = []; headerDropdownOpen = false">
           Checkout
         </button>
       </div>
@@ -221,11 +221,11 @@
       </div>
       <ul class="menu menu-sm p-0 space-y-0.5 text-xs">
         <li><a
-            data-on-click="router.createPageTab('/_pages/profiles.html', '/profiles'); headerDropdownOpen = false"><iconify-icon
+            data-on-click="notify('Profile', 'Signed in as Vernon (Administrator)', 'info'); headerDropdownOpen = false"><iconify-icon
               icon="material-symbols-light:account-circle-outline" class="text-base"></iconify-icon>My Profile</a>
         </li>
         <li><a
-            data-on-click="router.createPageTab('/_pages/settings.html', '/settings'); headerDropdownOpen = false"><iconify-icon
+            data-on-click="notify('Account Settings', 'Workspace & appearance settings are available in the header controls.', 'info'); headerDropdownOpen = false"><iconify-icon
               icon="material-symbols-light:settings-outline" class="text-base"></iconify-icon>Account Settings</a>
         </li>
         <li><a data-on-click="activeSidebarTab = 2; headerDropdownOpen = false"><iconify-icon
@@ -235,7 +235,7 @@
               class="text-base"></iconify-icon>Keyboard Shortcuts</a></li>
         <div class="divider my-1"></div>
         <li><a class="text-error hover:bg-error/10"
-            data-on-click="notify('Signed out successfully', 'info'); headerDropdownOpen = false"><iconify-icon
+            data-on-click="notify('Signed out successfully', '', 'info'); headerDropdownOpen = false"><iconify-icon
               icon="material-symbols-light:logout" class="text-base"></iconify-icon>Sign Out</a></li>
       </ul>
     </div>

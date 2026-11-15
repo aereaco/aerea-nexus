@@ -21,7 +21,7 @@
     hydrated: false,
     newTodo: '',
     filter: 'all',
-    layout: (typeof localStorage !== 'undefined' && localStorage.getItem('nexus_todo_layout')) || 'list',
+    layout: (typeof localStorage !== 'undefined' && localStorage.nexus_todo_layout) || 'list',
     activeTodo: null,
     isEditing: false,
     showConfirmDelete: false,
@@ -30,31 +30,32 @@
     progress: 0,
     $saveTodos: (t) => {
       progress = 20;
-      try {
-        if (typeof localStorage !== 'undefined') {
-          localStorage.setItem('nexus_todos', JSON.stringify(t));
-        }
-      } catch (e) {}
-      setTimeout(() => progress = 100, 300);
-      setTimeout(() => progress = 0, 800);
+      const plain = Array.isArray(t)
+        ? t.map(item => ({ id: item.id, text: item.text, completed: !!item.completed }))
+        : [];
+      if (typeof indexedDB !== 'undefined' && indexedDB.todos) {
+        Promise.resolve(indexedDB.todos.put(plain, 'list'))
+          .then(() => { progress = 100; })
+          .catch(() => {})
+          .finally(() => { setTimeout(() => progress = 0, 500); });
+      } else {
+        setTimeout(() => progress = 100, 300);
+        setTimeout(() => progress = 0, 800);
+      }
     }
   }" data-effect="
     if (!hydrated) {
-      try {
-        if (typeof localStorage !== 'undefined') {
-          const saved = localStorage.getItem('nexus_todos');
-          if (saved) {
-            const parsed = JSON.parse(saved);
-            if (Array.isArray(parsed) && parsed.length > 0) {
-              todos.splice(0, todos.length, ...parsed);
-            }
-          }
-        }
-      } catch (e) {}
       hydrated = true;
+      if (typeof indexedDB !== 'undefined' && indexedDB.todos) {
+        indexedDB.todos.get('list').then(saved => {
+          if (Array.isArray(saved) && saved.length > 0) {
+            todos.splice(0, todos.length, ...saved);
+          }
+        }).catch(() => {});
+      }
     }
     if (typeof localStorage !== 'undefined') {
-      try { localStorage.setItem('nexus_todo_layout', layout); } catch (e) {}
+      localStorage.nexus_todo_layout = layout;
     }
   " data-computed="{
     filteredTodos: () => {
@@ -172,7 +173,7 @@
         </div>
 
         <!-- Todo Items -->
-        <div data-for="todo in filteredTodos" data-drag
+        <div data-for="todo in filteredTodos" data-key="todo.id" data-drag
           class="rounded-2xl transition-all duration-200 flex border border-base-content/5 min-w-0 cursor-move relative group select-none shadow-sm hover:border-primary/30"
           data-class="{
             'p-5 flex-col items-center justify-center text-center h-40 bg-base-200/70': layout === 'grid',
