@@ -9320,8 +9320,9 @@ ${match}</ul>
           if (isGlobal) {
             const globals = runtime.globalSignals();
             Object.keys(newState).forEach((key) => {
-              if (!(key in globals)) {
-                globals[key] = newState[key];
+              const nextVal = newState[key];
+              if (!(key in globals) || globals[key] === void 0 && nextVal !== void 0) {
+                globals[key] = nextVal;
               }
             });
             stateRef.value = globals;

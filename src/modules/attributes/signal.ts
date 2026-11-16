@@ -94,8 +94,9 @@ const signalModule: AttributeModule = {
         if (isGlobal) {
           const globals = runtime.globalSignals() as Record<string, unknown>;
           Object.keys(newState as object).forEach(key => {
-            if (!(key in globals)) {
-              globals[key] = (newState as Record<string, unknown>)[key];
+            const nextVal = (newState as Record<string, unknown>)[key];
+            if (!(key in globals) || (globals[key] === undefined && nextVal !== undefined)) {
+              globals[key] = nextVal;
             }
           });
           stateRef.value = globals;
