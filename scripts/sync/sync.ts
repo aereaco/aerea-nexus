@@ -199,6 +199,20 @@ async function syncTarget(
       const pRes = runGit(["push", "-u", "origin", "main", "--force"], targetRoot);
       if (pRes.ok || /up[- ]to[- ]date/i.test(pRes.err + pRes.out)) {
         console.log(`   ✓ Pushed ${key} to GitHub (${cfg.githubRepo})`);
+        if (key === "nexus-ux") {
+          console.log(`   🧹 Purging jsDelivr CDN cache for ${cfg.githubRepo}...`);
+          for (const asset of [
+            `gh/${cfg.githubRepo}@main/dist/nexus-ux.min.js`,
+            `gh/${cfg.githubRepo}@main/dist/nexus-ux.min.js.br`,
+            `gh/${cfg.githubRepo}@main/dist/nexus-ux.js`,
+          ]) {
+            try {
+              await fetch(`https://purge.jsdelivr.net/${asset}`);
+            } catch {
+              // ignore
+            }
+          }
+        }
       } else {
         console.error(`   ❌ Failed to push ${key}: ${pRes.err || pRes.out}`);
       }
