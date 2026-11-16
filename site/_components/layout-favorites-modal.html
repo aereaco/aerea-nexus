@@ -1,5 +1,17 @@
 <!-- Add / Edit Favorite Modal -->
-<div class="modal modal-bottom sm:modal-middle" data-class="{ 'modal-open': favModalOpen }"
+<div class="modal modal-bottom sm:modal-middle"
+  data-signal_global="{
+    favorites: [],
+    favoriteGroups: [],
+    favHydrated: false,
+    favModalOpen: false,
+    favDeleteModalOpen: false,
+    favViewMode: localStorage.favViewMode || 'list',
+    favForm: { id: null, title: '', href: '', icon: 'material-symbols-light:star-outline', group: '' },
+    pendingDeleteId: null
+  }"
+  data-effect="if (!favHydrated && indexedDB?.favorites) { favHydrated = true; indexedDB.favorites.all().then(items => { if (items && items.length) { favorites = items; favoriteGroups = [...new Set(items.map(f => (f?.group || '').trim()).filter(Boolean))]; } }); }"
+  data-class="{ 'modal-open': favModalOpen }"
   data-on-keydown_escape_window="favModalOpen = false">
   <div class="modal-box bg-base-100 border border-base-content/10 shadow-2xl">
     <h3 class="font-bold text-lg flex items-center gap-2">
