@@ -84,6 +84,8 @@ class Scheduler {
     const queue = this.domainQueues.get(domain);
     if (!queue || queue.length === 0) return;
 
+    advanceEvalFrame();
+
     // Snapshot and clear this domain's queue
     const jobs = queue.splice(0, queue.length);
     for (let i = 0; i < jobs.length; i++) {
@@ -104,6 +106,7 @@ class Scheduler {
   private flushNextTick(): void {
     this.pendingDomains.delete('__nextTick__');
     const ticks = this.nextTickQueue.splice(0, this.nextTickQueue.length);
+    if (ticks.length > 0) advanceEvalFrame();
     for (let i = 0; i < ticks.length; i++) {
       try {
         ticks[i]();
