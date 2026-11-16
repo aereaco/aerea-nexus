@@ -1,0 +1,242 @@
+import * as path from "std/path";
+import { walk } from "https://deno.land/std@0.212.0/fs/walk.ts";
+import { syncConfig, type SyncTargetConfig } from "./sync.config.ts";
+import { publishToCloudflare } from "../build.ts";
+
+function globToRegExp(glob: string): RegExp {
+  const normalized = glob.replace(/\\/g, "/");
+  let regexStr = "^";
+  for (let i = 0; i < normalized.length; i++) {
+    const ch = normalized[i];
+    if (ch === "*") {
+      if (normalized[i + 1] === "*") {
+        if (normalized[i + 2] === "/") {
+          regexStr += "(?:.*/)?";
+          i += 2;
+        } else {
+          regexStr += ".*";
+          i += 1;
+        }
+      } else {
+        regexStr += "[^/]*";
+      }
+    } else if (".+?^${}()|[]\\".includes(ch)) {
+      regexStr += "\\" + ch;
+    } else {
+      regexStr += ch;
+    }
+  }
+  regexStr += "$";
+  return new RegExp(regexStr);
+}
+
+function runGit(args: string[], cwd: string): { ok: boolean; out: string; err: string } {
+  const res = new Deno.Command("git", { args, cwd }).outputSync();
+  return {
+    ok: res.success,
+    out: new TextDecoder().decode(res.stdout).trim(),
+    err: new TextDecoder().decode(res.stderr).trim(),
+  };
+}
+
+async function cleanTargetTree(targetRoot: string, allowedRelPaths: Set<string>): Promise<void> {
+  try {
+    const toDelete: string[] = [];
+    for await (const entry of walk(targetRoot, { includeDirs: false })) {
+      const rel = path.relative(targetRoot, entry.path).replace(/\\/g, "/");
+      if (
+        rel.startsWith(".git/") ||
+        rel === ".git" ||
+        rel.startsWith(".wrangler/") ||
+        rel.startsWith("node_modules/")
+      ) {
+        continue;
+      }
+      if (!allowedRelPaths.has(rel)) {
+        toDelete.push(entry.path);
+      }
+    }
+    for (const file of toDelete) {
+      try {
+        await Deno.remove(file);
+      } catch {
+        // ignore
+      }
+    }
+  } catch {
+    // targetRoot may not exist yet
+  }
+}
+
+async function syncTarget(
+  key: string,
+  cfg: SyncTargetConfig,
+  sourceRoot: string,
+  opts: { commit?: boolean; push?: boolean; publish?: boolean }
+): Promise<void> {
+  const targetRoot = path.resolve(sourceRoot, cfg.targetDir);
+  console.log(`\n============================================================`);
+  console.log(`🔄 Syncing [${key}] → ${cfg.name}`);
+  console.log(`   Source: ${sourceRoot}`);
+  console.log(`   Target: ${targetRoot}`);
+  console.log(`============================================================`);
+
+  await Deno.mkdir(targetRoot, { recursive: true });
+
+  const includeRegexes = cfg.includes.map(globToRegExp);
+  const excludeRegexes = cfg.excludes.map(globToRegExp);
+  const transformMap = new Map((cfg.transforms || []).map((t) => [t.file.replace(/\\/g, "/"), t]));
+
+  const syncedRelPaths = new Set<string>();
+  let copiedCount = 0;
+
+  for await (const entry of walk(sourceRoot, { includeDirs: false })) {
+    const rel = path.relative(sourceRoot, entry.path).replace(/\\/g, "/");
+    if (
+      rel.startsWith(".git/") ||
+      rel.startsWith("node_modules/") ||
+      rel.startsWith(".wrangler/")
+    ) {
+      continue;
+    }
+
+    const included = includeRegexes.some((rx) => rx.test(rel));
+    if (!included) continue;
+    const excluded = excludeRegexes.some((rx) => rx.test(rel));
+    if (excluded) continue;
+
+    const destPath = path.join(targetRoot, rel);
+    await Deno.mkdir(path.dirname(destPath), { recursive: true });
+
+    const transformRule = transformMap.get(rel);
+    if (transformRule) {
+      const raw = await Deno.readTextFile(entry.path);
+      const transformed = transformRule.transform(raw);
+      await Deno.writeTextFile(destPath, transformed);
+      console.log(`   ✂️  Transformed: ${rel} (${transformRule.description})`);
+    } else {
+      await Deno.copyFile(entry.path, destPath);
+    }
+
+    syncedRelPaths.add(rel);
+    copiedCount++;
+  }
+
+  if (cfg.generatedFiles) {
+    for (const gen of cfg.generatedFiles) {
+      const rel = gen.path.replace(/\\/g, "/");
+      const destPath = path.join(targetRoot, rel);
+      await Deno.mkdir(path.dirname(destPath), { recursive: true });
+      await Deno.writeTextFile(destPath, gen.content);
+      syncedRelPaths.add(rel);
+      console.log(`   ✨ Generated: ${rel} (${gen.description})`);
+    }
+  }
+
+  // Preserve manifest & search index paths during cleanup if runManifest is enabled
+  if (cfg.runManifest) {
+    syncedRelPaths.add("site/_pages/manifest.json");
+    syncedRelPaths.add("site/_pages/search-index.json");
+  }
+
+  await cleanTargetTree(targetRoot, syncedRelPaths);
+  console.log(`   ✓ Mirrored ${copiedCount} file(s) to ${targetRoot}`);
+
+  if (cfg.runManifest) {
+    console.log(`   🗂️  Re-indexing manifest.json & search-index.json in ${key}...`);
+    const manifestCmd = new Deno.Command(Deno.execPath(), {
+      args: ["run", "-A", "scripts/git/manifest.ts"],
+      cwd: targetRoot,
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+    const res = await manifestCmd.output();
+    if (!res.success) {
+      throw new Error(`Manifest generation failed in ${targetRoot}`);
+    }
+  }
+
+  if (opts.commit || opts.push || opts.publish) {
+    const gitDir = path.join(targetRoot, ".git");
+    let hasGit = false;
+    try {
+      const st = await Deno.stat(gitDir);
+      hasGit = st.isDirectory;
+    } catch {
+      hasGit = false;
+    }
+
+    if (!hasGit) {
+      console.log(`   🌱 Initializing git repository in ${targetRoot}...`);
+      runGit(["init", "-b", "main"], targetRoot);
+    }
+
+    const remoteUrl = `https://github.com/${cfg.githubRepo}.git`;
+    const curRemote = runGit(["remote", "get-url", "origin"], targetRoot);
+    if (!curRemote.ok) {
+      runGit(["remote", "add", "origin", remoteUrl], targetRoot);
+    } else if (curRemote.out !== remoteUrl) {
+      runGit(["remote", "set-url", "origin", remoteUrl], targetRoot);
+    }
+
+    const sourceSha = runGit(["rev-parse", "--short", "HEAD"], sourceRoot).out || "head";
+    runGit(["add", "-A"], targetRoot);
+    const status = runGit(["status", "--porcelain"], targetRoot);
+    if (status.out) {
+      const commitMsg = `sync(ssot): propagate platform updates [ref: aerea-nexus@${sourceSha}]`;
+      const cRes = runGit(["commit", "-m", commitMsg], targetRoot);
+      if (cRes.ok) {
+        console.log(`   ✓ Committed in ${key}: "${commitMsg}"`);
+      } else {
+        console.warn(`   ⚠️ Commit note in ${key}: ${cRes.err || cRes.out}`);
+      }
+    } else {
+      console.log(`   ℹ️  No file diffs to commit in ${key}.`);
+    }
+
+    if (opts.push || opts.publish) {
+      console.log(`   🚀 Pushing ${key} → ${remoteUrl} (main)...`);
+      const pRes = runGit(["push", "-u", "origin", "main", "--force"], targetRoot);
+      if (pRes.ok || /up[- ]to[- ]date/i.test(pRes.err + pRes.out)) {
+        console.log(`   ✓ Pushed ${key} to GitHub (${cfg.githubRepo})`);
+      } else {
+        console.error(`   ❌ Failed to push ${key}: ${pRes.err || pRes.out}`);
+      }
+    }
+  }
+
+  if (opts.publish && cfg.cloudflareProject) {
+    const prevCwd = Deno.cwd();
+    try {
+      Deno.chdir(targetRoot);
+      await publishToCloudflare({ projectName: cfg.cloudflareProject, branch: "main" });
+    } finally {
+      Deno.chdir(prevCwd);
+    }
+  }
+}
+
+if (import.meta.main) {
+  const args = Deno.args;
+  const targetArg = args.find((a) => a.startsWith("--target="))?.split("=")[1] || "all";
+  const commit = args.includes("--commit") || args.includes("--push") || args.includes("--publish");
+  const push = args.includes("--push") || args.includes("--publish");
+  const publish = args.includes("--publish");
+
+  const sourceRoot = Deno.cwd();
+  const targets =
+    targetArg === "all"
+      ? Object.keys(syncConfig)
+      : targetArg.split(",").map((t) => t.trim()).filter(Boolean);
+
+  for (const t of targets) {
+    const cfg = syncConfig[t];
+    if (!cfg) {
+      console.error(`Unknown sync target: "${t}". Available: ${Object.keys(syncConfig).join(", ")}`);
+      Deno.exit(1);
+    }
+    await syncTarget(t, cfg, sourceRoot, { commit, push, publish });
+  }
+
+  console.log(`\n✅ SSoT synchronization complete for: ${targets.join(", ")}`);
+}

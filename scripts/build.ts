@@ -492,7 +492,7 @@ async function gitPush(opts: { remote?: string; branch?: string }) {
 }
 
 async function publishToCloudflare(opts: { projectName?: string; branch?: string }) {
-  const projectName = opts.projectName ?? "nexus-ux";
+  const projectName = opts.projectName ?? "aerea-nexus";
   const branch = opts.branch ?? (git(["rev-parse", "--abbrev-ref", "HEAD"]).out || "main");
 
   // Read credentials from env or fallback to .security/cloudflare.md
@@ -575,39 +575,41 @@ async function publishToCloudflare(opts: { projectName?: string; branch?: string
 }
 
 // CLI
-const args = Deno.args;
-if (args.includes("--batch")) {
-  const configFile = args.find(a => a.startsWith("--config="))?.split("=")[1];
-  if (configFile) {
-    const configData = JSON.parse(await Deno.readTextFile(configFile)) as { configs?: BuildOptions[] };
-    await batchBuild(configData.configs || []);
+if (import.meta.main) {
+  const args = Deno.args;
+  if (args.includes("--batch")) {
+    const configFile = args.find(a => a.startsWith("--config="))?.split("=")[1];
+    if (configFile) {
+      const configData = JSON.parse(await Deno.readTextFile(configFile)) as { configs?: BuildOptions[] };
+      await batchBuild(configData.configs || []);
+    } else {
+      console.error("Batch mode requires --config=file.json");
+      Deno.exit(1);
+    }
   } else {
-    console.error("Batch mode requires --config=file.json");
-    Deno.exit(1);
-  }
-} else {
-  const outputName = args.find(a => a.startsWith("--name="))?.split("=")[1];
-  const appDir = args.find(a => a.startsWith("--app="))?.split("=")[1];
-  const excludes = args.find(a => a.startsWith("--exclude="))?.split("=")[1]?.split(",") || [];
-  const gitRef = args.find(a => a.startsWith("--ref="))?.split("=")[1];
-  const isPublish = args.includes("--publish");
-  const minify = args.includes("--minify") || args.includes("--app") || isPublish;
-  const twVersion = args.find(a => a.startsWith("--tw-version="))?.split("=")[1] || "latest";
+    const outputName = args.find(a => a.startsWith("--name="))?.split("=")[1];
+    const appDir = args.find(a => a.startsWith("--app="))?.split("=")[1];
+    const excludes = args.find(a => a.startsWith("--exclude="))?.split("=")[1]?.split(",") || [];
+    const gitRef = args.find(a => a.startsWith("--ref="))?.split("=")[1];
+    const isPublish = args.includes("--publish");
+    const minify = args.includes("--minify") || args.includes("--app") || isPublish;
+    const twVersion = args.find(a => a.startsWith("--tw-version="))?.split("=")[1] || "latest";
 
-  await buildBundle({ outputName, appDir, excludeModules: excludes, gitRef, minify, twVersion });
+    await buildBundle({ outputName, appDir, excludeModules: excludes, gitRef, minify, twVersion });
 
-  // ── Push local commits to remote & Publish to Cloudflare ──
-  if (isPublish) {
-    const remote = args.find(a => a.startsWith("--remote="))?.split("=")[1];
-    const branch = args.find(a => a.startsWith("--branch="))?.split("=")[1];
-    const projectName = args.find(a => a.startsWith("--project="))?.split("=")[1];
+    // ── Push local commits to remote & Publish to Cloudflare ──
+    if (isPublish) {
+      const remote = args.find(a => a.startsWith("--remote="))?.split("=")[1];
+      const branch = args.find(a => a.startsWith("--branch="))?.split("=")[1];
+      const projectName = args.find(a => a.startsWith("--project="))?.split("=")[1];
 
-    await gitPush({ remote, branch });
-    await publishToCloudflare({ projectName, branch });
-  } else if (args.includes("--push")) {
-    const remote = args.find(a => a.startsWith("--remote="))?.split("=")[1];
-    const branch = args.find(a => a.startsWith("--branch="))?.split("=")[1];
-    await gitPush({ remote, branch });
+      await gitPush({ remote, branch });
+      await publishToCloudflare({ projectName, branch });
+    } else if (args.includes("--push")) {
+      const remote = args.find(a => a.startsWith("--remote="))?.split("=")[1];
+      const branch = args.find(a => a.startsWith("--branch="))?.split("=")[1];
+      await gitPush({ remote, branch });
+    }
   }
 }
 

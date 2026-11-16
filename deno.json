@@ -9,7 +9,13 @@
     "serve:ssr": "deno run -A scripts/serve.ts --mode ssr",
     "serve:progressive": "deno run -A scripts/serve.ts --mode progressive",
     "build:push": "deno run -A scripts/build.ts --minify --push",
-    "build:publish": "deno run -A scripts/build.ts --minify --publish"
+    "build:publish": "deno run -A scripts/build.ts --minify --publish",
+    "sync:ux": "deno run -A scripts/sync/sync.ts --target=nexus-ux --commit",
+    "sync:site": "deno run -A scripts/sync/sync.ts --target=nexus-site --commit",
+    "sync:shell": "deno run -A scripts/sync/sync.ts --target=nexus-shell --commit",
+    "sync:all": "deno task build && deno run -A scripts/sync/sync.ts --target=all --commit",
+    "sync:push": "deno task build && deno run -A scripts/sync/sync.ts --target=all --push",
+    "sync:publish": "deno task build:publish && deno run -A scripts/sync/sync.ts --target=all --publish"
   },
     "imports": {
       "esbuild": "https://deno.land/x/esbuild@v0.20.0/mod.js",
