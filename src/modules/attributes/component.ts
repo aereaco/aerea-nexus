@@ -318,6 +318,7 @@ const componentModule: AttributeModule = {
       const scopeCleanup = addScopeToNode(el, ctx);
 
       let __lastPath: string | undefined;
+      let __loadSeq = 0;
       const [, effectCleanup] = runtime.elementBoundEffect(el, () => {
         let config: ComponentConfig;
         const evaluated = runtime.evaluate(el, value);
@@ -338,6 +339,7 @@ const componentModule: AttributeModule = {
         if (config.path === __lastPath) return;
         const previousPath = __lastPath;
         __lastPath = config.path;
+        const currentSeq = ++__loadSeq;
 
         const load = async () => {
           componentState.isLoading = true;
@@ -372,6 +374,7 @@ const componentModule: AttributeModule = {
                 storage: 'session',
                 responseType: 'text',
                 onUpdate: (fresh) => {
+                  if (currentSeq !== __loadSeq) return;
                   if (typeof fresh === 'string' && fresh !== componentState.templateContent) {
                     componentState.templateContent = fresh;
                     const extracted = extractResourceMetadata(fresh, targetPath, runtime);
@@ -384,6 +387,8 @@ const componentModule: AttributeModule = {
               });
               html = typeof result === 'string' ? result : String(result);
             }
+
+            if (currentSeq !== __loadSeq) return;
 
             const rawText = html;
             const isMarkdown = targetPath.endsWith('.md') || targetPath.endsWith('.markdown');
@@ -400,6 +405,8 @@ const componentModule: AttributeModule = {
               html = `<div style="padding: 1.5rem; max-width: 64rem; margin-inline: auto;"><article data-markdown>${escapedMd}</article></div>`;
             } else if (rawText.includes('<!DOCTYPE') || (rawText.includes('data-init') && el.tagName.toLowerCase() !== 'html')) {
               throw new Error(`Invalid component fragment returned for "${targetPath}": received full HTML shell.`);
+            } else if (!rawText.includes('<html') && !rawText.includes('<body')) {
+              html = rawText.replace(/<head\b[^>]*>[\s\S]*?<\/head>/gi, '').trim();
             }
 
             if (runtime.isDevMode) {
@@ -481,16 +488,18 @@ const componentModule: AttributeModule = {
               runtime.morphDOM(el, String(fb));
             }
           } finally {
-            componentState.isLoading = false;
-            if (isTabOutlet && tabObj && typeof tabObj === 'object') {
-              if ((tabObj as any).isLoading !== false) {
-                (tabObj as any).isLoading = false;
-              }
-              if (componentState.meta?.title && (!tabObj.meta || !(tabObj.meta as any).title)) {
-                tabObj.meta = Object.assign(tabObj.meta || {}, { title: componentState.meta.title });
-              }
-              if (componentState.meta?.icon && (!tabObj.meta || !(tabObj.meta as any).icon)) {
-                tabObj.meta = Object.assign(tabObj.meta || {}, { icon: componentState.meta.icon });
+            if (currentSeq === __loadSeq) {
+              componentState.isLoading = false;
+              if (isTabOutlet && tabObj && typeof tabObj === 'object') {
+                if ((tabObj as any).isLoading !== false) {
+                  (tabObj as any).isLoading = false;
+                }
+                if (componentState.meta?.title && (!tabObj.meta || !(tabObj.meta as any).title)) {
+                  tabObj.meta = Object.assign(tabObj.meta || {}, { title: componentState.meta.title });
+                }
+                if (componentState.meta?.icon && (!tabObj.meta || !(tabObj.meta as any).icon)) {
+                  tabObj.meta = Object.assign(tabObj.meta || {}, { icon: componentState.meta.icon });
+                }
               }
             }
           }

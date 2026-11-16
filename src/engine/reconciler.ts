@@ -9,6 +9,7 @@ import {
 import { NexusEnhancedElement } from './reactivity.ts';
 import { stylesheet } from '../modules/attributes/stylesheet.ts';
 import { hashString } from './utils/hash.ts';
+import { advanceEvalFrame } from './scheduler.ts';
 
 /**
  * Authoritative deterministic teardown for a DOM node and its entire descendant subtree.
@@ -41,6 +42,11 @@ export function teardownSubtree(root: Node, includeRoot: boolean = true): void {
   delete enhanced[DATA_STACK_KEY];
   delete enhanced[COMPONENT_CONTEXT_KEY];
   delete enhanced[MARKER_KEY];
+  delete (enhanced as any).__component_init;
+  if (root.hasAttribute('data-nx-cmp-done')) {
+    root.removeAttribute('data-nx-cmp-done');
+  }
+  advanceEvalFrame();
 }
 
 // Default configuration options
@@ -96,6 +102,11 @@ const defaults = {
         // Nuke the initialization marker so processElement() can safely re-bind
         // new attributes if necessary.
         delete enhancedFrom[MARKER_KEY];
+        delete (enhancedFrom as any).__component_init;
+        if (from.hasAttribute('data-nx-cmp-done')) {
+          from.removeAttribute('data-nx-cmp-done');
+        }
+        advanceEvalFrame();
       }
       return true;
     },
@@ -118,12 +129,12 @@ function runCallback(config: any, name: string, ...args: any[]): any {
 }
 
 function parseHTML(html: string): Node {
-  if (html.includes('<html') || html.includes('<body') || html.includes('<head')) {
+  if (html.includes('<html') || html.includes('<body')) {
     const parser = new DOMParser();
     return parser.parseFromString(html, 'text/html').documentElement;
   }
   const template = document.createElement('template');
-  template.innerHTML = html;
+  template.innerHTML = html.replace(/<head\b[^>]*>[\s\S]*?<\/head>/gi, '');
   return template.content;
 }
 

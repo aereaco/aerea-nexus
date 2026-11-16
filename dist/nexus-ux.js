@@ -376,6 +376,7 @@ ${suggestion}`);
       const queue = this.domainQueues.get(domain);
       if (!queue || queue.length === 0)
         return;
+      advanceEvalFrame();
       const jobs = queue.splice(0, queue.length);
       for (let i = 0; i < jobs.length; i++) {
         try {
@@ -392,6 +393,8 @@ ${suggestion}`);
     flushNextTick() {
       this.pendingDomains.delete("__nextTick__");
       const ticks = this.nextTickQueue.splice(0, this.nextTickQueue.length);
+      if (ticks.length > 0)
+        advanceEvalFrame();
       for (let i = 0; i < ticks.length; i++) {
         try {
           ticks[i]();
@@ -2156,6 +2159,7 @@ ${suggestion}`);
     if (referenceNode && !node.parentElement) {
       node.__scopeParent = referenceNode;
     }
+    advanceEvalFrame();
     return () => {
       if (node[LOCAL_SCOPES_KEY]) {
         node[LOCAL_SCOPES_KEY] = node[LOCAL_SCOPES_KEY].filter((item) => item !== data);
@@ -2163,6 +2167,7 @@ ${suggestion}`);
           delete node[LOCAL_SCOPES_KEY];
         }
       }
+      advanceEvalFrame();
     };
   }
   function disposeScope(target) {
@@ -2186,6 +2191,7 @@ ${suggestion}`);
         delete node[DATA_STACK_KEY];
       }
     }
+    advanceEvalFrame();
   }
   var scopeProviderRegistry = /* @__PURE__ */ new Map();
   function registerScopeProvider(key, provider) {
@@ -2865,6 +2871,7 @@ ${scripts}
         }
         const scopeCleanup = addScopeToNode(el, ctx);
         let __lastPath;
+        let __loadSeq = 0;
         const [, effectCleanup] = runtime.elementBoundEffect(el, () => {
           let config;
           const evaluated = runtime.evaluate(el, value);
@@ -2885,6 +2892,7 @@ ${scripts}
             return;
           const previousPath = __lastPath;
           __lastPath = config.path;
+          const currentSeq = ++__loadSeq;
           const load = async () => {
             componentState.isLoading = true;
             componentState.hasError = false;
@@ -2919,6 +2927,8 @@ ${scripts}
                   storage: "session",
                   responseType: "text",
                   onUpdate: (fresh) => {
+                    if (currentSeq !== __loadSeq)
+                      return;
                     if (typeof fresh === "string" && fresh !== componentState.templateContent) {
                       componentState.templateContent = fresh;
                       const extracted2 = extractResourceMetadata(fresh, targetPath, runtime);
@@ -2931,6 +2941,8 @@ ${scripts}
                 });
                 html = typeof result === "string" ? result : String(result);
               }
+              if (currentSeq !== __loadSeq)
+                return;
               const rawText = html;
               const isMarkdown = targetPath.endsWith(".md") || targetPath.endsWith(".markdown");
               if (isMarkdown) {
@@ -2943,6 +2955,8 @@ ${scripts}
                 html = `<div style="padding: 1.5rem; max-width: 64rem; margin-inline: auto;"><article data-markdown>${escapedMd}</article></div>`;
               } else if (rawText.includes("<!DOCTYPE") || rawText.includes("data-init") && el.tagName.toLowerCase() !== "html") {
                 throw new Error(`Invalid component fragment returned for "${targetPath}": received full HTML shell.`);
+              } else if (!rawText.includes("<html") && !rawText.includes("<body")) {
+                html = rawText.replace(/<head\b[^>]*>[\s\S]*?<\/head>/gi, "").trim();
               }
               if (runtime.isDevMode) {
                 /* @__PURE__ */ console.log(`[Component] Template loaded for <${el.tagName}>, length: ${html.length}`);
@@ -3013,16 +3027,18 @@ ${scripts}
                 runtime.morphDOM(el, String(fb));
               }
             } finally {
-              componentState.isLoading = false;
-              if (isTabOutlet && tabObj && typeof tabObj === "object") {
-                if (tabObj.isLoading !== false) {
-                  tabObj.isLoading = false;
-                }
-                if (componentState.meta?.title && (!tabObj.meta || !tabObj.meta.title)) {
-                  tabObj.meta = Object.assign(tabObj.meta || {}, { title: componentState.meta.title });
-                }
-                if (componentState.meta?.icon && (!tabObj.meta || !tabObj.meta.icon)) {
-                  tabObj.meta = Object.assign(tabObj.meta || {}, { icon: componentState.meta.icon });
+              if (currentSeq === __loadSeq) {
+                componentState.isLoading = false;
+                if (isTabOutlet && tabObj && typeof tabObj === "object") {
+                  if (tabObj.isLoading !== false) {
+                    tabObj.isLoading = false;
+                  }
+                  if (componentState.meta?.title && (!tabObj.meta || !tabObj.meta.title)) {
+                    tabObj.meta = Object.assign(tabObj.meta || {}, { title: componentState.meta.title });
+                  }
+                  if (componentState.meta?.icon && (!tabObj.meta || !tabObj.meta.icon)) {
+                    tabObj.meta = Object.assign(tabObj.meta || {}, { icon: componentState.meta.icon });
+                  }
                 }
               }
             }
@@ -7676,6 +7692,7 @@ ${match}</ul>
           if (curPageTab) {
             if (source && curPageTab.source !== source) {
               curPageTab.source = source;
+              curPageTab.isLoading = true;
               if (curPageTab.linkedContent)
                 curPageTab.linkedContent.isLoading = true;
             }
@@ -8091,12 +8108,13 @@ ${match}</ul>
               return;
             }
             const target = applyBase(url);
-            const tabId = opts?.tabId ?? getActiveTabId() ?? state.activePageTabId ?? state.activeTabId ?? null;
+            const tabId = opts?.tabId || state.activePageTabId || getActiveTabId() || state.activeTabId || null;
             const cleanPath = stripBase(target);
-            const matched = routeList.find((r) => r.path === cleanPath || r.path === url);
-            const isShadow = matched?.internal || shadowMatch(cleanPath);
+            const cleanPathname = (cleanPath.split(/[?#]/)[0] || "/").replace(/\/+$/, "") || "/";
+            const matched = findRoute(cleanPathname, routeList, matchMeta, {}) || routeList.find((r) => r.path === cleanPathname || r.path === cleanPath || r.path === url) || state.routes?.find((r) => r.path === cleanPathname || r.path === cleanPath);
+            const isShadow = matched?.internal || shadowMatch(cleanPathname);
             if (tabId) {
-              state.tabPaths[tabId] = cleanPath;
+              state.tabPaths[tabId] = cleanPathname;
               if (opts?.title !== void 0 || opts?.icon !== void 0) {
                 state.tabMeta[tabId] = {
                   ...state.tabMeta[tabId] || {},
@@ -8106,10 +8124,11 @@ ${match}</ul>
               }
             }
             const _activeId = tabId || state.activePageTabId || getActiveTabId();
-            if (_activeId && state.tabPaths[_activeId] !== "custom-component") {
-              const resolvedSource = matched?.component || resolveStaticComponent(cleanPath);
+            if (_activeId) {
+              state.tabPaths[_activeId] = cleanPathname;
+              const resolvedSource = matched?.component || resolveStaticComponent(cleanPathname);
               const routeMeta = matched?.meta;
-              syncTabState(_activeId, resolvedSource, cleanPath, {
+              syncTabState(_activeId, resolvedSource, cleanPathname, {
                 ...routeMeta || {},
                 ...opts?.title !== void 0 ? { title: opts.title } : {},
                 ...opts?.icon !== void 0 ? { icon: opts.icon } : {}
@@ -14757,6 +14776,11 @@ ${bridge}`, {
     delete enhanced[DATA_STACK_KEY];
     delete enhanced[COMPONENT_CONTEXT_KEY];
     delete enhanced[MARKER_KEY];
+    delete enhanced.__component_init;
+    if (root.hasAttribute("data-nx-cmp-done")) {
+      root.removeAttribute("data-nx-cmp-done");
+    }
+    advanceEvalFrame();
   }
   var noOp = () => true;
   var defaults = {
@@ -14799,6 +14823,11 @@ ${bridge}`, {
             enhancedFrom[CLEANUP_FUNCTIONS_KEY].clear();
           }
           delete enhancedFrom[MARKER_KEY];
+          delete enhancedFrom.__component_init;
+          if (from.hasAttribute("data-nx-cmp-done")) {
+            from.removeAttribute("data-nx-cmp-done");
+          }
+          advanceEvalFrame();
         }
         return true;
       },
@@ -14818,12 +14847,12 @@ ${bridge}`, {
     return true;
   }
   function parseHTML(html) {
-    if (html.includes("<html") || html.includes("<body") || html.includes("<head")) {
+    if (html.includes("<html") || html.includes("<body")) {
       const parser = new DOMParser();
       return parser.parseFromString(html, "text/html").documentElement;
     }
     const template = document.createElement("template");
-    template.innerHTML = html;
+    template.innerHTML = html.replace(/<head\b[^>]*>[\s\S]*?<\/head>/gi, "");
     return template.content;
   }
   function getHeadElementKey(node) {

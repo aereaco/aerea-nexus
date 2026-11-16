@@ -652,6 +652,7 @@ export const routerAttributeModule: AttributeModule = {
         if (curPageTab) {
           if (source && curPageTab.source !== source) {
             curPageTab.source = source;
+            curPageTab.isLoading = true;
             if (curPageTab.linkedContent) curPageTab.linkedContent.isLoading = true;
           }
           if (route && curPageTab.route !== route) curPageTab.route = route;
@@ -1101,15 +1102,18 @@ export const routerAttributeModule: AttributeModule = {
           }
 
           const target = applyBase(url);
-          const tabId = opts?.tabId ?? getActiveTabId() ?? state.activePageTabId ?? state.activeTabId ?? null;
+          const tabId = opts?.tabId || state.activePageTabId || getActiveTabId() || state.activeTabId || null;
           const cleanPath = stripBase(target);
-          const matched = routeList.find((r) => r.path === cleanPath || r.path === url);
-          const isShadow = matched?.internal || shadowMatch(cleanPath);
+          const cleanPathname = (cleanPath.split(/[?#]/)[0] || '/').replace(/\/+$/, '') || '/';
+          const matched = findRoute(cleanPathname, routeList, matchMeta, {}) ||
+            routeList.find((r) => r.path === cleanPathname || r.path === cleanPath || r.path === url) ||
+            state.routes?.find((r) => r.path === cleanPathname || r.path === cleanPath);
+          const isShadow = matched?.internal || shadowMatch(cleanPathname);
 
           // Track this tab's current path + metadata so switching the active
           // tab (or back/forward) re-renders the correct outlet.
           if (tabId) {
-            state.tabPaths[tabId] = cleanPath;
+            state.tabPaths[tabId] = cleanPathname;
             if (opts?.title !== undefined || opts?.icon !== undefined) {
               state.tabMeta[tabId] = {
                 ...(state.tabMeta[tabId] || {}),
@@ -1121,10 +1125,11 @@ export const routerAttributeModule: AttributeModule = {
 
           // ZCZS: update active tab's source/route directly via the reactive proxy
           const _activeId = tabId || state.activePageTabId || getActiveTabId();
-          if (_activeId && state.tabPaths[_activeId] !== 'custom-component') {
-            const resolvedSource = matched?.component || resolveStaticComponent(cleanPath);
+          if (_activeId) {
+            state.tabPaths[_activeId] = cleanPathname;
+            const resolvedSource = matched?.component || resolveStaticComponent(cleanPathname);
             const routeMeta = matched?.meta as Record<string, any> | undefined;
-            syncTabState(_activeId, resolvedSource, cleanPath, {
+            syncTabState(_activeId, resolvedSource, cleanPathname, {
               ...(routeMeta || {}),
               ...(opts?.title !== undefined ? { title: opts.title } : {}),
               ...(opts?.icon !== undefined ? { icon: opts.icon } : {}),

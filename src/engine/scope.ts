@@ -42,7 +42,7 @@ import {
   DEFAULT_IDB_DATABASE,
   type IndexedDBStoreOperations
 } from './reflect.ts';
-import { getEvalFrame } from './scheduler.ts';
+import { getEvalFrame, advanceEvalFrame } from './scheduler.ts';
 
 export {
   createReflectProxy,
@@ -130,6 +130,7 @@ export function addScopeToNode(element: Element, data: Record<string, unknown>, 
   if (referenceNode && !node.parentElement) {
     (node as any).__scopeParent = referenceNode;
   }
+  advanceEvalFrame();
 
   return () => {
     if (node[LOCAL_SCOPES_KEY]) {
@@ -138,6 +139,7 @@ export function addScopeToNode(element: Element, data: Record<string, unknown>, 
         delete node[LOCAL_SCOPES_KEY];
       }
     }
+    advanceEvalFrame();
   };
 }
 
@@ -174,6 +176,7 @@ export function disposeScope(target?: Element | (() => void)[]): void {
       delete node[DATA_STACK_KEY];
     }
   }
+  advanceEvalFrame();
 }
 
 // ---------------------------------------------------------------------------
