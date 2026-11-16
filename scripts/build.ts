@@ -203,7 +203,7 @@ async function buildBundle(options: BuildOptions = {}) {
 }
 `, {
           base: '/',
-          async loadStylesheet(id) {
+          async loadStylesheet(id: string) {
             if (id === 'tailwindcss' || id === 'tailwindcss/index.css') {
               return { path: 'tailwindcss/index.css', base: '/', content: indexCss };
             }
