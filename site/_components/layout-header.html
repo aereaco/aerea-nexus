@@ -21,6 +21,7 @@
 
   </div>
   <div class="navbar-center flex-1 flex justify-start">
+    <!-- [SYNC:SHELL-ONLY:START] -->
     <div class="megamenu max-md:megamenu-vertical megamenu-wide  w-full flex justify-center" id="my-megamenu-4"
       popover>
       <span class="megamenu-active"></span>
@@ -122,16 +123,19 @@
         </div>
       </div>
     </div>
+    <!-- [SYNC:SHELL-ONLY:END] -->
   </div>
   <div class="flex-1 justify-end flex gap-2">
 
+    <!-- [SYNC:SHELL-ONLY:START] -->
     <!-- Terminal HUD Button -->
     <button type="button" class="btn btn-ghost btn-circle hover:scale-105 transition-all"
       aria-label="Toggle Terminal HUD (Ctrl+` or Click)" title="Terminal HUD (Ctrl+`)"
       data-class="{ 'text-primary bg-primary/10 ring-1 ring-primary/30': terminalOpen }"
-      data-on-click="toggleTerminalHud()">
+      data-on-click="if (typeof toggleTerminalHud === 'function') toggleTerminalHud()">
       <iconify-icon icon="material-symbols-light:terminal" class="text-2xl"></iconify-icon>
     </button>
+    <!-- [SYNC:SHELL-ONLY:END] -->
 
     <!-- Search Button -->
     <button type="button" class="btn btn-ghost btn-circle hover:scale-102" aria-label="Open search (Ctrl+K)"
@@ -147,6 +151,7 @@
       <iconify-icon data-bind-icon="$themeIcon" class="text-2xl transition-all duration-300"></iconify-icon>
     </button>
 
+    <!-- [SYNC:SHELL-ONLY:START] -->
     <!-- Mail Button -->
     <button type="button" class="btn btn-ghost btn-circle" aria-label="Messages" title="Messages"
       data-on-click_stop="headerDropdownTab = 'mail'; headerDropdownOpen = (headerDropdownOpen && headerDropdownTab === 'mail') ? false : true">
@@ -189,6 +194,7 @@
         <iconify-icon icon="material-symbols-light:person" class="text-xl"></iconify-icon>
       </div>
     </button>
+    <!-- [SYNC:SHELL-ONLY:END] -->
 
     <!-- Language Switcher -->
     <div>
