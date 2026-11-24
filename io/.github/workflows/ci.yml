@@ -1,0 +1,54 @@
+name: Nexus-IO CI Matrix
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  nexus-db:
+    name: nexus-db (minimal & full)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p nexus-db --no-default-features
+      - run: cargo test -p nexus-db --features full
+
+  profiles:
+    name: Profile Matrix (${{ matrix.os }} / ${{ matrix.features }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            features: profile-core
+          - os: ubuntu-latest
+            features: profile-app
+          - os: ubuntu-latest
+            features: profile-full
+          - os: windows-latest
+            features: profile-windows,gui
+          - os: macos-latest
+            features: profile-macos,gui
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --lib --no-default-features --features ${{ matrix.features }}
+      - run: cargo check --bins --no-default-features --features ${{ matrix.features }}
+
+  differential-surrealdb:
+    name: SurrealDB 4.0 Differential Conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --lib --no-default-features --features profile-core,surrealdb-ref db::state_engine::differential_tests
