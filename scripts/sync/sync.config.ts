@@ -14,6 +14,8 @@ export interface SyncTargetConfig {
   name: string;
   targetDir: string;
   githubRepo: string;
+  branch?: string;
+  sourcePrefix?: string;
   cloudflareProject?: string;
   includes: string[];
   excludes: string[];
@@ -240,5 +242,31 @@ export const syncConfig: Record<string, SyncTargetConfig> = {
       },
     ],
     runManifest: true,
+  },
+
+  "nexus-io": {
+    name: "Nexus-IO Sovereign Binary & nexus-db Engine",
+    targetDir: "../nexus-io",
+    githubRepo: "aereaco/nexus-io",
+    branch: "main",
+    sourcePrefix: "io/",
+    includes: [
+      "io/Cargo.toml",
+      "io/Cargo.lock",
+      "io/.cargo/**",
+      "io/src/**",
+      "io/crates/**",
+      "io/tests/**",
+      "io/LICENSE",
+      "io/README.md",
+      "io/.gitignore",
+    ],
+    excludes: [
+      "io/target/**",
+      "io/nexus-blobs/**",
+      "io/nexus.db/**",
+      "io/**/*.bin",
+    ],
+    runManifest: false,
   },
 };

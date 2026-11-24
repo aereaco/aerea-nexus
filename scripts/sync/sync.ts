@@ -48,7 +48,8 @@ async function cleanTargetTree(targetRoot: string, allowedRelPaths: Set<string>)
         rel.startsWith(".git/") ||
         rel === ".git" ||
         rel.startsWith(".wrangler/") ||
-        rel.startsWith("node_modules/")
+        rel.startsWith("node_modules/") ||
+        rel.startsWith("target/")
       ) {
         continue;
       }
@@ -90,12 +91,16 @@ async function syncTarget(
   const syncedRelPaths = new Set<string>();
   let copiedCount = 0;
 
+  const prefix = cfg.sourcePrefix ? cfg.sourcePrefix.replace(/\\/g, "/") : "";
+
   for await (const entry of walk(sourceRoot, { includeDirs: false })) {
     const rel = path.relative(sourceRoot, entry.path).replace(/\\/g, "/");
     if (
       rel.startsWith(".git/") ||
       rel.startsWith("node_modules/") ||
-      rel.startsWith(".wrangler/")
+      rel.startsWith(".wrangler/") ||
+      rel.startsWith("target/") ||
+      rel.startsWith("io/target/")
     ) {
       continue;
     }
@@ -105,20 +110,21 @@ async function syncTarget(
     const excluded = excludeRegexes.some((rx) => rx.test(rel));
     if (excluded) continue;
 
-    const destPath = path.join(targetRoot, rel);
+    const destRel = prefix && rel.startsWith(prefix) ? rel.slice(prefix.length) : rel;
+    const destPath = path.join(targetRoot, destRel);
     await Deno.mkdir(path.dirname(destPath), { recursive: true });
 
-    const transformRule = transformMap.get(rel);
+    const transformRule = transformMap.get(destRel) || transformMap.get(rel);
     if (transformRule) {
       const raw = await Deno.readTextFile(entry.path);
       const transformed = transformRule.transform(raw);
       await Deno.writeTextFile(destPath, transformed);
-      console.log(`   ✂️  Transformed: ${rel} (${transformRule.description})`);
+      console.log(`   ✂️  Transformed: ${destRel} (${transformRule.description})`);
     } else {
       await Deno.copyFile(entry.path, destPath);
     }
 
-    syncedRelPaths.add(rel);
+    syncedRelPaths.add(destRel);
     copiedCount++;
   }
 
@@ -166,9 +172,19 @@ async function syncTarget(
       hasGit = false;
     }
 
+    const branch = cfg.branch || "main";
     if (!hasGit) {
       console.log(`   🌱 Initializing git repository in ${targetRoot}...`);
-      runGit(["init", "-b", "main"], targetRoot);
+      runGit(["init", "-b", branch], targetRoot);
+    } else {
+      const curBranch = runGit(["rev-parse", "--abbrev-ref", "HEAD"], targetRoot).out;
+      if (curBranch && curBranch !== branch) {
+        console.log(`   🌿 Switching ${key} branch ${curBranch} → ${branch}...`);
+        const sw = runGit(["checkout", "-B", branch], targetRoot);
+        if (!sw.ok) {
+          console.warn(`   ⚠️ Branch switch note in ${key}: ${sw.err || sw.out}`);
+        }
+      }
     }
 
     const remoteUrl = `https://github.com/${cfg.githubRepo}.git`;
@@ -195,8 +211,8 @@ async function syncTarget(
     }
 
     if (opts.push || opts.publish) {
-      console.log(`   🚀 Pushing ${key} → ${remoteUrl} (main)...`);
-      const pRes = runGit(["push", "-u", "origin", "main", "--force"], targetRoot);
+      console.log(`   🚀 Pushing ${key} → ${remoteUrl} (${branch})...`);
+      const pRes = runGit(["push", "-u", "origin", branch, "--force"], targetRoot);
       if (pRes.ok || /up[- ]to[- ]date/i.test(pRes.err + pRes.out)) {
         console.log(`   ✓ Pushed ${key} to GitHub (${cfg.githubRepo})`);
         if (key === "nexus-ux") {

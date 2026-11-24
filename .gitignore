@@ -12,3 +12,7 @@ node_modules/
 .playwright/
 .plans/
 dist/*.br
+io/target/
+io/nexus-blobs/
+io/nexus.db/
+io/*.bin
