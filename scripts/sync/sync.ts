@@ -30,6 +30,27 @@ function globToRegExp(glob: string): RegExp {
   return new RegExp(regexStr);
 }
 
+const TEXT_EXTS = new Set([".rs", ".ts", ".js", ".md", ".toml", ".json", ".ps1", ".html", ".css", ".yml", ".yaml"]);
+const MOJIBAKE_RE = /ðŸ|â†|â€|âœ|âš|Ã—|Â§|â Œ/;
+const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
+
+function assertCleanUtf8(bytes: Uint8Array, relPath: string): void {
+  const ext = path.extname(relPath).toLowerCase();
+  if (!TEXT_EXTS.has(ext)) return;
+  let text: string;
+  try {
+    text = STRICT_UTF8.decode(bytes);
+  } catch {
+    throw new Error(`[encoding-guard] Invalid UTF-8 byte sequence detected in '${relPath}'`);
+  }
+  if (text.includes("\uFFFD")) {
+    throw new Error(`[encoding-guard] Unicode replacement character (U+FFFD) detected in '${relPath}'`);
+  }
+  if (MOJIBAKE_RE.test(text)) {
+    throw new Error(`[encoding-guard] Known UTF-8/CP1252 mojibake signature detected in '${relPath}'`);
+  }
+}
+
 function runGit(args: string[], cwd: string): { ok: boolean; out: string; err: string } {
   const res = new Deno.Command("git", { args, cwd }).outputSync();
   return {
@@ -114,9 +135,12 @@ async function syncTarget(
     const destPath = path.join(targetRoot, destRel);
     await Deno.mkdir(path.dirname(destPath), { recursive: true });
 
+    const rawBytes = await Deno.readFile(entry.path);
+    assertCleanUtf8(rawBytes, rel);
+
     const transformRule = transformMap.get(destRel) || transformMap.get(rel);
     if (transformRule) {
-      const raw = await Deno.readTextFile(entry.path);
+      const raw = STRICT_UTF8.decode(rawBytes);
       const transformed = transformRule.transform(raw);
       await Deno.writeTextFile(destPath, transformed);
       console.log(`   ✂️  Transformed: ${destRel} (${transformRule.description})`);
