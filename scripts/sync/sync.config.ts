@@ -256,6 +256,7 @@ export const syncConfig: Record<string, SyncTargetConfig> = {
       "io/.cargo/**",
       "io/src/**",
       "io/crates/**",
+      "io/docs/**",
       "io/tests/**",
       "io/LICENSE",
       "io/README.md",
