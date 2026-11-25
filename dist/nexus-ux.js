@@ -12347,157 +12347,419 @@ ${match}</ul>
   var pendingRequests = /* @__PURE__ */ new Map();
   var liveQueries = /* @__PURE__ */ new Map();
   var requestId = 0;
-  var defaultNs = "test";
-  var defaultDb = "test";
+  var defaultUrl = null;
+  var defaultNs = "nexus";
+  var defaultDb = "system";
   var authToken = null;
-  function getConnection(url) {
-    if (!connectionPool.has(url)) {
-      connectionPool.set(url, {
+  function resolveDefaultUrl(runtime) {
+    const runtimeUrl = runtime?.config?.sqlUrl;
+    if (typeof runtimeUrl === "string" && runtimeUrl.trim())
+      return runtimeUrl.trim();
+    if (defaultUrl)
+      return defaultUrl;
+    if (typeof globalThis.location !== "undefined" && globalThis.location.host) {
+      const proto = globalThis.location.protocol === "https:" ? "wss:" : "ws:";
+      return `${proto}//${globalThis.location.host}/rpc`;
+    }
+    return "ws://localhost:8000/rpc";
+  }
+  function getConnection(url, ns, db) {
+    let conn = connectionPool.get(url);
+    if (!conn) {
+      conn = {
+        url,
         ws: null,
         connected: false,
-        ready: false
-      });
+        ready: false,
+        connectPromise: null,
+        ns,
+        db,
+        reconnectAttempts: 0,
+        reconnectTimer: null,
+        subscriptions: /* @__PURE__ */ new Set()
+      };
+      connectionPool.set(url, conn);
     }
-    return connectionPool.get(url);
+    return conn;
   }
-  function connect(url, ns, db) {
+  function sendRequest(ws, method, params = []) {
     return new Promise((resolve, reject) => {
-      const conn = getConnection(url);
-      if (conn.ready) {
-        resolve(true);
+      if (ws.readyState !== WebSocket.OPEN) {
+        reject(new Error(`WebSocket is not open for method "${method}"`));
         return;
       }
-      if (conn.ws) {
+      const id = String(++requestId);
+      const timer = setTimeout(() => {
+        if (pendingRequests.has(id)) {
+          pendingRequests.delete(id);
+          reject(new Error(`RPC request "${method}" timed out`));
+        }
+      }, 3e4);
+      pendingRequests.set(id, { ws, resolve, reject, timer });
+      const payload = JSON.stringify({
+        id,
+        method,
+        params
+      });
+      ws.send(payload);
+    });
+  }
+  function dispatchLiveNotification(notif) {
+    const sub = liveQueries.get(notif.id);
+    if (!sub || sub.closed)
+      return;
+    if (sub.buffering) {
+      sub.buffer.push(notif);
+    } else {
+      sub.onEvent(notif);
+    }
+  }
+  function scheduleReconnect(conn) {
+    if (conn.subscriptions.size === 0 || conn.reconnectTimer !== null)
+      return;
+    const delayMs = Math.min(15e3, 500 * Math.pow(2, conn.reconnectAttempts));
+    conn.reconnectAttempts++;
+    conn.reconnectTimer = setTimeout(async () => {
+      conn.reconnectTimer = null;
+      if (conn.subscriptions.size === 0)
+        return;
+      try {
+        await connect(conn.url, conn.ns, conn.db);
+        conn.reconnectAttempts = 0;
+        await restoreSubscriptions(conn);
+      } catch {
+        scheduleReconnect(conn);
+      }
+    }, delayMs);
+  }
+  function connect(url, ns, db) {
+    const targetNs = ns || defaultNs;
+    const targetDb = db || defaultDb;
+    const conn = getConnection(url, targetNs, targetDb);
+    if (conn.ready && conn.ws && conn.ws.readyState === WebSocket.OPEN) {
+      if (conn.ns !== targetNs || conn.db !== targetDb) {
+        return sendRequest(conn.ws, "use", [targetNs, targetDb]).then(() => {
+          conn.ns = targetNs;
+          conn.db = targetDb;
+          return true;
+        });
+      }
+      return Promise.resolve(true);
+    }
+    if (conn.connectPromise) {
+      return conn.connectPromise;
+    }
+    conn.connectPromise = new Promise((resolve, reject) => {
+      if (conn.ws && conn.ws.readyState === WebSocket.OPEN) {
         conn.ws.close();
       }
-      conn.ws = new WebSocket(url);
-      conn.connected = false;
-      conn.ready = false;
-      conn.ws.onopen = () => {
-        conn.connected = true;
-        if (ns || defaultNs || db || defaultDb) {
-          sendRequest(conn.ws, "use", {
-            namespace: ns || defaultNs,
-            database: db || defaultDb
-          }).then(() => {
-            conn.ready = true;
-            resolve(true);
-          }).catch(reject);
-        } else {
-          conn.ready = true;
-          resolve(true);
+      let settled = false;
+      const settleResolve = (val) => {
+        if (!settled) {
+          settled = true;
+          conn.connectPromise = null;
+          resolve(val);
         }
       };
-      conn.ws.onmessage = (event) => {
+      const settleReject = (err) => {
+        if (!settled) {
+          settled = true;
+          conn.connectPromise = null;
+          reject(err);
+        }
+      };
+      const ws = new WebSocket(url);
+      conn.ws = ws;
+      conn.connected = false;
+      conn.ready = false;
+      ws.onopen = async () => {
+        conn.connected = true;
         try {
-          const response = JSON.parse(event.data);
-          if (response.id && pendingRequests.has(response.id)) {
-            const { resolve: res, reject: rej } = pendingRequests.get(response.id);
-            pendingRequests.delete(response.id);
-            if (response.error) {
-              rej(new Error(response.error.message));
-            } else {
-              res(response.result);
+          if (authToken) {
+            await sendRequest(ws, "authenticate", [authToken]);
+          }
+          if (targetNs || targetDb) {
+            await sendRequest(ws, "use", [targetNs, targetDb]);
+            conn.ns = targetNs;
+            conn.db = targetDb;
+          }
+          conn.ready = true;
+          conn.reconnectAttempts = 0;
+          settleResolve(true);
+        } catch (err) {
+          conn.ready = false;
+          try {
+            ws.close();
+          } catch {
+          }
+          settleReject(err instanceof Error ? err : new Error(errMsg(err)));
+        }
+      };
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(typeof event.data === "string" ? event.data : String(event.data));
+          if (msg.id !== void 0 && msg.id !== null) {
+            const reqKey = String(msg.id);
+            const pending = pendingRequests.get(reqKey);
+            if (pending) {
+              clearTimeout(pending.timer);
+              pendingRequests.delete(reqKey);
+              if (msg.error) {
+                pending.reject(new Error(msg.error.message || "RPC error"));
+              } else {
+                pending.resolve(msg.result);
+              }
+              return;
             }
           }
-          if (response.method === "notify" && response.params) {
-            const [notification] = response.params;
-            if (notification.id && liveQueries.has(notification.id)) {
-              liveQueries.get(notification.id)(notification.result);
+          if ((msg.id === void 0 || msg.id === null) && msg.result && typeof msg.result === "object" && typeof msg.result.id === "string" && typeof msg.result.action === "string") {
+            dispatchLiveNotification({
+              id: msg.result.id,
+              action: msg.result.action.toUpperCase(),
+              result: msg.result.result
+            });
+            return;
+          }
+          if (msg.method === "notify" && Array.isArray(msg.params) && msg.params[0]) {
+            const n = msg.params[0];
+            if (typeof n.id === "string") {
+              dispatchLiveNotification({
+                id: n.id,
+                action: String(n.action || "UPDATE").toUpperCase(),
+                result: n.result
+              });
             }
           }
         } catch (e) {
-          console.error("[Nexus SQL] Failed to parse WebSocket message:", e);
+          console.error("[UX SQL] Failed to parse WebSocket message:", e);
         }
       };
-      conn.ws.onerror = () => {
+      ws.onerror = () => {
         conn.connected = false;
         conn.ready = false;
-        reject(new Error("WebSocket connection failed"));
+        settleReject(new Error(`WebSocket connection failed (${url})`));
       };
-      conn.ws.onclose = () => {
-        conn.connected = false;
-        conn.ready = false;
-        pendingRequests.forEach(({ reject: reject2 }) => reject2(new Error("Connection closed")));
-        pendingRequests.clear();
-      };
-    });
-  }
-  function sendRequest(ws, method, params) {
-    return new Promise((resolve, reject) => {
-      const id = String(++requestId);
-      pendingRequests.set(id, { resolve, reject });
-      const message = JSON.stringify({
-        id,
-        method,
-        params: params || []
-      });
-      ws.send(message);
-      setTimeout(() => {
-        if (pendingRequests.has(id)) {
-          pendingRequests.delete(id);
-          reject(new Error(`Request ${method} timed out`));
+      ws.onclose = () => {
+        const wasCurrent = conn.ws === ws;
+        if (wasCurrent) {
+          conn.connected = false;
+          conn.ready = false;
+          conn.ws = null;
         }
-      }, 3e4);
+        for (const [id, pending] of Array.from(pendingRequests.entries())) {
+          if (pending.ws === ws) {
+            clearTimeout(pending.timer);
+            pendingRequests.delete(id);
+            pending.reject(new Error("WebSocket connection closed"));
+          }
+        }
+        settleReject(new Error("WebSocket connection closed during handshake"));
+        if (wasCurrent && conn.subscriptions.size > 0) {
+          for (const sub of conn.subscriptions) {
+            if (!sub.closed)
+              sub.onStatus("reconnecting");
+          }
+          scheduleReconnect(conn);
+        }
+      };
     });
+    return conn.connectPromise;
   }
-  async function executeQuery(url, query, vars, ns, db) {
-    await connect(url, ns, db);
-    const conn = getConnection(url);
-    if (authToken && conn.ws) {
-      try {
-        await sendRequest(conn.ws, "authenticate", { token: authToken });
-      } catch (e) {
-        console.warn("[Nexus SQL] Authentication failed:", e);
+  function extractQueryRows(rpcResult) {
+    if (Array.isArray(rpcResult)) {
+      const first = rpcResult[0];
+      if (first && typeof first === "object" && "status" in first && "result" in first) {
+        if (first.status && first.status !== "OK") {
+          throw new Error(typeof first.result === "string" ? first.result : `Query failed (${first.status})`);
+        }
+        return Array.isArray(first.result) ? first.result : first.result !== void 0 && first.result !== null ? [first.result] : [];
       }
+      return rpcResult;
     }
-    return sendRequest(conn.ws, "query", {
-      sql: query,
-      vars: vars || {}
-    });
+    return rpcResult !== void 0 && rpcResult !== null ? [rpcResult] : [];
   }
-  async function subscribeLive(url, query, callback, ns, db) {
-    await connect(url, ns, db);
-    const conn = getConnection(url);
-    const result = await sendRequest(conn.ws, "query", {
-      sql: query,
-      vars: {}
-    });
-    const liveId = result[0]?.id;
-    if (liveId) {
-      liveQueries.set(liveId, callback);
+  function recordKey(row) {
+    if (row && typeof row === "object" && "id" in row) {
+      const id = row.id;
+      if (id !== void 0 && id !== null)
+        return String(id);
+    }
+    return null;
+  }
+  function applyLiveEventToRows(rows, event) {
+    const action = event.action.toUpperCase();
+    const payload = event.result;
+    const key = recordKey(payload);
+    if (action === "DELETE") {
+      if (key !== null) {
+        return rows.filter((r) => recordKey(r) !== key);
+      }
+      if (typeof payload === "string") {
+        return rows.filter((r) => recordKey(r) !== payload);
+      }
+      return rows;
+    }
+    if (action === "CREATE" || action === "UPDATE") {
+      if (key !== null) {
+        const idx = rows.findIndex((r) => recordKey(r) === key);
+        if (idx >= 0) {
+          const next = rows.slice();
+          next[idx] = payload;
+          return next;
+        }
+        return [...rows, payload];
+      }
+      return payload !== void 0 ? [...rows, payload] : rows;
+    }
+    return rows;
+  }
+  function parseLiveTableAndSeed(query) {
+    const trimmed = query.trim();
+    const seedSql = trimmed.replace(/^LIVE\s+/i, "");
+    const tableMatch = seedSql.match(/\bFROM\s+([a-zA-Z0-9_:`-]+)/i);
+    const table = tableMatch ? tableMatch[1].replace(/`/g, "") : "";
+    if (!table) {
+      throw new Error(`Unable to determine table name from LIVE query: "${query}"`);
+    }
+    return { table, seedSql };
+  }
+  async function activateSubscription(conn, sub) {
+    if (sub.closed)
+      return "";
+    await connect(conn.url, sub.ns, sub.db);
+    if (!conn.ws || conn.ws.readyState !== WebSocket.OPEN) {
+      throw new Error("WebSocket unavailable for LIVE subscription");
+    }
+    if (sub.liveId) {
+      liveQueries.delete(sub.liveId);
+      sub.liveId = null;
+    }
+    sub.buffering = true;
+    sub.buffer.length = 0;
+    const liveIdRaw = await sendRequest(conn.ws, "live", [sub.table]);
+    const liveId = typeof liveIdRaw === "string" ? liveIdRaw : String(liveIdRaw || "");
+    if (!liveId) {
+      sub.buffering = false;
+      throw new Error(`LIVE subscription on "${sub.table}" did not return a subscription ID`);
+    }
+    if (sub.closed) {
+      try {
+        await sendRequest(conn.ws, "kill", [liveId]);
+      } catch {
+      }
+      return "";
+    }
+    sub.liveId = liveId;
+    liveQueries.set(liveId, sub);
+    const seedResp = await sendRequest(conn.ws, "query", [sub.seedSql, sub.vars || {}]);
+    let rows = extractQueryRows(seedResp);
+    for (const bufferedEvent of sub.buffer) {
+      rows = applyLiveEventToRows(rows, bufferedEvent);
+    }
+    sub.buffer.length = 0;
+    sub.buffering = false;
+    if (!sub.closed) {
+      sub.onRows(rows);
+      sub.onStatus("live", null);
     }
     return liveId;
   }
+  async function restoreSubscriptions(conn) {
+    for (const sub of Array.from(conn.subscriptions)) {
+      if (sub.closed) {
+        conn.subscriptions.delete(sub);
+        continue;
+      }
+      try {
+        await activateSubscription(conn, sub);
+      } catch (err) {
+        sub.onStatus("error", errMsg(err));
+      }
+    }
+  }
+  async function executeQuery(url, query, vars, ns, db) {
+    await connect(url, ns, db);
+    const conn = getConnection(url, ns || defaultNs, db || defaultDb);
+    return sendRequest(conn.ws, "query", [query, vars || {}]);
+  }
+  async function unsubscribeLive(sub) {
+    if (sub.closed)
+      return;
+    sub.closed = true;
+    sub.buffering = false;
+    sub.buffer.length = 0;
+    const conn = connectionPool.get(sub.url);
+    if (conn) {
+      conn.subscriptions.delete(sub);
+      if (conn.subscriptions.size === 0 && conn.reconnectTimer !== null) {
+        clearTimeout(conn.reconnectTimer);
+        conn.reconnectTimer = null;
+      }
+    }
+    const liveId = sub.liveId;
+    sub.liveId = null;
+    if (liveId) {
+      liveQueries.delete(liveId);
+      if (conn?.ws && conn.ready && conn.ws.readyState === WebSocket.OPEN) {
+        try {
+          await sendRequest(conn.ws, "kill", [liveId]);
+        } catch {
+        }
+      }
+    }
+  }
   function configureSqlClient(config) {
-    if (config.namespace)
+    if (config.url !== void 0)
+      defaultUrl = config.url;
+    if (config.namespace !== void 0)
       defaultNs = config.namespace;
-    if (config.database)
+    if (config.database !== void 0)
       defaultDb = config.database;
-    if (config.token)
+    if (config.token !== void 0)
       authToken = config.token;
   }
+  function syncNumericFieldsToHeap(rows, numericFields) {
+    if (numericFields.length === 0)
+      return;
+    rows.forEach((row, idx) => {
+      if (row && typeof row === "object") {
+        const rec = row;
+        numericFields.forEach((field) => {
+          if (typeof rec[field] === "number") {
+            heap.setNumeric(`${field}_${idx}`, rec[field]);
+          }
+        });
+      }
+    });
+  }
   function sqlSprite(runtime) {
-    const url = runtime.config?.sqlUrl || "ws://localhost:8000/rpc";
-    const ns = runtime.config?.sqlNs || defaultNs;
-    const db = runtime.config?.sqlDb || defaultDb;
-    return async (query, vars) => {
-      const isLive = query.trim().toUpperCase().startsWith("LIVE");
+    return async (query, vars, opts) => {
+      const url = opts?.url || resolveDefaultUrl(runtime);
+      const ns = opts?.namespace || runtime.config?.sqlNs || defaultNs;
+      const db = opts?.database || runtime.config?.sqlDb || defaultDb;
+      const isLive = /^LIVE\s+/i.test(query.trim());
+      let activeSub = null;
       const result = runtime.reactive({
         data: [],
         status: isLive ? "connecting" : "loading",
         error: null,
-        liveId: null
+        liveId: null,
+        unsubscribe: async () => {
+          if (activeSub) {
+            await unsubscribeLive(activeSub);
+            result.liveId = null;
+            result.status = "closed";
+          }
+        }
       });
       try {
         if (isLive) {
           const numericFields = [];
           const fieldMatch = query.match(/SELECT\s+(.+?)\s+FROM/i);
           if (fieldMatch) {
-            const fields = fieldMatch[1].split(",").map((f) => f.trim());
-            fields.forEach((f) => {
+            fieldMatch[1].split(",").map((f) => f.trim()).forEach((f) => {
               if (f !== "*" && !f.includes("(")) {
-                const fieldName = f.split(" AS ").pop()?.trim() || f.trim();
+                const fieldName = f.split(/\s+AS\s+/i).pop()?.trim() || f.trim();
                 if (/_id|_count|_at|_time|_amount|_price|_qty$/.test(fieldName.toLowerCase())) {
                   numericFields.push(fieldName);
                   heap.allocateNumeric(fieldName);
@@ -12505,47 +12767,56 @@ ${match}</ul>
               }
             });
           }
-          const liveId = await subscribeLive(url, query, (data) => {
-            const arr = Array.isArray(data) ? data : [];
-            if (numericFields.length > 0) {
-              arr.forEach((row, idx) => {
-                if (row && typeof row === "object") {
-                  numericFields.forEach((field) => {
-                    if (typeof row[field] === "number") {
-                      heap.setNumeric(`${field}_${idx}`, row[field]);
-                    }
-                  });
-                }
-              });
+          const { table, seedSql } = parseLiveTableAndSeed(query);
+          const conn = getConnection(url, ns, db);
+          const sub = {
+            url,
+            ns,
+            db,
+            table,
+            seedSql,
+            vars,
+            liveId: null,
+            buffering: true,
+            buffer: [],
+            closed: false,
+            onRows: (rows) => {
+              syncNumericFieldsToHeap(rows, numericFields);
+              result.data = rows;
+            },
+            onEvent: (event) => {
+              const next = applyLiveEventToRows(result.data, event);
+              syncNumericFieldsToHeap(next, numericFields);
+              result.data = next;
+              result.status = "live";
+            },
+            onStatus: (status, error) => {
+              result.status = status;
+              if (error !== void 0)
+                result.error = error;
             }
-            result.data = arr;
-            result.status = "live";
-          }, ns, db);
-          result.liveId = liveId;
-          result.status = "live";
+          };
+          activeSub = sub;
+          conn.subscriptions.add(sub);
+          if (typeof runtime.onEffectCleanup === "function") {
+            runtime.onEffectCleanup(() => {
+              void unsubscribeLive(sub);
+            });
+          }
+          const liveId = await activateSubscription(conn, sub);
+          result.liveId = liveId || null;
         } else {
           const response = await executeQuery(url, query, vars, ns, db);
-          const queryResult = response[0]?.result || response;
+          const queryResult = extractQueryRows(response);
           if (Array.isArray(queryResult) && queryResult.length > 10) {
             const sample = queryResult[0];
             if (sample && typeof sample === "object") {
               const keys = Object.keys(sample);
               const numericCount = keys.filter((k) => typeof sample[k] === "number").length;
-              if (numericCount / keys.length >= 0.5) {
-                keys.forEach((k) => {
-                  if (typeof sample[k] === "number") {
-                    heap.allocateNumeric(k);
-                  }
-                });
-                queryResult.forEach((row, idx) => {
-                  if (row && typeof row === "object") {
-                    keys.forEach((k) => {
-                      if (typeof row[k] === "number") {
-                        heap.setNumeric(`${k}_${idx}`, row[k]);
-                      }
-                    });
-                  }
-                });
+              if (keys.length > 0 && numericCount / keys.length >= 0.5) {
+                const numKeys = keys.filter((k) => typeof sample[k] === "number");
+                numKeys.forEach((k) => heap.allocateNumeric(k));
+                syncNumericFieldsToHeap(queryResult, numKeys);
               }
             }
           }
