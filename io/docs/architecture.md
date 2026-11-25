@@ -39,11 +39,12 @@ Every app cell declares **both** its database topology (`CellDbMode`), exposed q
 
 Allowed connection transports (`CellDbTransport`): `Internal`, `HttpRest`, `WebSocketRpc`, `PgWire`, `MySqlWire`, `SqliteHrana`, `MeshWal`.
 
-## 4. Content-Addressed Runtime Registry (`WasmRuntimeRegistry`)
-Guest runtimes (`quickjs`, `php-cgi`, `sqlite`, `pglite`, `duckdb`, etc.) are never statically bloated into the host binary:
-1. Uploaded via `PUT /cells/_runtimes/<name>` or loaded from `NEXUS_RUNTIMES_DIR`.
-2. Stored content-addressed by BLAKE3 CID in `BlobBridge` (`nexus-runtimes` bucket).
-3. Pre-compiled ahead-of-time into native `.cwasm` (`CrystalEngine::compile_aot`) on non-iOS hosts for sub-millisecond cold starts and Apple `W^X`-compliant execution on iOS.
+## 4. OCI Distribution v2 & Runtime Registry (`WasmRuntimeRegistry`)
+Guest runtimes (`quickjs`, `php-cgi`, `sqlite`, `pglite`, `duckdb`, etc.) are distributed using standard **OCI Distribution v2** registries (GHCR, Wasm Directory / `wkg`, Docker Hub, Zot, or local mirrors) — never statically bloated into the host binary:
+1. Pulled via `POST /cells/_runtimes/pull` (supporting `@aerea/<pkg>[:tag]` → `ghcr.io/aereaco/<pkg>:<tag>` and arbitrary `oci://registry/org/pkg:tag` references), uploaded via `PUT /cells/_runtimes/<name>`, or loaded from `NEXUS_RUNTIMES_DIR`.
+2. Verified against the OCI manifest's **SHA-256 digest** before storage.
+3. Optional `application/vnd.nexus.policy.v1+json` OCI layer declares **requested capabilities** (`default_cell_policy`, `max_fuel`, `max_memory_mb`, `requested_capabilities`, `db_flavors`, `wit_world`), which local IAM/operator policy always caps or approves.
+4. Stored content-addressed by BLAKE3 CID in `BlobBridge` (`nexus-runtimes` bucket) and pre-compiled ahead-of-time into native `.cwasm` (`CrystalEngine::compile_aot`) on non-iOS hosts for sub-millisecond cold starts and Apple `W^X`-compliant execution on iOS.
 
 ## 5. Lean Microkernel Feature Boundaries
 * **`profile-core`** excludes Nushell (`shell`), OXC (`ts-compiler`), P2P Iroh (`p2p-storage`), S3 (`s3-gateway`), WireGuard (`vpn`), Kubernetes bridge (`k8s-bridge`), NVML (`hardware-monitoring`), and native WebViews (`gui`).
