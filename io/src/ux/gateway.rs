@@ -68,7 +68,7 @@ impl Handler for ReadinessHandler {
     }
 }
 
-/// Gateway configuration - controls which ports are exposed
+/// Gateway configuration - controls which ports and web policies are exposed
 #[derive(Clone)]
 pub struct GatewayConfig {
     pub enable_https: bool,          // Port 443 (primary gateway)
@@ -82,6 +82,28 @@ pub struct GatewayConfig {
     pub enable_metrics: bool,        // Port 9090 (Prometheus)
     pub acme_domain: Option<String>, // Domain for ACME certs
     pub acme_email: Option<String>,  // Contact email for Let's Encrypt
+    pub web_root: Option<std::path::PathBuf>,
+    pub dist_root: Option<std::path::PathBuf>,
+    pub coop_header: Option<String>,
+    pub coep_header: Option<String>,
+}
+
+fn parse_optional_header_env(var: &str, default_val: &str) -> Option<String> {
+    match std::env::var(var) {
+        Ok(v) => {
+            let trimmed = v.trim();
+            if trimmed.is_empty()
+                || trimmed.eq_ignore_ascii_case("none")
+                || trimmed.eq_ignore_ascii_case("off")
+                || trimmed.eq_ignore_ascii_case("false")
+            {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Err(_) => Some(default_val.to_string()),
+    }
 }
 
 impl Default for GatewayConfig {
@@ -104,6 +126,16 @@ impl Default for GatewayConfig {
             enable_metrics: false,
             acme_domain: None,
             acme_email: None,
+            web_root: std::env::var("NEXUS_WEB_ROOT")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .map(std::path::PathBuf::from),
+            dist_root: std::env::var("NEXUS_DIST_ROOT")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .map(std::path::PathBuf::from),
+            coop_header: parse_optional_header_env("NEXUS_WEB_COOP", "same-origin"),
+            coep_header: parse_optional_header_env("NEXUS_WEB_COEP", "credentialless"),
         }
     }
 }
@@ -561,9 +593,6 @@ impl UxGateway {
             storage_ready: self.storage_ready.clone(),
         };
         let router = Router::new()
-            // Static PWA files
-            .push(Router::with_path("/").get(serve_static))
-            
             // WebSocket & HTTP JSON-RPC / CBOR Signal Hub (SurrealDB SDK wire protocol)
             .push({
                 let db = self.db.clone();
@@ -687,9 +716,14 @@ impl UxGateway {
         );
 
         #[cfg(feature = "serve-web")]
-        let router = router.push(
-            Router::with_path("/web/{**path}").get(serve_web_static),
-        );
+        let web_handler = WebStaticHandler::from_config(&self.config);
+        #[cfg(feature = "serve-web")]
+        let dist_handler = DistStaticHandler::from_config(&self.config);
+
+        #[cfg(feature = "serve-web")]
+        let router = router
+            .push(Router::with_path("/dist/{**path}").get(dist_handler))
+            .push(Router::with_path("/web/{**path}").get(web_handler.clone()));
 
         #[cfg(feature = "serve-proxy")]
         let router = router.push(
@@ -729,7 +763,7 @@ impl UxGateway {
                     }),
             );
 
-        router
+        let router = router
             
             // S3 Proxy (browser-friendly)
             .push({
@@ -765,7 +799,19 @@ impl UxGateway {
             
             // Health check (liveness) & runtime capability diagnostics
             .push(Router::with_path("/health").get(health_check))
-            .push(Router::with_path("/_nexus/capabilities").get(capabilities_handler))
+            .push(Router::with_path("/_nexus/capabilities").get(capabilities_handler));
+
+        // Mount web application root & SPA fallback LAST so API, RPC, cell, S3, and probe routes
+        // always take precedence and missing assets return genuine 404s.
+        #[cfg(feature = "serve-web")]
+        let router = router
+            .push(Router::with_path("/").get(web_handler.clone()))
+            .push(Router::with_path("/{**path}").get(web_handler));
+
+        #[cfg(not(feature = "serve-web"))]
+        let router = router.push(Router::with_path("/").get(serve_static));
+
+        router
     }
 
     /// Expose the configured Salvo router for programmatic embedding and integration tests.
@@ -934,43 +980,366 @@ impl Handler for DeployedAppHandler {
 }
 
 #[cfg(feature = "serve-web")]
-#[handler]
-async fn serve_web_static(req: &mut Request, res: &mut Response) {
-    let root = std::path::PathBuf::from(
-        std::env::var("NEXUS_WEB_ROOT").unwrap_or_else(|_| "public".to_string()),
-    );
-    let rel = req.param::<String>("path").unwrap_or_default();
-    if rel.contains("..") {
-        res.status_code(StatusCode::BAD_REQUEST);
-        return;
+fn resolve_asset_root(
+    explicit: Option<&std::path::PathBuf>,
+    subdir: &str,
+) -> Option<std::path::PathBuf> {
+    // 1. Explicitly configured path (`GatewayConfig` / `NEXUS_WEB_ROOT` / `NEXUS_DIST_ROOT`)
+    if let Some(p) = explicit {
+        if p.is_dir() {
+            return Some(p.clone());
+        }
+        // Explicit path configured but missing — do NOT silently fall through to an unrelated directory.
+        return None;
     }
-    let candidate = root.join(rel.trim_start_matches('/'));
-    let target = if candidate.is_file() {
-        candidate
-    } else {
-        root.join("index.html")
-    };
-    match tokio::fs::read(&target).await {
-        Ok(bytes) => {
-            let ct = if target.extension().and_then(|e| e.to_str()) == Some("html") {
-                "text/html; charset=utf-8"
-            } else if target.extension().and_then(|e| e.to_str()) == Some("js") {
-                "application/javascript; charset=utf-8"
-            } else if target.extension().and_then(|e| e.to_str()) == Some("css") {
-                "text/css; charset=utf-8"
-            } else {
-                "application/octet-stream"
-            };
+
+    // 2. Path relative to executable directory (packaged / deployed binary layout)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let candidate = exe_dir.join(subdir);
+            if candidate.is_dir() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    // 3. Development-only repository-relative fallback (never active in release builds)
+    #[cfg(debug_assertions)]
+    {
+        for rel in [
+            std::path::PathBuf::from(subdir),
+            std::path::PathBuf::from("..").join(subdir),
+        ] {
+            if rel.is_dir() {
+                return Some(rel);
+            }
+        }
+    }
+
+    None
+}
+
+#[cfg(feature = "serve-web")]
+fn safe_join_within(
+    root: &std::path::Path,
+    rel_path: &str,
+) -> Result<std::path::PathBuf, StatusCode> {
+    let trimmed = rel_path.trim_start_matches('/');
+    if trimmed.contains('\0') || trimmed.contains('\\') {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let mut joined = root.to_path_buf();
+    for seg in trimmed.split('/') {
+        if seg.is_empty() || seg == "." {
+            continue;
+        }
+        if seg == ".." || seg.contains(':') {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        joined.push(seg);
+    }
+    Ok(joined)
+}
+
+#[cfg(feature = "serve-web")]
+fn mime_for_path(path: &std::path::Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("html") | Some("htm") => "text/html; charset=utf-8",
+        Some("js") | Some("mjs") | Some("cjs") => "application/javascript; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("json") | Some("map") => "application/json; charset=utf-8",
+        Some("svg") => "image/svg+xml",
+        Some("md") | Some("markdown") => "text/markdown; charset=utf-8",
+        Some("wasm") => "application/wasm",
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("ico") => "image/x-icon",
+        Some("txt") => "text/plain; charset=utf-8",
+        Some("xml") => "application/xml; charset=utf-8",
+        Some("woff") => "font/woff",
+        Some("woff2") => "font/woff2",
+        Some("ttf") => "font/ttf",
+        _ => "application/octet-stream",
+    }
+}
+
+#[cfg(feature = "serve-web")]
+fn is_reserved_non_spa_prefix(rel_path: &str) -> bool {
+    let normalized = format!("/{}", rel_path.trim_start_matches('/'));
+    const RESERVED: &[&str] = &[
+        "/api/",
+        "/dist/",
+        "/rpc",
+        "/sql",
+        "/cells/",
+        "/s3/",
+        "/_nexus/",
+        "/key/",
+        "/graphql",
+        "/v2/",
+        "/proxy/",
+        "/signin",
+        "/signup",
+        "/export",
+        "/import",
+        "/query",
+        "/health",
+        "/ready",
+        "/status",
+        "/version",
+    ];
+    RESERVED.iter().any(|prefix| {
+        normalized == *prefix || normalized.starts_with(prefix)
+    })
+}
+
+#[cfg(feature = "serve-web")]
+fn accepts_html(req: &Request) -> bool {
+    match req
+        .headers()
+        .get(salvo::http::header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+    {
+        Some(accept) => accept.contains("text/html") || accept.contains("*/*"),
+        None => true,
+    }
+}
+
+#[cfg(feature = "serve-web")]
+fn apply_isolation_headers(
+    res: &mut Response,
+    coop: Option<&str>,
+    coep: Option<&str>,
+) {
+    if let Some(val) = coop {
+        if let Ok(hv) = salvo::http::header::HeaderValue::from_str(val) {
             res.headers_mut().insert(
-                salvo::http::header::CONTENT_TYPE,
-                salvo::http::HeaderValue::from_static(ct),
+                salvo::http::header::HeaderName::from_static("cross-origin-opener-policy"),
+                hv,
             );
-            res.body(bytes);
-        }
-        Err(_) => {
-            res.status_code(StatusCode::NOT_FOUND);
         }
     }
+    if let Some(val) = coep {
+        if let Ok(hv) = salvo::http::header::HeaderValue::from_str(val) {
+            res.headers_mut().insert(
+                salvo::http::header::HeaderName::from_static("cross-origin-embedder-policy"),
+                hv,
+            );
+        }
+    }
+}
+
+#[cfg(feature = "serve-web")]
+#[derive(Clone)]
+struct DistStaticHandler {
+    dist_root: Option<std::path::PathBuf>,
+}
+
+#[cfg(feature = "serve-web")]
+impl DistStaticHandler {
+    fn from_config(config: &GatewayConfig) -> Self {
+        Self {
+            dist_root: resolve_asset_root(config.dist_root.as_ref(), "dist"),
+        }
+    }
+}
+
+#[cfg(feature = "serve-web")]
+#[async_trait]
+impl Handler for DistStaticHandler {
+    async fn handle(
+        &self,
+        req: &mut Request,
+        _depot: &mut Depot,
+        res: &mut Response,
+        _ctrl: &mut FlowCtrl,
+    ) {
+        let Some(root) = &self.dist_root else {
+            res.status_code(StatusCode::NOT_FOUND);
+            return;
+        };
+        let rel = req.param::<String>("path").unwrap_or_default();
+        let target = match safe_join_within(root, &rel) {
+            Ok(p) => p,
+            Err(code) => {
+                res.status_code(code);
+                return;
+            }
+        };
+        if !target.is_file() {
+            res.status_code(StatusCode::NOT_FOUND);
+            return;
+        }
+        match tokio::fs::read(&target).await {
+            Ok(bytes) => {
+                let ct = mime_for_path(&target);
+                res.headers_mut().insert(
+                    salvo::http::header::CONTENT_TYPE,
+                    salvo::http::HeaderValue::from_static(ct),
+                );
+                res.headers_mut().insert(
+                    salvo::http::header::CACHE_CONTROL,
+                    salvo::http::HeaderValue::from_static("public, max-age=300"),
+                );
+                res.headers_mut().insert(
+                    salvo::http::header::HeaderName::from_static("cross-origin-resource-policy"),
+                    salvo::http::HeaderValue::from_static("same-origin"),
+                );
+                res.body(bytes);
+            }
+            Err(_) => {
+                res.status_code(StatusCode::NOT_FOUND);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "serve-web")]
+#[derive(Clone)]
+struct WebStaticHandler {
+    web_root: Option<std::path::PathBuf>,
+    coop_header: Option<String>,
+    coep_header: Option<String>,
+}
+
+#[cfg(feature = "serve-web")]
+impl WebStaticHandler {
+    fn from_config(config: &GatewayConfig) -> Self {
+        Self {
+            web_root: resolve_asset_root(config.web_root.as_ref(), "site"),
+            coop_header: config.coop_header.clone(),
+            coep_header: config.coep_header.clone(),
+        }
+    }
+}
+
+#[cfg(feature = "serve-web")]
+#[async_trait]
+impl Handler for WebStaticHandler {
+    async fn handle(
+        &self,
+        req: &mut Request,
+        _depot: &mut Depot,
+        res: &mut Response,
+        _ctrl: &mut FlowCtrl,
+    ) {
+        let rel = req
+            .param::<String>("path")
+            .unwrap_or_else(|| req.uri().path().trim_start_matches('/').to_string());
+
+        let Some(root) = &self.web_root else {
+            if rel.is_empty() && accepts_html(req) {
+                render_bundle_unavailable(res);
+            } else {
+                res.status_code(StatusCode::NOT_FOUND);
+            }
+            return;
+        };
+
+        let candidate = match safe_join_within(root, &rel) {
+            Ok(p) => p,
+            Err(code) => {
+                res.status_code(code);
+                return;
+            }
+        };
+
+        // 1. Direct file match (or directory index.html for root)
+        let exact_target = if rel.is_empty() {
+            let idx = root.join("index.html");
+            if idx.is_file() { Some(idx) } else { None }
+        } else if candidate.is_file() {
+            Some(candidate)
+        } else {
+            None
+        };
+
+        let (target, is_spa_fallback) = if let Some(file) = exact_target {
+            (file, false)
+        } else {
+            // 2. Strict SPA fallback: ONLY for HTML navigation requests with no file extension
+            //    and outside reserved API / RPC / dist / asset prefixes.
+            let has_ext = std::path::Path::new(&rel).extension().is_some();
+            if !has_ext && !is_reserved_non_spa_prefix(&rel) && accepts_html(req) {
+                let idx = root.join("index.html");
+                if idx.is_file() {
+                    (idx, true)
+                } else {
+                    if rel.is_empty() {
+                        render_bundle_unavailable(res);
+                    } else {
+                        res.status_code(StatusCode::NOT_FOUND);
+                    }
+                    return;
+                }
+            } else {
+                res.status_code(StatusCode::NOT_FOUND);
+                return;
+            }
+        };
+
+        match tokio::fs::read(&target).await {
+            Ok(bytes) => {
+                let ct = mime_for_path(&target);
+                let is_html = ct.starts_with("text/html");
+                res.headers_mut().insert(
+                    salvo::http::header::CONTENT_TYPE,
+                    salvo::http::HeaderValue::from_static(ct),
+                );
+                res.headers_mut().insert(
+                    salvo::http::header::CACHE_CONTROL,
+                    salvo::http::HeaderValue::from_static(if is_html || is_spa_fallback {
+                        "no-cache"
+                    } else {
+                        "public, max-age=300"
+                    }),
+                );
+                if is_html {
+                    apply_isolation_headers(
+                        res,
+                        self.coop_header.as_deref(),
+                        self.coep_header.as_deref(),
+                    );
+                }
+                res.body(bytes);
+            }
+            Err(_) => {
+                res.status_code(StatusCode::NOT_FOUND);
+            }
+        }
+    }
+}
+
+fn render_bundle_unavailable(res: &mut Response) {
+    res.status_code(StatusCode::SERVICE_UNAVAILABLE);
+    res.render(Text::Html(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nexus-IO Gateway — Application Bundle Unavailable</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; max-width: 720px; margin: 60px auto; padding: 0 20px; line-height: 1.6; color: #1f2937; }
+    code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #fef3c7; color: #92400e; font-weight: 600; font-size: 0.85em; }
+  </style>
+</head>
+<body>
+  <h1>Nexus-IO Gateway</h1>
+  <p><span class="badge">Application Bundle Unavailable</span></p>
+  <p>The Nexus-IO kernel gateway is online, but no frontend application bundle (<code>index.html</code>) was found at the configured web root.</p>
+  <p>Configure <code>NEXUS_WEB_ROOT</code> (and optionally <code>NEXUS_DIST_ROOT</code>) to serve a Nexus-UX application, or query <code>/health</code>, <code>/ready</code>, <code>/rpc</code>, <code>/cells/*</code>, and <code>/s3/*</code> directly.</p>
+</body>
+</html>"#,
+    ));
 }
 
 #[handler]
@@ -991,87 +1360,10 @@ async fn capabilities_handler(res: &mut Response) {
 // Route Handlers
 // ============================================================================
 
+#[cfg(not(feature = "serve-web"))]
 #[handler]
 async fn serve_static(res: &mut Response) {
-    res.render(Text::Html(
-        r#"<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Nexus-IO Gateway</title>
-  <style>
-    body { 
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-      max-width: 900px; 
-      margin: 60px auto; 
-      padding: 0 20px;
-      line-height: 1.6;
-      color: #333;
-    }
-    h1 { 
-      color: #2563eb; 
-      font-size: 2.5em;
-      margin-bottom: 0.3em;
-    }
-    h2 {
-      color: #1e40af;
-      margin-top: 1.5em;
-      border-bottom: 2px solid #e5e7eb;
-      padding-bottom: 0.3em;
-    }
-    .status { 
-      background: #10b981; 
-      color: white; 
-      padding: 8px 16px; 
-      border-radius: 6px;
-      display: inline-block;
-      font-weight: 600;
-    }
-    code { 
-      background: #f3f4f6; 
-      padding: 3px 8px; 
-      border-radius: 4px; 
-      font-family: 'Courier New', monospace;
-      font-size: 0.9em;
-    }
-    ul { line-height: 2; }
-    .feature { margin: 10px 0; }
-  </style>
-</head>
-<body>
-  <h1>🌐 Nexus-IO Gateway</h1>
-  <p><span class="status">â— ONLINE</span></p>
-  
-  <h2>Available Routes</h2>
-  <ul>
-    <li class="feature"><code>/</code> - Static PWA (this page)</li>
-    <li class="feature"><code>/rpc</code> - WebSocket Signal Hub (SurrealDB LIVE queries) - <em>TODO</em></li>
-    <li class="feature"><code>/s3/*</code> - S3 API Proxy (Garage storage) - <em>TODO</em></li>
-    <li class="feature"><code>/health</code> - Health check endpoint</li>
-  </ul>
-  
-  <h2>Gateway Features</h2>
-  <ul>
-    <li class="feature">✅ Multi-port architecture (443, 80, optional direct access)</li>
-    <li class="feature">✅ Salvo framework with built-in ACME support</li>
-    <li class="feature">🚧 HTTP/3 support (planned)</li>
-    <li class="feature">🚧 OpenAPI auto-generation (planned)</li>
-    <li class="feature">🚧 WebSocket upgrades (in progress)</li>
-    <li class="feature">🚧 S3 proxy to Garage (in progress)</li>
-  </ul>
-
-  <h2>Next Steps</h2>
-  <p>The gateway foundation is established. Upcoming implementations:</p>
-  <ol>
-    <li>ACME/Let's Encrypt integration with production domain</li>
-    <li>WebSocket upgrade for SurrealDB LIVE queries</li>
-    <li>S3 proxy layer to Garage storage</li>
-    <li>IAM session validation across all routes</li>
-  </ol>
-</body>
-</html>"#,
-    ));
+    render_bundle_unavailable(res);
 }
 
 #[handler]
