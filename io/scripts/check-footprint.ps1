@@ -1,4 +1,4 @@
-﻿param(
+param(
     [int]$CoreCrateBudget = 450
 )
 
@@ -7,7 +7,7 @@ Set-Location (Join-Path $PSScriptRoot "..")
 
 # 1. Strict UTF-8 & mojibake guard across all source/test/doc files
 $utf8Strict = New-Object System.Text.UTF8Encoding($false, $true)
-$mojibakeRx = 'ðŸ|â†|â€|âœ|âš|Ã—|Â§|â Œ'
+$mojibakeRx = '\u00F0\u0178|\u00E2\u2020|\u00E2\u20AC|\u00E2\u0153|\u00E2\u0161|\u00C3\u2014|\u00C2\u00A7'
 $badFiles = @()
 Get-ChildItem -Path "src","tests","docs","README.md","Cargo.toml" -Recurse -File | ForEach-Object {
     $bytes = [System.IO.File]::ReadAllBytes($_.FullName)
