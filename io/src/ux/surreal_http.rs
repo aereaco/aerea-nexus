@@ -438,6 +438,181 @@ impl Handler for AuthMeHandler {
     }
 }
 
+/// `GET /_nexus/setup/status` — Public first-run check (`{ initialized: bool }`).
+/// Exposes zero user metadata; only indicates whether an initial IAM account exists.
+#[derive(Clone)]
+pub struct SetupStatusHandler {
+    pub db: Arc<Database>,
+}
+
+#[async_trait]
+impl Handler for SetupStatusHandler {
+    async fn handle(&self, req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
+        res.headers_mut().insert(
+            salvo::http::header::CACHE_CONTROL,
+            salvo::http::header::HeaderValue::from_static("no-store"),
+        );
+        let (ns, database) = extract_ns_db(req);
+        let initialized = self.db.inner.has_any_user(&ns, &database).unwrap_or(true);
+        res.render(Json(json!({
+            "initialized": initialized,
+            "ns": ns,
+            "db": database
+        })));
+    }
+}
+
+/// `POST /_nexus/setup/bootstrap` — One-time initial `OWNER` admin creation on a fresh DB.
+/// **Strictly fail-closed (`403 Forbidden`)** as soon as ANY user exists.
+#[derive(Clone)]
+pub struct SetupBootstrapHandler {
+    pub db: Arc<Database>,
+}
+
+#[async_trait]
+impl Handler for SetupBootstrapHandler {
+    async fn handle(&self, req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
+        res.headers_mut().insert(
+            salvo::http::header::CACHE_CONTROL,
+            salvo::http::header::HeaderValue::from_static("no-store"),
+        );
+        let (ns, database) = extract_ns_db(req);
+        if self.db.inner.has_any_user(&ns, &database).unwrap_or(true) {
+            res.status_code(StatusCode::FORBIDDEN);
+            res.render(Json(json!({
+                "code": 403,
+                "details": "Workspace is already initialized; bootstrap is disabled"
+            })));
+            return;
+        }
+        let body: JsonValue = match req.parse_json().await {
+            Ok(v) => v,
+            Err(e) => {
+                res.status_code(StatusCode::BAD_REQUEST);
+                res.render(Json(json!({ "code": 400, "details": e.to_string() })));
+                return;
+            }
+        };
+        let user = body.get("user").and_then(|v| v.as_str()).unwrap_or("").trim();
+        let pass = body.get("pass").and_then(|v| v.as_str()).unwrap_or("");
+        if user.is_empty() || !user.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.') {
+            res.status_code(StatusCode::BAD_REQUEST);
+            res.render(Json(json!({ "code": 400, "details": "Username must be non-empty alphanumeric (-, _, .)" })));
+            return;
+        }
+        if pass.len() < 4 {
+            res.status_code(StatusCode::BAD_REQUEST);
+            res.render(Json(json!({ "code": 400, "details": "Password must be at least 4 characters" })));
+            return;
+        }
+        if let Err(e) = self.db.inner.create_user(&ns, &database, user, "DATABASE", pass, vec!["OWNER".to_string()]) {
+            res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+            res.render(Json(json!({ "code": 500, "details": e.to_string() })));
+            return;
+        }
+        match self.db.inner.signin_user(&ns, &database, user, pass) {
+            Ok((token, _)) => {
+                set_session_cookie(req, res, &token);
+                res.status_code(StatusCode::CREATED);
+                res.render(Json(json!({
+                    "ok": true,
+                    "actor": user,
+                    "roles": ["OWNER"],
+                    "token": token
+                })));
+            }
+            Err(e) => {
+                res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+                res.render(Json(json!({ "code": 500, "details": e.to_string() })));
+            }
+        }
+    }
+}
+
+/// `GET /_nexus/iam/users` & `POST /_nexus/iam/users` — Admin (`OWNER`) user management API.
+#[derive(Clone)]
+pub struct IamUsersHandler {
+    pub db: Arc<Database>,
+}
+
+#[async_trait]
+impl Handler for IamUsersHandler {
+    async fn handle(&self, req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
+        res.headers_mut().insert(
+            salvo::http::header::CACHE_CONTROL,
+            salvo::http::header::HeaderValue::from_static("no-store"),
+        );
+        let (ns, database) = extract_ns_db(req);
+        if req.method() == &salvo::http::Method::GET {
+            match self.db.inner.list_users(&ns, &database) {
+                Ok(users) => res.render(Json(json!({ "users": users }))),
+                Err(e) => {
+                    res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+                    res.render(Json(json!({ "code": 500, "details": e.to_string() })));
+                }
+            }
+            return;
+        }
+        if req.method() == &salvo::http::Method::POST {
+            let body: JsonValue = match req.parse_json().await {
+                Ok(v) => v,
+                Err(e) => {
+                    res.status_code(StatusCode::BAD_REQUEST);
+                    res.render(Json(json!({ "code": 400, "details": e.to_string() })));
+                    return;
+                }
+            };
+            let user = body.get("user").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let pass = body.get("pass").and_then(|v| v.as_str()).unwrap_or("");
+            let role = body
+                .get("role")
+                .and_then(|v| v.as_str())
+                .unwrap_or("VIEWER")
+                .trim()
+                .to_ascii_uppercase();
+            if user.is_empty() || pass.len() < 4 {
+                res.status_code(StatusCode::BAD_REQUEST);
+                res.render(Json(json!({ "code": 400, "details": "Valid username and password (min 4 chars) required" })));
+                return;
+            }
+            if !matches!(role.as_str(), "OWNER" | "EDITOR" | "VIEWER") {
+                res.status_code(StatusCode::BAD_REQUEST);
+                res.render(Json(json!({ "code": 400, "details": "Role must be OWNER, EDITOR, or VIEWER" })));
+                return;
+            }
+            match self.db.inner.create_user(&ns, &database, user, "DATABASE", pass, vec![role.clone()]) {
+                Ok(()) => {
+                    res.status_code(StatusCode::CREATED);
+                    res.render(Json(json!({
+                        "ok": true,
+                        "user": { "name": user, "level": "DATABASE", "roles": [role] }
+                    })));
+                }
+                Err(e) => {
+                    res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+                    res.render(Json(json!({ "code": 500, "details": e.to_string() })));
+                }
+            }
+            return;
+        }
+        res.status_code(StatusCode::METHOD_NOT_ALLOWED);
+    }
+}
+
+/// `GET /_nexus/cells` — Lists running/hibernated cells for UI & operations dashboards.
+#[derive(Clone)]
+pub struct CellsListHandler {
+    pub cells: Arc<crate::js::cell::CellManager>,
+}
+
+#[async_trait]
+impl Handler for CellsListHandler {
+    async fn handle(&self, _req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
+        let cells = self.cells.list_cells().await;
+        res.render(Json(json!({ "cells": cells })));
+    }
+}
+
 /// `GET/POST /export` and `POST /import`.
 #[derive(Clone)]
 pub struct SurrealExportImportHandler {

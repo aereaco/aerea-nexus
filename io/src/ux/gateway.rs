@@ -192,6 +192,10 @@ impl UxGateway {
                 false,
             )
             .await?;
+        let restored_cells = self.cells.restore_persisted_workloads().await.unwrap_or(0);
+        if restored_cells > 0 {
+            println!("🔄 Restored {} persisted Wasm cell workload(s)", restored_cells);
+        }
         self.storage_ready.store(true, Ordering::SeqCst);
         Ok((db_rep, rt_rep))
     }
@@ -644,6 +648,15 @@ impl UxGateway {
                 .push(Router::with_path("/signup").post(crate::ux::surreal_http::SurrealAuthHandler { db: self.db.clone(), is_signup: true }))
                 .push(Router::with_path("/signout").post(crate::ux::surreal_http::SurrealSignoutHandler))
                 .push(Router::with_path("/_nexus/auth/me").get(crate::ux::surreal_http::AuthMeHandler { db: self.db.clone() }))
+                .push(Router::with_path("/_nexus/setup/status").get(crate::ux::surreal_http::SetupStatusHandler { db: self.db.clone() }))
+                .push(Router::with_path("/_nexus/setup/bootstrap").post(crate::ux::surreal_http::SetupBootstrapHandler { db: self.db.clone() }))
+                .push(
+                    Router::with_path("/_nexus/iam/users")
+                        .hoop(gate.clone())
+                        .hoop(crate::ux::iam::IamMiddleware::admin(self.db.clone()))
+                        .get(crate::ux::surreal_http::IamUsersHandler { db: self.db.clone() })
+                        .post(crate::ux::surreal_http::IamUsersHandler { db: self.db.clone() }),
+                )
                 .push(
                     Router::with_path("/export")
                         .hoop(gate.clone())
@@ -765,6 +778,12 @@ impl UxGateway {
 
         // Opt-in Wasmtime Cell Ingress & AppManifest Deploy surface
         if self.config.enable_cells {
+            router = router.push(
+                Router::with_path("/_nexus/cells")
+                    .hoop(gate.clone())
+                    .hoop(crate::ux::iam::IamMiddleware::authenticated(self.db.clone()))
+                    .get(crate::ux::surreal_http::CellsListHandler { cells: self.cells.clone() }),
+            );
             router = router.push(
                 Router::with_path("/cells/{app}/{cell_id}/query")
                     .hoop(gate.clone())

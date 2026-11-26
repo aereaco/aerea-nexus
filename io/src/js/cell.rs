@@ -310,6 +310,25 @@ pub struct CellManager {
     db_configs: Arc<RwLock<HashMap<CellKey, CellDbConfig>>>,
 }
 
+const PERSISTED_CELLS_BUCKET: &str = "nexus-cell-workloads";
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct PersistedWasmWorkload {
+    app: String,
+    cell_id: String,
+    kind: String, // "wasi_module" | "wasi_cgi"
+    fuel_limit: u64,
+    module_b64: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CellSummary {
+    pub app: String,
+    pub cell_id: String,
+    pub state: String,
+    pub is_wasm: bool,
+}
+
 impl CellManager {
     pub fn new(engine: Arc<dyn StateEngine>, blobs: Arc<BlobBridge>) -> Self {
         #[cfg(feature = "runtime-wasm")]
@@ -544,6 +563,40 @@ impl CellManager {
             }
         }
 
+        let persist_rec = match &workload {
+            CellWorkload::WasiModule { module_bytes, fuel_limit, .. } => {
+                use base64::Engine as _;
+                Some(PersistedWasmWorkload {
+                    app: app.to_string(),
+                    cell_id: cell_id.to_string(),
+                    kind: "wasi_module".to_string(),
+                    fuel_limit: *fuel_limit,
+                    module_b64: base64::engine::general_purpose::STANDARD.encode(module_bytes),
+                })
+            }
+            CellWorkload::WasiCgi { module_bytes, fuel_limit, .. } => {
+                use base64::Engine as _;
+                Some(PersistedWasmWorkload {
+                    app: app.to_string(),
+                    cell_id: cell_id.to_string(),
+                    kind: "wasi_cgi".to_string(),
+                    fuel_limit: *fuel_limit,
+                    module_b64: base64::engine::general_purpose::STANDARD.encode(module_bytes),
+                })
+            }
+            _ => None,
+        };
+        if let Some(rec) = persist_rec {
+            if let Ok(bytes) = serde_json::to_vec(&rec) {
+                let _ = self.blobs.create_bucket(PERSISTED_CELLS_BUCKET).await;
+                let wkey = format!("workloads/{}/{}.json", app, cell_id);
+                let _ = self
+                    .blobs
+                    .put_object(PERSISTED_CELLS_BUCKET, &wkey, bytes::Bytes::from(bytes))
+                    .await;
+            }
+        }
+
         let limits = CellResourceLimits::default();
         let exec_permits = Arc::new(tokio::sync::Semaphore::new(limits.max_concurrent_execs));
         self.active.write().await.insert(
@@ -563,6 +616,83 @@ impl CellManager {
             .insert(key, CellLifecycleState::Running);
         crate::observability::global_metrics().inc_cell_wake();
         Ok(())
+    }
+
+    /// Restore all durably persisted Wasm cell workloads from `BlobBridge` on node boot.
+    pub async fn restore_persisted_workloads(&self) -> Result<usize> {
+        use base64::Engine as _;
+        let objects = match self.blobs.list_objects(PERSISTED_CELLS_BUCKET, Some("workloads/")).await {
+            Ok(list) => list,
+            Err(_) => return Ok(0),
+        };
+        let mut restored = 0usize;
+        for meta in objects {
+            if !meta.key.ends_with(".json") {
+                continue;
+            }
+            let Ok(Some(raw)) = self.blobs.get_object(PERSISTED_CELLS_BUCKET, &meta.key).await else {
+                continue;
+            };
+            let Ok(rec) = serde_json::from_slice::<PersistedWasmWorkload>(&raw) else {
+                continue;
+            };
+            let Ok(module_bytes) = base64::engine::general_purpose::STANDARD.decode(&rec.module_b64) else {
+                continue;
+            };
+            let workload = match rec.kind.as_str() {
+                "wasi_cgi" => CellWorkload::WasiCgi {
+                    module_bytes,
+                    doc_root: None,
+                    fuel_limit: rec.fuel_limit,
+                },
+                _ => CellWorkload::WasiModule {
+                    module_bytes,
+                    args: vec!["cell.wasm".to_string()],
+                    env: Vec::new(),
+                    preopen_dirs: Vec::new(),
+                    fuel_limit: rec.fuel_limit,
+                },
+            };
+            // Clear any stale lease from a prior process lifecycle before re-waking
+            let lease_key = format!("leases/{}/{}.lease", rec.app, rec.cell_id);
+            let _ = self.blobs.delete_object("nexus-cells", &lease_key).await;
+            if self
+                .wake_workload(&rec.app, &rec.cell_id, CellPolicy::elastic_default(), workload)
+                .await
+                .is_ok()
+            {
+                restored += 1;
+            }
+        }
+        Ok(restored)
+    }
+
+    /// List all known cells (running or hibernated) for UI/admin inspection.
+    pub async fn list_cells(&self) -> Vec<CellSummary> {
+        let active = self.active.read().await;
+        let states = self.states.read().await;
+        let mut out = Vec::new();
+        for (key, state) in states.iter() {
+            let is_wasm = active
+                .get(key)
+                .map(|c| {
+                    matches!(
+                        c.workload,
+                        CellWorkload::WasiModule { .. }
+                            | CellWorkload::WasiCgi { .. }
+                            | CellWorkload::JsOnWasm { .. }
+                    )
+                })
+                .unwrap_or(false);
+            out.push(CellSummary {
+                app: key.app.clone(),
+                cell_id: key.cell_id.clone(),
+                state: format!("{:?}", state),
+                is_wasm,
+            });
+        }
+        out.sort_by(|a, b| (&a.app, &a.cell_id).cmp(&(&b.app, &b.cell_id)));
+        out
     }
 
     /// Wake a JS/TS cell backed by a registered WASI JavaScript engine (`quickjs.wasm` / Javy)

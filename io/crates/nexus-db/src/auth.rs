@@ -615,6 +615,39 @@ pub fn authenticate_user(
     Ok(None)
 }
 
+/// Public, sanitized user summary (never exposes Argon2 password hashes).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublicUserInfo {
+    pub name: String,
+    pub level: String,
+    pub roles: Vec<String>,
+}
+
+pub fn list_users(
+    storage: &dyn StorageBackend,
+    ns: &str,
+    db: &str,
+) -> Result<Vec<PublicUserInfo>> {
+    let mut seen = std::collections::BTreeMap::new();
+    for (u_ns, u_db) in [(ns, db), (ns, ""), ("", "")] {
+        let prefix = encode_key(PREFIX_USER_META, &[u_ns, u_db]);
+        for (_, raw) in storage.scan_prefix(&prefix)? {
+            if let Ok(meta) = serde_json::from_slice::<UserMeta>(&raw) {
+                seen.entry(meta.name.clone()).or_insert(PublicUserInfo {
+                    name: meta.name,
+                    level: meta.level,
+                    roles: meta.roles,
+                });
+            }
+        }
+    }
+    Ok(seen.into_values().collect())
+}
+
+pub fn has_any_user(storage: &dyn StorageBackend, ns: &str, db: &str) -> Result<bool> {
+    Ok(!list_users(storage, ns, db)?.is_empty())
+}
+
 pub fn save_access(
     storage: &dyn StorageBackend,
     ns: &str,

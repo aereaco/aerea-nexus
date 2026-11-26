@@ -272,6 +272,40 @@ impl NexusDb {
         )
     }
 
+    /// List sanitized users (never password hashes) visible in `(ns, db)` (`feature = "auth"`).
+    #[cfg(feature = "auth")]
+    pub fn list_users(&self, ns: &str, db: &str) -> Result<Vec<crate::auth::PublicUserInfo>> {
+        crate::auth::list_users(self.storage.as_ref(), &sanitize_ident(ns), &sanitize_ident(db))
+    }
+
+    /// Returns `true` if at least one IAM user exists in `(ns, db)` / namespace / root (`feature = "auth"`).
+    #[cfg(feature = "auth")]
+    pub fn has_any_user(&self, ns: &str, db: &str) -> Result<bool> {
+        crate::auth::has_any_user(self.storage.as_ref(), &sanitize_ident(ns), &sanitize_ident(db))
+    }
+
+    /// Create or update an IAM user with Argon2 password hashing (`feature = "auth"`).
+    #[cfg(feature = "auth")]
+    pub fn create_user(
+        &self,
+        ns: &str,
+        db: &str,
+        name: &str,
+        level: &str,
+        password: &str,
+        roles: Vec<String>,
+    ) -> Result<()> {
+        crate::auth::save_user(
+            self.storage.as_ref(),
+            &sanitize_ident(ns),
+            &sanitize_ident(db),
+            name,
+            level,
+            password,
+            roles,
+        )
+    }
+
     /// Issue a revocable `TYPE BEARER` grant (`feature = "auth"`).
     #[cfg(feature = "auth")]
     pub fn grant_bearer(

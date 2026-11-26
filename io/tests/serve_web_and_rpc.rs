@@ -697,3 +697,135 @@ async fn opt_in_default_mounts_zero_services_and_manifest_compiles_cleanly() {
     .unwrap();
     assert!(bad.compile_gateway_config(&repo_root).is_err());
 }
+
+#[tokio::test]
+async fn first_run_bootstrap_iam_admin_and_persisted_wasm_cell_auto_restore() {
+    std::env::remove_var("NEXUS_ALLOW_UNAUTH_LOCAL");
+
+    let db = Arc::new(Database::open_mem());
+    let blobs = Arc::new(BlobBridge::new(db.clone()).await.unwrap());
+    let gw = UxGateway::new(db.clone(), blobs.clone(), GatewayConfig::all_core());
+    gw.reconcile_storage_on_boot().await.unwrap();
+    let service = Service::new(gw.router());
+
+    // 1. Fresh empty DB reports initialized = false
+    let mut status1 = TestClient::get("http://127.0.0.1/_nexus/setup/status")
+        .send(&service)
+        .await;
+    assert_eq!(status1.status_code, Some(StatusCode::OK));
+    let s1: serde_json::Value = serde_json::from_str(&status1.take_string().await.unwrap()).unwrap();
+    assert_eq!(s1["initialized"], false);
+
+    // 2. First-run bootstrap creates OWNER admin and sets HttpOnly cookie
+    let boot = TestClient::post("http://127.0.0.1/_nexus/setup/bootstrap")
+        .json(&serde_json::json!({ "user": "founder", "pass": "founder-pass" }))
+        .send(&service)
+        .await;
+    assert_eq!(boot.status_code, Some(StatusCode::CREATED));
+    let owner_cookie = boot
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+
+    // 3. Second bootstrap attempt is STRICTLY REJECTED with 403 Forbidden
+    let boot2 = TestClient::post("http://127.0.0.1/_nexus/setup/bootstrap")
+        .json(&serde_json::json!({ "user": "attacker", "pass": "attacker-pass" }))
+        .send(&service)
+        .await;
+    assert_eq!(boot2.status_code, Some(StatusCode::FORBIDDEN));
+
+    // 4. setup/status now reports initialized = true
+    let mut status2 = TestClient::get("http://127.0.0.1/_nexus/setup/status")
+        .send(&service)
+        .await;
+    let s2: serde_json::Value = serde_json::from_str(&status2.take_string().await.unwrap()).unwrap();
+    assert_eq!(s2["initialized"], true);
+
+    // 5. OWNER creates a VIEWER via POST /_nexus/iam/users and lists users
+    let add_viewer = TestClient::post("http://127.0.0.1/_nexus/iam/users")
+        .add_header("cookie", &owner_cookie, true)
+        .json(&serde_json::json!({ "user": "viewer1", "pass": "viewer-pass", "role": "VIEWER" }))
+        .send(&service)
+        .await;
+    assert_eq!(add_viewer.status_code, Some(StatusCode::CREATED));
+
+    let mut list_res = TestClient::get("http://127.0.0.1/_nexus/iam/users")
+        .add_header("cookie", &owner_cookie, true)
+        .send(&service)
+        .await;
+    assert_eq!(list_res.status_code, Some(StatusCode::OK));
+    let list_json: serde_json::Value = serde_json::from_str(&list_res.take_string().await.unwrap()).unwrap();
+    let users = list_json["users"].as_array().unwrap();
+    assert_eq!(users.len(), 2);
+
+    // 6. VIEWER is rejected with 403 on GET /_nexus/iam/users
+    let viewer_cookie = TestClient::post("http://127.0.0.1/signin")
+        .json(&serde_json::json!({ "user": "viewer1", "pass": "viewer-pass" }))
+        .send(&service)
+        .await
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let viewer_admin = TestClient::get("http://127.0.0.1/_nexus/iam/users")
+        .add_header("cookie", &viewer_cookie, true)
+        .send(&service)
+        .await;
+    assert_eq!(viewer_admin.status_code, Some(StatusCode::FORBIDDEN));
+
+    // 7. Deploy a WASI cell, then simulate a full process restart (brand-new UxGateway + CellManager)
+    //    and confirm the Wasm cell auto-restores on boot and executes cleanly!
+    #[cfg(feature = "runtime-wasm")]
+    {
+        let wat = r#"(module
+          (import "wasi_snapshot_preview1" "fd_write" (func $fd_write (param i32 i32 i32 i32) (result i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "{\"restored\":true}")
+          (func (export "_start")
+            (i32.store (i32.const 64) (i32.const 0))
+            (i32.store (i32.const 68) (i32.const 17))
+            (drop (call $fd_write (i32.const 1) (i32.const 64) (i32.const 1) (i32.const 72)))
+          )
+        )"#;
+        let dep = TestClient::put("http://127.0.0.1/cells/erp/echo")
+            .add_header("cookie", &owner_cookie, true)
+            .add_header("x-nexus-runtime", "wasm", true)
+            .body(wat)
+            .send(&service)
+            .await;
+        assert_eq!(dep.status_code, Some(StatusCode::OK));
+
+        // Fresh UxGateway sharing the same durable DB + BlobBridge (simulating nexus.exe restart)
+        let gw_restarted = UxGateway::new(db, blobs, GatewayConfig::all_core());
+        gw_restarted.reconcile_storage_on_boot().await.unwrap();
+        let service2 = Service::new(gw_restarted.router());
+
+        let mut invoke = TestClient::post("http://127.0.0.1/cells/erp/echo")
+            .add_header("cookie", &owner_cookie, true)
+            .body("{}")
+            .send(&service2)
+            .await;
+        assert_eq!(invoke.status_code, Some(StatusCode::OK));
+        let out = invoke.take_string().await.unwrap();
+        assert_eq!(out, r#"{"restored":true}"#);
+
+        let mut cells_res = TestClient::get("http://127.0.0.1/_nexus/cells")
+            .add_header("cookie", &owner_cookie, true)
+            .send(&service2)
+            .await;
+        assert_eq!(cells_res.status_code, Some(StatusCode::OK));
+        let cells_body = cells_res.take_string().await.unwrap();
+        assert!(cells_body.contains("echo"));
+    }
+}
