@@ -9255,7 +9255,54 @@ ${match}</ul>
       if (!expression.trim())
         return;
       const parsed = parsedAttr || runtime.parseAttribute("data-signal", runtime, el);
+      const isSrcModule = parsed?.argument === "src" || parsed?.modifiers.includes("src");
       const isGlobal = parsed?.argument === "global" || parsed?.modifiers.includes("global") || el.hasAttribute("data-init") || el.hasAttribute("data-ux-init");
+      if (isSrcModule) {
+        const rawPath = expression.trim().replace(/^['"]|['"]$/g, "");
+        if (!rawPath)
+          return;
+        const scopeId2 = el.id || `el_${Math.random().toString(36).slice(2)}`;
+        const stateRef2 = isGlobal ? runtime.ref(runtime.globalSignals()) : unifiedRef({}, scopeId2);
+        const scopeProxy2 = createScopeProxy(
+          stateRef2,
+          (key, val) => {
+            if (isGlobal) {
+              runtime.globalSignals()[key] = val;
+            }
+          },
+          () => runtime.triggerRef(stateRef2)
+        );
+        let addCleanup2;
+        if (!isGlobal) {
+          addCleanup2 = addScopeToNode(el, scopeProxy2);
+        }
+        const resolvedUrl = typeof window !== "undefined" ? new URL(rawPath, window.location.href).href : rawPath;
+        import(resolvedUrl).then((mod) => {
+          const exported = mod?.default ?? mod;
+          const nextState = typeof exported === "function" ? exported(runtime, el) : exported;
+          if (nextState && typeof nextState === "object") {
+            if (isGlobal) {
+              const globals = runtime.globalSignals();
+              Object.keys(nextState).forEach((key) => {
+                const v = nextState[key];
+                if (!(key in globals) || globals[key] === void 0 && v !== void 0) {
+                  globals[key] = v;
+                }
+              });
+              stateRef2.value = globals;
+            } else {
+              stateRef2.value = { ...stateRef2.value || {}, ...nextState };
+            }
+            runtime.triggerRef(stateRef2);
+          }
+        }).catch((err) => {
+          runtime.reportError(toError(err), el, `data-signal-src="${rawPath}"`);
+        });
+        return () => {
+          if (addCleanup2)
+            addCleanup2();
+        };
+      }
       const { ghostKeys, typeHints } = parseGhostKeys(expression);
       const initialGhostState = {};
       ghostKeys.forEach((key) => initialGhostState[key] = void 0);
@@ -9289,7 +9336,15 @@ ${match}</ul>
           }
         }
       } catch (e) {
-        runtime.reportError(toError(e), el, expression);
+        const err = toError(e);
+        const trimmed = expression.trim();
+        if (trimmed.startsWith("{") && !trimmed.endsWith("}")) {
+          const tag = el.id ? `<${el.tagName.toLowerCase()}#${el.id}>` : `<${el.tagName.toLowerCase()}>`;
+          console.error(
+            `[Nexus Signal] Possible unescaped double-quote (") truncated data-signal on ${tag}. Use single quotes ('...'), \\x22, or move complex state/actions into an external module with data-signal-src="/path/to/state.js".`
+          );
+        }
+        runtime.reportError(err, el, expression);
         return;
       }
       if (!isGlobal) {
