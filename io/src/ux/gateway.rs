@@ -1322,17 +1322,31 @@ impl Handler for WebStaticHandler {
             Ok(bytes) => {
                 let ct = mime_for_path(&target);
                 let is_html = ct.starts_with("text/html");
-                res.headers_mut().insert(
-                    salvo::http::header::CONTENT_TYPE,
-                    salvo::http::HeaderValue::from_static(ct),
-                );
+                let etag_val = format!("\"{}\"", blake3::hash(&bytes).to_hex());
+                if let Ok(hv) = salvo::http::header::HeaderValue::from_str(&etag_val) {
+                    res.headers_mut().insert(salvo::http::header::ETAG, hv);
+                }
                 res.headers_mut().insert(
                     salvo::http::header::CACHE_CONTROL,
-                    salvo::http::HeaderValue::from_static(if is_html || is_spa_fallback {
+                    salvo::http::header::HeaderValue::from_static(if is_html || is_spa_fallback {
                         "no-cache"
                     } else {
                         "public, max-age=300"
                     }),
+                );
+                if req
+                    .headers()
+                    .get(salvo::http::header::IF_NONE_MATCH)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|v| v.trim() == etag_val)
+                    .unwrap_or(false)
+                {
+                    res.status_code(StatusCode::NOT_MODIFIED);
+                    return;
+                }
+                res.headers_mut().insert(
+                    salvo::http::header::CONTENT_TYPE,
+                    salvo::http::HeaderValue::from_static(ct),
                 );
                 if is_html {
                     apply_isolation_headers(

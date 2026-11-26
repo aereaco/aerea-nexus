@@ -927,3 +927,71 @@ async fn iam_full_user_crud_last_owner_guard_and_record_level_permissions() {
     let policy_body = apply_policy.take_string().await.unwrap();
     assert!(policy_body.contains("DEFINE TABLE secret_doc SCHEMALESS PERMISSIONS FOR select WHERE owner == $auth;"));
 }
+
+#[tokio::test]
+async fn digit_leading_hex_record_ids_and_html_etag_revalidation() {
+    let (site_dir, dist_dir) = repo_site_and_dist();
+    let db = Arc::new(Database::open_mem());
+
+    // 1. Digit-leading hex UUIDs (including leading zeros) work seamlessly in CREATE/SELECT/UPDATE/DELETE
+    db.inner
+        .query_scoped_multi(
+            "nexus",
+            "system",
+            "CREATE erp_po:91faeb111dab45a68ade7037706c1a73 SET status = 'Pending';
+             CREATE erp_po:00a1b2c3d4e5f607 SET status = 'Draft';
+             UPDATE erp_po:91faeb111dab45a68ade7037706c1a73 SET status = 'Approved';
+             UPDATE erp_po:00a1b2c3d4e5f607 SET status = 'Reviewed';",
+            vec![],
+        )
+        .expect("digit-leading hex record IDs must parse and update cleanly");
+
+    let rows = db
+        .inner
+        .query_scoped_multi(
+            "nexus",
+            "system",
+            "SELECT * FROM erp_po:91faeb111dab45a68ade7037706c1a73; SELECT * FROM erp_po:00a1b2c3d4e5f607;",
+            vec![],
+        )
+        .expect("select digit-leading hex record IDs");
+    assert_eq!(rows[0].result.len(), 1);
+    assert!(rows[0].result[0].to_json().to_string().contains("Approved"));
+    assert_eq!(rows[1].result.len(), 1);
+    assert!(rows[1].result[0].to_json().to_string().contains("Reviewed"));
+
+    // 2. HTML partials return ETag + Cache-Control: no-cache + 304 Not Modified on If-None-Match
+    let blobs = Arc::new(BlobBridge::new(db.clone()).await.unwrap());
+    let gw = UxGateway::new(
+        db,
+        blobs,
+        GatewayConfig {
+            enable_web: true,
+            web_root: Some(site_dir),
+            dist_root: Some(dist_dir),
+            ..GatewayConfig::default()
+        },
+    );
+    let service = Service::new(gw.router());
+
+    let first = TestClient::get("http://127.0.0.1/_components/layout-profile.html")
+        .send(&service)
+        .await;
+    assert_eq!(first.status_code, Some(StatusCode::OK));
+    assert_eq!(
+        first.headers().get("cache-control").and_then(|v| v.to_str().ok()),
+        Some("no-cache")
+    );
+    let etag = first
+        .headers()
+        .get("etag")
+        .and_then(|v| v.to_str().ok())
+        .expect("HTML partial must emit ETag")
+        .to_string();
+
+    let second = TestClient::get("http://127.0.0.1/_components/layout-profile.html")
+        .add_header("if-none-match", &etag, true)
+        .send(&service)
+        .await;
+    assert_eq!(second.status_code, Some(StatusCode::NOT_MODIFIED));
+}
