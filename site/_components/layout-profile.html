@@ -1,35 +1,90 @@
-<!-- 4. PROFILE TAB -->
-<div class="flex-1 flex flex-col min-w-0 h-full overflow-y-auto p-3" data-show="headerDropdownTab === 'profile'">
-  <div class="flex items-center gap-3 p-2 bg-base-200/50 rounded-xl mb-3">
-    <div class="avatar online placeholder">
-      <div
-        class="w-11 rounded-full bg-base-200 text-base-content ring ring-primary ring-offset-base-100 ring-offset-2 flex items-center justify-center">
-        <iconify-icon icon="material-symbols-light:person" class="text-2xl"></iconify-icon>
+<!-- 4. PROFILE & IAM TAB -->
+<div class="flex-1 flex flex-col min-w-0 h-full overflow-y-auto p-3"
+  data-show="headerDropdownTab === 'profile'"
+  data-signal="{ loginUser: '', loginPass: '' }">
+
+  <!-- Authenticated Identity Card -->
+  <div data-show="$auth.isAuthenticated" class="space-y-3">
+    <div class="flex items-center gap-3 p-2.5 bg-base-200/60 rounded-xl border border-base-300">
+      <div class="avatar online placeholder">
+        <div
+          class="w-11 rounded-full bg-primary/15 text-primary ring ring-primary ring-offset-base-100 ring-offset-2 flex items-center justify-center">
+          <iconify-icon icon="material-symbols-light:verified-user-outline" class="text-2xl"></iconify-icon>
+        </div>
+      </div>
+      <div class="flex-1 min-w-0">
+        <div class="font-bold text-sm truncate" id="iam-profile-actor" data-bind="$auth.actor || 'Authenticated User'"></div>
+        <div class="text-[11px] opacity-60 truncate" data-bind="'Scope: ' + ($auth.level || 'database')"></div>
+        <div class="flex flex-wrap gap-1 mt-1">
+          <template data-for="role in ($auth.roles || [])">
+            <span class="badge badge-primary badge-xs" data-bind="role"></span>
+          </template>
+        </div>
       </div>
     </div>
-    <div class="flex-1 min-w-0">
-      <div class="font-bold text-sm truncate">Admin User</div>
-      <div class="text-xs opacity-60 truncate">admin@aerea.co</div>
-      <span class="badge badge-primary badge-xs mt-1">Administrator</span>
+
+    <!-- Verified Server Capabilities -->
+    <div class="px-2 py-2 rounded-lg bg-base-200/40 border border-base-300/60">
+      <div class="text-[10px] font-semibold uppercase tracking-wider opacity-60 mb-1">IAM Capabilities (Server-Verified)</div>
+      <div class="flex flex-wrap gap-1" id="iam-profile-caps">
+        <template data-for="cap in ($auth.capabilities || [])">
+          <span class="badge badge-ghost badge-xs font-mono text-[10px]" data-bind="cap"></span>
+        </template>
+      </div>
     </div>
+
+    <ul class="menu menu-sm p-0 space-y-0.5 text-xs">
+      <li><a data-on-click="activeSidebarTab = 2; headerDropdownOpen = false"><iconify-icon
+            icon="material-symbols-light:star-outline" class="text-base"></iconify-icon>Bookmarks &amp; Favorites</a>
+      </li>
+      <li><a data-on-click="openSession('session-erp'); headerDropdownOpen = false"><iconify-icon
+            icon="material-symbols-light:groups" class="text-base"></iconify-icon>Open Executive ERP Chat</a>
+      </li>
+      <div class="divider my-1"></div>
+      <li><a id="iam-signout-btn" class="text-error hover:bg-error/10"
+          data-on-click="$auth.signout().then(() => { notify('Signed Out', 'IAM session cleared', 'info'); headerDropdownOpen = false; })"><iconify-icon
+            icon="material-symbols-light:logout" class="text-base"></iconify-icon>Sign Out</a></li>
+    </ul>
   </div>
-  <ul class="menu menu-sm p-0 space-y-0.5 text-xs">
-    <li><a
-        data-on-click="notify('Profile', 'Signed in as Vernon (Administrator)', 'info'); headerDropdownOpen = false"><iconify-icon
-          icon="material-symbols-light:account-circle-outline" class="text-base"></iconify-icon>My Profile</a>
-    </li>
-    <li><a
-        data-on-click="notify('Account Settings', 'Workspace & appearance settings are available in the header controls.', 'info'); headerDropdownOpen = false"><iconify-icon
-          icon="material-symbols-light:settings-outline" class="text-base"></iconify-icon>Account Settings</a>
-    </li>
-    <li><a data-on-click="activeSidebarTab = 2; headerDropdownOpen = false"><iconify-icon
-          icon="material-symbols-light:star-outline" class="text-base"></iconify-icon>Bookmarks & Favorites</a>
-    </li>
-    <li><a><iconify-icon icon="material-symbols-light:keyboard-outline"
-          class="text-base"></iconify-icon>Keyboard Shortcuts</a></li>
-    <div class="divider my-1"></div>
-    <li><a class="text-error hover:bg-error/10"
-        data-on-click="notify('Signed out successfully', '', 'info'); headerDropdownOpen = false"><iconify-icon
-          icon="material-symbols-light:logout" class="text-base"></iconify-icon>Sign Out</a></li>
-  </ul>
+
+  <!-- Anonymous / Sign In Form -->
+  <div data-show="!$auth.isAuthenticated" class="space-y-3">
+    <div class="flex items-center gap-3 p-2.5 bg-base-200/50 rounded-xl">
+      <div class="avatar placeholder">
+        <div class="w-10 rounded-full bg-base-300 text-base-content/70 flex items-center justify-center">
+          <iconify-icon icon="material-symbols-light:lock-outline" class="text-xl"></iconify-icon>
+        </div>
+      </div>
+      <div class="flex-1 min-w-0">
+        <div class="font-bold text-sm truncate">Guest Session</div>
+        <div class="text-[11px] opacity-60 truncate">Sign in with Nexus-IO IAM</div>
+      </div>
+    </div>
+
+    <div data-show="$auth.error" id="iam-login-error"
+      class="alert alert-error py-2 px-3 text-xs rounded-lg">
+      <span data-bind="$auth.error"></span>
+    </div>
+
+    <form class="space-y-2"
+      data-on-submit_prevent="$auth.signin({ user: loginUser, pass: loginPass }).then(ok => { if (ok) { loginPass = ''; notify('Signed In', 'Authenticated as ' + $auth.actor + ' (' + ($auth.roles || []).join(', ') + ')', 'success'); } })">
+      <label class="form-control w-full">
+        <span class="label-text text-xs opacity-70 mb-1">Username</span>
+        <input id="iam-login-user" name="username" type="text" autocomplete="username"
+          class="input input-bordered input-sm w-full" placeholder="e.g. director or auditor"
+          data-bind-value="loginUser" />
+      </label>
+      <label class="form-control w-full">
+        <span class="label-text text-xs opacity-70 mb-1">Password</span>
+        <input id="iam-login-pass" name="password" type="password" autocomplete="current-password"
+          class="input input-bordered input-sm w-full" placeholder="Password"
+          data-bind-value="loginPass" />
+      </label>
+      <button id="iam-login-submit" type="submit" class="btn btn-primary btn-sm w-full"
+        data-bind-disabled="$auth.loading">
+        <span data-show="!$auth.loading">Sign In</span>
+        <span data-show="$auth.loading">Signing In…</span>
+      </button>
+    </form>
+  </div>
 </div>

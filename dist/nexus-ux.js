@@ -12339,6 +12339,7 @@ ${match}</ul>
   __export(sql_exports, {
     configureSqlClient: () => configureSqlClient,
     default: () => sql_default,
+    resetSqlConnections: () => resetSqlConnections,
     sqlSprite: () => sqlSprite,
     sqlSpriteModule: () => sqlSpriteModule
   });
@@ -12830,10 +12831,42 @@ ${match}</ul>
       return result;
     };
   }
+  function resetSqlConnections() {
+    for (const [, conn] of connectionPool.entries()) {
+      if (conn.reconnectTimer !== null) {
+        clearTimeout(conn.reconnectTimer);
+        conn.reconnectTimer = null;
+      }
+      for (const sub of conn.subscriptions) {
+        sub.closed = true;
+        if (sub.liveId) {
+          liveQueries.delete(sub.liveId);
+        }
+      }
+      conn.subscriptions.clear();
+      try {
+        conn.ws?.close(1e3, "auth-changed");
+      } catch {
+      }
+    }
+    connectionPool.clear();
+  }
+  var authListenerBound = false;
+  function ensureAuthChangeListener() {
+    if (authListenerBound || typeof window === "undefined")
+      return;
+    authListenerBound = true;
+    window.addEventListener("nexus:auth-changed", () => {
+      resetSqlConnections();
+    });
+  }
   var sqlSpriteModule = {
     name: "sql",
     key: "$sql",
-    sprites: (runtime) => sqlSprite(runtime)
+    sprites: (runtime) => {
+      ensureAuthChangeListener();
+      return sqlSprite(runtime);
+    }
   };
   var sql_default = sqlSpriteModule;
 
@@ -13115,35 +13148,227 @@ ${match}</ul>
     default: () => auth_default,
     scopeRule: () => scopeRule
   });
+  function dispatchAuthChanged(authenticated, actor) {
+    if (typeof window !== "undefined" && typeof CustomEvent === "function") {
+      window.dispatchEvent(
+        new CustomEvent("nexus:auth-changed", {
+          detail: { authenticated, actor }
+        })
+      );
+    }
+  }
   var authScope = reactive({
     user: null,
+    actor: null,
+    level: "anonymous",
     isAuthenticated: false,
     roles: [],
+    capabilities: [],
     token: null,
-    // Methods to simulate login/logout for now
-    login: (userData) => {
-      authScope.user = userData;
-      authScope.isAuthenticated = true;
-      authScope.roles = userData.roles || [];
+    loading: false,
+    hydrated: false,
+    error: null,
+    endpoint: "/_nexus/auth/me",
+    signinEndpoint: "/signin",
+    signoutEndpoint: "/signout",
+    hasRole: (role) => {
+      const target = String(role || "").trim().toUpperCase();
+      if (!target)
+        return false;
+      return (authScope.roles || []).some((r) => String(r).toUpperCase() === target);
     },
-    logout: () => {
+    can: (capability) => {
+      const target = String(capability || "").trim().toLowerCase();
+      if (!target)
+        return false;
+      return (authScope.capabilities || []).some((c) => String(c).toLowerCase() === target);
+    },
+    refresh: async () => {
+      if (typeof fetch !== "function") {
+        authScope.hydrated = true;
+        return null;
+      }
+      authScope.loading = true;
+      try {
+        const res = await fetch(authScope.endpoint, {
+          method: "GET",
+          credentials: "same-origin",
+          headers: { "Accept": "application/json" }
+        });
+        if (!res.ok) {
+          authScope.user = null;
+          authScope.actor = null;
+          authScope.level = "anonymous";
+          authScope.isAuthenticated = false;
+          authScope.roles = [];
+          authScope.capabilities = [];
+          authScope.hydrated = true;
+          return null;
+        }
+        const data = await res.json();
+        if (data && data.authenticated) {
+          const roles = Array.isArray(data.roles) ? data.roles.map(String) : [];
+          const capabilities = Array.isArray(data.capabilities) ? data.capabilities.map(String) : [];
+          const actor = data.actor ? String(data.actor) : null;
+          const level = data.level ? String(data.level) : "database";
+          authScope.actor = actor;
+          authScope.level = level;
+          authScope.roles = roles;
+          authScope.capabilities = capabilities;
+          authScope.isAuthenticated = true;
+          authScope.user = {
+            actor,
+            name: actor,
+            level,
+            ns: data.ns || "nexus",
+            db: data.db || "system",
+            roles,
+            capabilities
+          };
+          authScope.error = null;
+          authScope.hydrated = true;
+          return {
+            authenticated: true,
+            actor,
+            level,
+            ns: data.ns,
+            db: data.db,
+            roles,
+            capabilities
+          };
+        }
+        authScope.user = null;
+        authScope.actor = null;
+        authScope.level = "anonymous";
+        authScope.isAuthenticated = false;
+        authScope.roles = [];
+        authScope.capabilities = [];
+        authScope.hydrated = true;
+        return {
+          authenticated: false,
+          actor: null,
+          level: "anonymous",
+          roles: [],
+          capabilities: []
+        };
+      } catch {
+        authScope.user = null;
+        authScope.actor = null;
+        authScope.level = "anonymous";
+        authScope.isAuthenticated = false;
+        authScope.roles = [];
+        authScope.capabilities = [];
+        authScope.hydrated = true;
+        return null;
+      } finally {
+        authScope.loading = false;
+      }
+    },
+    signin: async (credentials) => {
+      if (typeof fetch !== "function")
+        return false;
+      authScope.loading = true;
+      authScope.error = null;
+      try {
+        const payload = {
+          user: (credentials?.user || "").trim(),
+          pass: credentials?.pass || "",
+          ns: credentials?.ns || "nexus",
+          db: credentials?.db || "system"
+        };
+        if (!payload.user || !payload.pass) {
+          authScope.error = "Username and password are required";
+          return false;
+        }
+        const res = await fetch(authScope.signinEndpoint, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: {
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+          },
+          body: JSON.stringify(payload)
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          authScope.error = body?.details || `Sign-in failed (${res.status})`;
+          return false;
+        }
+        const identity = await authScope.refresh();
+        const ok = Boolean(identity?.authenticated);
+        if (!ok) {
+          authScope.error = "Session could not be verified after sign-in";
+          return false;
+        }
+        dispatchAuthChanged(true, authScope.actor);
+        return true;
+      } catch (err) {
+        authScope.error = err instanceof Error ? err.message : "Network error during sign-in";
+        return false;
+      } finally {
+        authScope.loading = false;
+      }
+    },
+    signout: async () => {
+      if (typeof fetch === "function") {
+        try {
+          await fetch(authScope.signoutEndpoint, {
+            method: "POST",
+            credentials: "same-origin"
+          });
+        } catch {
+        }
+      }
       authScope.user = null;
+      authScope.actor = null;
+      authScope.level = "anonymous";
       authScope.isAuthenticated = false;
       authScope.roles = [];
+      authScope.capabilities = [];
       authScope.token = null;
+      authScope.error = null;
+      dispatchAuthChanged(false, null);
+    },
+    // Backwards-compatible local helpers for offline labs/tests
+    login: (userData) => {
+      const roles = Array.isArray(userData?.roles) ? userData.roles.map(String) : [];
+      const capabilities = Array.isArray(userData?.capabilities) ? userData.capabilities.map(String) : [];
+      authScope.user = userData;
+      authScope.actor = String(userData?.actor || userData?.name || userData?.email || "user");
+      authScope.isAuthenticated = true;
+      authScope.roles = roles;
+      authScope.capabilities = capabilities;
+      authScope.hydrated = true;
+    },
+    logout: () => {
+      void authScope.signout();
     }
   });
   var scopeRule = (q, body) => {
-    if (q === "isAuthenticated")
+    const query = String(q || "").trim();
+    if (query === "isAuthenticated" || query === "authenticated") {
       return authScope.isAuthenticated ? body() : void 0;
-    if (authScope.roles.includes(q))
+    }
+    if (query === "anonymous" || query === "!isAuthenticated") {
+      return !authScope.isAuthenticated ? body() : void 0;
+    }
+    if (authScope.hasRole(query) || authScope.can(query)) {
       return body();
+    }
     return void 0;
   };
+  var bootHydrationScheduled = false;
   var authScopeModule = {
     name: "auth",
     rule: "auth",
-    scopeRule
+    scopeRule,
+    onRegister: () => {
+      registerScopeProvider("$auth", () => authScope);
+      if (!bootHydrationScheduled && typeof window !== "undefined" && typeof fetch === "function") {
+        bootHydrationScheduled = true;
+        void authScope.refresh();
+      }
+    }
   };
   var auth_default = authScopeModule;
 

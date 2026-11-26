@@ -638,12 +638,51 @@ export function sqlSprite(runtime: RuntimeContext) {
   };
 }
 
+/**
+ * Close all pooled WebSocket connections and clear stale live subscriptions.
+ * Automatically invoked when IAM identity changes (`nexus:auth-changed`) so
+ * subsequent `$sql` calls re-authenticate cleanly over a fresh WebSocket handshake.
+ */
+export function resetSqlConnections(): void {
+  for (const [, conn] of connectionPool.entries()) {
+    if (conn.reconnectTimer !== null) {
+      clearTimeout(conn.reconnectTimer);
+      conn.reconnectTimer = null;
+    }
+    for (const sub of conn.subscriptions) {
+      sub.closed = true;
+      if (sub.liveId) {
+        liveQueries.delete(sub.liveId);
+      }
+    }
+    conn.subscriptions.clear();
+    try {
+      conn.ws?.close(1000, 'auth-changed');
+    } catch {
+      // ignore close errors
+    }
+  }
+  connectionPool.clear();
+}
+
+let authListenerBound = false;
+function ensureAuthChangeListener(): void {
+  if (authListenerBound || typeof window === 'undefined') return;
+  authListenerBound = true;
+  window.addEventListener('nexus:auth-changed', () => {
+    resetSqlConnections();
+  });
+}
+
 import type { SpriteModule } from '../../engine/modules.ts';
 
 export const sqlSpriteModule: SpriteModule = {
   name: 'sql',
   key: '$sql',
-  sprites: (runtime: RuntimeContext) => sqlSprite(runtime),
+  sprites: (runtime: RuntimeContext) => {
+    ensureAuthChangeListener();
+    return sqlSprite(runtime);
+  },
 };
 
 export default sqlSpriteModule;

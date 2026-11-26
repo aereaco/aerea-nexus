@@ -6,6 +6,11 @@
     chatFabOpen: false,
     activeSessionId: 'session-erp',
     chatInputText: '',
+    erpConnected: false,
+    erpConnecting: false,
+    erpSyncedActor: null,
+    erpPoLive: null,
+    erpMsgLive: null,
     chatSessions: [
       {
         id: 'session-erp',
@@ -115,7 +120,83 @@
     getActiveMessages: () => {
       const g = window.UX?.signals || window.Nexus?.coordinator?.runtimeContext?.globalSignals?.() || {};
       const id = g.activeSessionId || 'session-erp';
+      if (id === 'session-erp' && g.erpConnected && g.erpMsgLive && Array.isArray(g.erpMsgLive.data) && g.erpMsgLive.data.length > 0) {
+        const poList = (g.erpPoLive && Array.isArray(g.erpPoLive.data)) ? g.erpPoLive.data : [];
+        return [...g.erpMsgLive.data]
+          .sort((a, b) => Number(a.seq || a.created_at || 0) - Number(b.seq || b.created_at || 0))
+          .map(m => {
+            if (!m.po_id) return m;
+            const livePo = poList.find(p => p.id === m.po_id || p.po_key === m.po_id);
+            if (!livePo) return m;
+            return {
+              ...m,
+              artifact: {
+                ...(m.artifact || {}),
+                id: livePo.id,
+                type: 'invoice_draft',
+                title: livePo.title || m.artifact?.title,
+                amount: livePo.amount || m.artifact?.amount,
+                status: livePo.status || m.artifact?.status || 'Pending Review',
+                approved_by: livePo.approved_by || null,
+                approved_at: livePo.approved_at || null,
+                items: Array.isArray(livePo.items) ? livePo.items : (m.artifact?.items || [])
+              }
+            };
+          });
+      }
       return (g.chatMessages || {})[id] || [];
+    },
+    disconnectErpLive: async () => {
+      const g = window.UX?.signals || window.Nexus?.coordinator?.runtimeContext?.globalSignals?.() || {};
+      const handles = [g.erpPoLive, g.erpMsgLive].filter(Boolean);
+      g.erpPoLive = null;
+      g.erpMsgLive = null;
+      g.erpConnected = false;
+      g.erpSyncedActor = null;
+      for (const h of handles) {
+        try { if (typeof h.unsubscribe === 'function') await h.unsubscribe(); } catch (_) {}
+      }
+    },
+    connectErpLive: async (sqlFn, actor) => {
+      const g = window.UX?.signals || window.Nexus?.coordinator?.runtimeContext?.globalSignals?.() || {};
+      if (!sqlFn || !actor) return;
+      if (g.erpConnecting || (g.erpConnected && g.erpSyncedActor === actor)) return;
+      g.erpConnecting = true;
+      try {
+        await g.disconnectErpLive();
+        const poLive = await sqlFn('LIVE SELECT * FROM erp_po');
+        const msgLive = await sqlFn('LIVE SELECT * FROM erp_message');
+        g.erpPoLive = poLive;
+        g.erpMsgLive = msgLive;
+        g.erpSyncedActor = actor;
+        g.erpConnected = true;
+      } catch (err) {
+        g.erpConnected = false;
+        g.erpSyncedActor = null;
+      } finally {
+        g.erpConnecting = false;
+      }
+    },
+    approvePo: async (poId, sqlFn, actor) => {
+      const g = window.UX?.signals || window.Nexus?.coordinator?.runtimeContext?.globalSignals?.() || {};
+      if (!g.erpConnected || !sqlFn) {
+        if (typeof g.notify === 'function') g.notify('PO Approved (Local)', 'Sign in to persist approval in Nexus-DB', 'info');
+        return;
+      }
+      const targetId = poId || 'erp_po:po_088';
+      try {
+        await sqlFn(
+          'UPDATE ' + targetId + ' SET status = $status, approved_by = $actor, approved_at = $at;',
+          { status: 'Approved', actor: actor || 'unknown', at: new window.Date().toISOString() }
+        );
+        if (typeof g.notify === 'function') {
+          g.notify('PO Approved', targetId + ' approved and persisted in Nexus-DB', 'success');
+        }
+      } catch (err) {
+        if (typeof g.notify === 'function') {
+          g.notify('Approval Rejected by Server', (err && err.message) ? err.message : 'Insufficient IAM permissions', 'error');
+        }
+      }
     },
     openSession: (id) => {
       const g = window.UX?.signals || window.Nexus?.coordinator?.runtimeContext?.globalSignals?.() || {};
@@ -183,18 +264,36 @@
       };
       g.openSession(newId);
     },
-    sendChatMessage: () => {
+    sendChatMessage: async (sqlFn, actor) => {
       const g = window.UX?.signals || window.Nexus?.coordinator?.runtimeContext?.globalSignals?.() || {};
       const txt = (g.chatInputText || '').trim();
       if (!txt) return;
       const sId = g.activeSessionId || 'session-erp';
-      const msgs = [...((g.chatMessages || {})[sId] || [])];
-      const newMsgId = 'msg-' + window.Date.now();
       const now = new window.Date();
       const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const senderName = actor || 'Vernon';
+
+      if (g.erpConnected && sId === 'session-erp' && typeof sqlFn === 'function') {
+        g.chatInputText = '';
+        try {
+          await sqlFn(
+            'CREATE erp_message SET session_id = $sid, sender = $sender, isAgent = false, time = $time, text = $text, seq = $seq;',
+            { sid: sId, sender: senderName, time: timeStr, text: txt, seq: window.Date.now() }
+          );
+        } catch (err) {
+          g.chatInputText = txt;
+          if (typeof g.notify === 'function') {
+            g.notify('Message Rejected by Server', (err && err.message) ? err.message : 'Insufficient IAM permissions', 'error');
+          }
+        }
+        return;
+      }
+
+      const msgs = [...((g.chatMessages || {})[sId] || [])];
+      const newMsgId = 'msg-' + window.Date.now();
       msgs.push({
         id: newMsgId,
-        sender: 'Vernon',
+        sender: senderName,
         isAgent: false,
         time: timeStr,
         text: txt
@@ -221,6 +320,7 @@
     }
   }"
   class="fixed inset-y-0 end-0 z-40 w-96 max-w-[calc(100vw-2.5rem)] flex flex-row bg-base-100 border-s border-base-300 shadow-2xl transition-transform duration-300 ease-in-out overflow-hidden"
+  data-effect="if ($auth.isAuthenticated && $auth.actor) { if (erpSyncedActor !== $auth.actor) { connectErpLive($sql, $auth.actor); } } else if (erpConnected || erpSyncedActor) { disconnectErpLive(); }"
   data-class="{
     'translate-x-0': chatbarOpen,
     'translate-x-full rtl:-translate-x-full': !chatbarOpen,
@@ -290,6 +390,9 @@
           <div class="flex items-center gap-1.5 text-xs text-base-content/50 truncate">
             <span class="badge badge-xs badge-primary badge-outline text-[10px]"
               data-bind="getActiveSession().type === 'agent' ? 'AI Copilot' : 'Team Channel'"></span>
+            <span data-show="erpConnected && activeSessionId === 'session-erp'"
+              id="erp-live-badge"
+              class="badge badge-xs badge-success text-[10px] gap-1">Live DB</span>
             <span class="truncate" data-bind="getActiveSession().description || ''"></span>
           </div>
         </div>
@@ -346,7 +449,7 @@
       data-effect="if (chatbarOpen && $el) { const msgs = (chatMessages || {})[activeSessionId]; if (msgs) { $nextTick(() => { $el.scrollTop = $el.scrollHeight; }); } }">
       <template data-for="msg in getActiveMessages()">
         <div class="flex flex-col gap-1 w-full"
-          data-class="{ 'items-end': !msg.isAgent && msg.sender === 'Vernon', 'items-start': msg.isAgent || msg.sender !== 'Vernon' }">
+          data-class="{ 'items-end': !msg.isAgent && msg.sender === ($auth.actor || 'Vernon'), 'items-start': msg.isAgent || msg.sender !== ($auth.actor || 'Vernon') }">
 
           <!-- Sender & Time Label -->
           <div class="flex items-center gap-2 text-[11px] text-base-content/50 px-1">
@@ -357,8 +460,8 @@
 
           <!-- Chat Bubble -->
           <div class="rounded-2xl px-3.5 py-2.5 max-w-[88%] text-sm leading-relaxed shadow-sm font-sans" data-class="{
-              'bg-primary text-primary-content rounded-br-none': !msg.isAgent && msg.sender === 'Vernon',
-              'bg-base-200 text-base-content rounded-bl-none border border-base-300': msg.isAgent || msg.sender !== 'Vernon'
+              'bg-primary text-primary-content rounded-br-none': !msg.isAgent && msg.sender === ($auth.actor || 'Vernon'),
+              'bg-base-200 text-base-content rounded-bl-none border border-base-300': msg.isAgent || msg.sender !== ($auth.actor || 'Vernon')
             }">
             <p data-bind="msg.text" class="whitespace-pre-wrap"></p>
 
@@ -371,7 +474,9 @@
                     class="text-primary text-base"></iconify-icon>
                   <span data-bind="msg.artifact?.title"></span>
                 </div>
-                <span class="badge badge-xs badge-warning" data-bind="msg.artifact?.status"></span>
+                <span class="badge badge-xs"
+                  data-class="{ 'badge-success': msg.artifact?.status === 'Approved', 'badge-warning': msg.artifact?.status !== 'Approved' }"
+                  data-bind="msg.artifact?.status"></span>
               </div>
 
               <!-- Line Items -->
@@ -385,12 +490,18 @@
               </div>
 
               <!-- Total & Action Buttons -->
-              <div class="mt-3 pt-2 border-t border-base-200 flex items-center justify-between">
+              <div class="mt-3 pt-2 border-t border-base-200 flex items-center justify-between gap-2">
                 <span class="text-xs font-semibold">Total: <span class="font-mono text-primary"
                     data-bind="msg.artifact?.amount"></span></span>
-                <div class="flex gap-1.5">
+                <div class="flex items-center gap-1.5">
+                  <span data-show="msg.artifact?.status === 'Approved' && msg.artifact?.approved_by"
+                    class="text-[11px] text-success font-medium"
+                    data-bind="'Approved by ' + msg.artifact?.approved_by"></span>
+                  <span data-show="msg.artifact?.status !== 'Approved' && $auth.isAuthenticated && !$auth.can('db.write')"
+                    class="badge badge-ghost badge-xs text-[10px]">Read-Only</span>
                   <button type="button" class="btn btn-xs btn-primary font-normal"
-                    data-on-click="notify('PO Approved', 'PO #2026-Q3-088 approved and synced with ERP', 'success')">
+                    data-show="msg.artifact?.status !== 'Approved' && (!$auth.isAuthenticated || $auth.can('db.write'))"
+                    data-on-click="approvePo(msg.artifact?.id || msg.po_id, $sql, $auth.actor)">
                     Approve PO
                   </button>
                 </div>
@@ -422,9 +533,9 @@
           class="input input-bordered input-sm flex-1 focus:input-primary text-sm"
           placeholder="Message team or @agent… (Enter to send)" data-bind-value="chatInputText"
           data-effect="if (chatbarOpen && $el) { $nextTick(() => $el.focus()); }"
-          data-on-keydown_enter="sendChatMessage()" />
+          data-on-keydown_enter="sendChatMessage($sql, $auth.actor)" />
         <button type="button" class="btn btn-primary btn-sm btn-circle shrink-0" aria-label="Send message"
-          data-on-click="sendChatMessage()">
+          data-on-click="sendChatMessage($sql, $auth.actor)">
           <iconify-icon icon="material-symbols-light:send" class="text-lg"></iconify-icon>
         </button>
       </div>
