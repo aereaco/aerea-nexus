@@ -1140,6 +1140,7 @@ fn apply_isolation_headers(
 #[derive(Clone)]
 struct DistStaticHandler {
     dist_root: Option<std::path::PathBuf>,
+    coep_header: Option<String>,
 }
 
 #[cfg(feature = "serve-web")]
@@ -1147,6 +1148,7 @@ impl DistStaticHandler {
     fn from_config(config: &GatewayConfig) -> Self {
         Self {
             dist_root: resolve_asset_root(config.dist_root.as_ref(), "dist"),
+            coep_header: config.coep_header.clone(),
         }
     }
 }
@@ -1192,6 +1194,11 @@ impl Handler for DistStaticHandler {
                     salvo::http::header::HeaderName::from_static("cross-origin-resource-policy"),
                     salvo::http::HeaderValue::from_static("same-origin"),
                 );
+                // Chromium requires dedicated Web Worker scripts (e.g. logic.worker.js) to carry
+                // matching COEP when the parent document is cross-origin isolated.
+                if ct.starts_with("application/javascript") {
+                    apply_isolation_headers(res, None, self.coep_header.as_deref());
+                }
                 res.body(bytes);
             }
             Err(_) => {

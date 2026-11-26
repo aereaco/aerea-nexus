@@ -61,7 +61,7 @@ async fn serve_web_serves_real_site_dist_spa_fallback_404_and_isolation_headers(
     let root_body = root_res.take_string().await.unwrap();
     assert!(root_body.contains("app-layout"), "expected real site/index.html");
 
-    // 2. Real dist bundle (/dist/nexus-ux.js)
+    // 2. Real dist bundle (/dist/nexus-ux.js) + matching COEP for dedicated Web Workers
     let dist_res = TestClient::get("http://127.0.0.1/dist/nexus-ux.js")
         .send(&service)
         .await;
@@ -69,6 +69,13 @@ async fn serve_web_serves_real_site_dist_spa_fallback_404_and_isolation_headers(
     assert_eq!(
         dist_res.headers().get("content-type").and_then(|v| v.to_str().ok()),
         Some("application/javascript; charset=utf-8")
+    );
+    assert_eq!(
+        dist_res
+            .headers()
+            .get("cross-origin-embedder-policy")
+            .and_then(|v| v.to_str().ok()),
+        Some("credentialless")
     );
 
     // 3. Real site JSON & SVG assets with proper MIME types
