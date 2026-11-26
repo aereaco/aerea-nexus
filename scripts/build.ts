@@ -575,10 +575,10 @@ async function publishToCloudflare(opts: { projectName?: string; branch?: string
   const isWindows = Deno.build.os === "windows";
   const cmd = isWindows ? "cmd.exe" : "npx";
   const cmdArgs = isWindows
-    ? ["/c", `set CLOUDFLARE_ACCOUNT_ID=${accountId}&& set CLOUDFLARE_API_TOKEN=${apiToken}&& npx -y wrangler pages deploy "${deployDir}" --project-name ${projectName} --branch ${branch} --commit-dirty=true`]
+    ? ["/c", "npx", "-y", "wrangler", "pages", "deploy", deployDir, "--project-name", projectName, "--branch", branch, "--commit-dirty=true"]
     : ["-y", "wrangler", "pages", "deploy", deployDir, "--project-name", projectName, "--branch", branch, "--commit-dirty=true"];
 
-  const env = isWindows ? undefined : {
+  const env = {
     CLOUDFLARE_ACCOUNT_ID: accountId,
     CLOUDFLARE_API_TOKEN: apiToken,
   };
