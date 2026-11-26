@@ -246,7 +246,7 @@
           if (typeof g.notify === 'function') g.notify('Upload Rejected', msg, 'error');
           return;
         }
-        const etag = (putRes.headers.get('etag') || '').replace(/"/g, '');
+        const etag = (putRes.headers.get('etag') || '').replace(/\x22/g, '');
         const existingPo = (g.erpPoLive && Array.isArray(g.erpPoLive.data))
           ? g.erpPoLive.data.find(p => p.id === targetId || p.po_key === targetId)
           : null;
