@@ -1,0 +1,127 @@
+// Canonical Nexus-IO Universal Host WIT Contracts (`nexus:host@0.1.0`)
+//
+// Defines the strongly-typed WASI Component Model interfaces shared by all modern
+// Wasm guests (Rust, Go, Python, JS/TS). Internally, both these WIT interfaces and
+// the low-level `nexus_host` C-ABI imports resolve to the exact same `HardwareRegistry`,
+// `NexusSharedArena`, `ConsentProvider`, and `CapabilitySet` in the microkernel.
+
+package nexus:host@0.1.0;
+
+/// General-purpose ZCZS shared-memory & SPSC ring buffer data plane.
+interface storage {
+    enum transport-mode {
+        shared-memory,
+        portable-copy,
+    }
+
+    enum arena-error {
+        not-found,
+        revoked,
+        permission-denied,
+        out-of-bounds,
+        invalid-capacity,
+        buffer-full,
+    }
+
+    record shared-buffer-handle {
+        id: u64,
+        generation: u32,
+    }
+
+    record ring-buffer-handle {
+        id: u64,
+        generation: u32,
+    }
+
+    record stream-descriptor {
+        handle: ring-buffer-handle,
+        label: string,
+        capacity: u32,
+        transport: transport-mode,
+    }
+
+    alloc-ring: func(label: string, capacity: u32) -> result<stream-descriptor, arena-error>;
+    ring-write: func(handle: ring-buffer-handle, data: list<u8>) -> result<u32, arena-error>;
+    ring-read: func(handle: ring-buffer-handle, max-bytes: u32) -> result<list<u8>, arena-error>;
+    revoke-ring: func(handle: ring-buffer-handle) -> bool;
+}
+
+/// System telemetry, OS profile, and runtime lifecycle.
+interface system {
+    record host-info {
+        os: string,
+        arch: string,
+        cpu-cores: u32,
+        memory-total: u64,
+        memory-free: u64,
+        storage-total: u64,
+        storage-free: u64,
+        webview-compiled: bool,
+    }
+
+    get-host-info: func() -> result<host-info, string>;
+}
+
+/// Universal cross-platform hardware discovery, dynamic OS consent, and dispatch.
+interface hardware {
+    enum hardware-class {
+        system-info,
+        power,
+        display,
+        audio,
+        camera,
+        sensor,
+        bluetooth,
+        usb,
+        serial,
+        gpio,
+        nfc,
+        location,
+        biometrics,
+        gpu,
+        storage,
+        network,
+        os-ui,
+    }
+
+    enum consent-state {
+        not-determined,
+        granted,
+        denied,
+        restricted,
+        unsupported,
+    }
+
+    record hardware-device {
+        id: string,
+        class: hardware-class,
+        name: string,
+        vendor: string,
+        os: string,
+        arch: string,
+        available: bool,
+        capabilities: list<string>,
+    }
+
+    list-devices: func(class-filter: option<hardware-class>) -> result<list<hardware-device>, string>;
+    check-consent: func(capability-token: string) -> consent-state;
+    call-op: func(op: string, payload-json: string) -> result<string, string>;
+}
+
+/// Dual-mode OS Native Shell API + Versioned Retained-Mode Binary `UiOp` Widget Protocol.
+interface ui {
+    /// Fixed 16-byte binary op-stream batch (`UiOpHeader` v1 + versioned little-endian payloads).
+    commit-ui-ops: func(batch: list<u8>) -> result<u32, string>;
+    set-window-title: func(title: string) -> result<_, string>;
+    set-window-theme: func(theme: string) -> result<_, string>;
+    send-notification: func(title: string, body: string) -> result<u64, string>;
+    clipboard-read: func() -> result<string, string>;
+    clipboard-write: func(text: string) -> result<u32, string>;
+}
+
+world nexus-app {
+    import storage;
+    import system;
+    import hardware;
+    import ui;
+}
