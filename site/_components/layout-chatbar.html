@@ -1,6 +1,5 @@
 <!-- ================= Right-Side Collaborative Chatbar ================= -->
-<aside id="chatbar-container"
-  data-signal_global="{
+<aside id="chatbar-container" data-signal_global="{
     chatbarOpen: false,
     chatbarDocked: localStorage.chatbarDocked === 'true',
     chatFabOpen: false,
@@ -425,8 +424,7 @@
         <div data-drag-item class="tooltip tooltip-right relative cursor-grab active:cursor-grabbing select-none"
           data-bind-attr-data-tip="session.name + (session.pinned ? ' (Pinned)' : '')"
           data-on-contextmenu_prevent_stop="ctxMenu = { open: true, x: $evt.clientX, y: $evt.clientY, type: 'chatSession', target: session }">
-          <button type="button" class="btn btn-ghost btn-circle btn-sm relative transition-all duration-200"
-            data-class="{
+          <button type="button" class="btn btn-ghost btn-circle btn-sm relative transition-all duration-200" data-class="{
               'btn-active bg-primary/20 text-primary shadow-sm': activeSessionId === session.id,
               'text-base-content/60 hover:text-base-content hover:bg-base-content/10': activeSessionId !== session.id
             }" data-on-click="openSession(session.id)">
@@ -467,8 +465,7 @@
           <div class="flex items-center gap-1.5 text-xs text-base-content/50 truncate">
             <span class="badge badge-xs badge-primary badge-outline text-[10px]"
               data-bind="getActiveSession().type === 'agent' ? 'AI Copilot' : 'Team Channel'"></span>
-            <span data-show="erpConnected && activeSessionId === 'session-erp'"
-              id="erp-live-badge"
+            <span data-show="erpConnected && activeSessionId === 'session-erp'" id="erp-live-badge"
               class="badge badge-xs badge-success text-[10px] gap-1">Live DB</span>
             <span class="truncate" data-bind="getActiveSession().description || ''"></span>
           </div>
@@ -567,25 +564,26 @@
               </div>
 
               <!-- S3 Attachments & Wasm Receipt -->
-              <div data-show="(msg.artifact?.attachments && msg.artifact.attachments.length > 0) || msg.artifact?.receipt_path"
+              <div
+                data-show="(msg.artifact?.attachments && msg.artifact.attachments.length > 0) || msg.artifact?.receipt_path"
                 class="mt-2.5 pt-2 border-t border-base-200 space-y-1">
                 <template data-for="att in (msg.artifact?.attachments || [])">
-                  <a target="_blank" rel="noopener"
-                    data-bind-href="att.path"
+                  <a target="_blank" rel="noopener" data-bind-href="att.path"
                     class="flex items-center justify-between gap-2 text-[11px] px-2 py-1 rounded-lg bg-base-200/70 hover:bg-base-200 text-base-content transition-colors">
                     <span class="flex items-center gap-1.5 truncate">
-                      <iconify-icon icon="material-symbols-light:attach-file" class="text-sm text-primary shrink-0"></iconify-icon>
+                      <iconify-icon icon="material-symbols-light:attach-file"
+                        class="text-sm text-primary shrink-0"></iconify-icon>
                       <span class="truncate font-medium" data-bind="att.name"></span>
                     </span>
                     <span class="font-mono text-[10px] opacity-60 shrink-0" data-bind="(att.size || 0) + ' B'"></span>
                   </a>
                 </template>
-                <a data-show="msg.artifact?.receipt_path" target="_blank" rel="noopener"
-                  id="po-wasm-receipt-link"
+                <a data-show="msg.artifact?.receipt_path" target="_blank" rel="noopener" id="po-wasm-receipt-link"
                   data-bind-href="msg.artifact?.receipt_path || '#'"
                   class="flex items-center justify-between gap-2 text-[11px] px-2 py-1 rounded-lg bg-success/10 hover:bg-success/20 text-success transition-colors">
                   <span class="flex items-center gap-1.5 truncate">
-                    <iconify-icon icon="material-symbols-light:verified-outline" class="text-sm shrink-0"></iconify-icon>
+                    <iconify-icon icon="material-symbols-light:verified-outline"
+                      class="text-sm shrink-0"></iconify-icon>
                     <span class="truncate font-medium">Wasmtime Approval Receipt (S3)</span>
                   </span>
                   <iconify-icon icon="material-symbols-light:open-in-new" class="text-xs shrink-0"></iconify-icon>
@@ -608,7 +606,8 @@
                   <span data-show="msg.artifact?.status === 'Approved' && msg.artifact?.approved_by"
                     class="text-[11px] text-success font-medium"
                     data-bind="'Approved by ' + msg.artifact?.approved_by"></span>
-                  <span data-show="msg.artifact?.status !== 'Approved' && $auth.isAuthenticated && !$auth.can('db.write')"
+                  <span
+                    data-show="msg.artifact?.status !== 'Approved' && $auth.isAuthenticated && !$auth.can('db.write')"
                     class="badge badge-ghost badge-xs text-[10px]">Read-Only</span>
                   <button type="button" class="btn btn-xs btn-primary font-normal"
                     data-show="msg.artifact?.status !== 'Approved' && (!$auth.isAuthenticated || $auth.can('db.write'))"

@@ -39,6 +39,15 @@
     "content": "Drag and Drop Nexus-UX Drag and Drop Complete 14-Pattern Native Drag Drop Engine Suite 01. Simple DraggableJS Parity 02. Shared Cross-Container 03. Cloning teleport-mode clone SOURCE TARGET 04. Sorting Toggle State 05. Handles data-drag-handle 06. Filter Selective Drag 07. MultiDrag Batch Select Click items to select several then drag them as one group. 08. Grid Layout Spatial Hit-Test 09. Nested Infinite Recursive Hierarchy 10. Auto-Scroll Constrained VERTICAL AUTO-SCROLL HORIZONTAL AUTO-SCROLL 11. Ghost Styling CSS Feedback R G B A Preview 12. Direction Horizontal 13. Swap Index Exchange 14. Swap Thresholds VERTICAL SWAP THRESHOLD V-Threshold HORIZONTAL SWAP THRESHOLD H-Threshold Nexus-UX Drag Engine 14/14 Verification Patterns"
   },
   {
+    "id": "erp",
+    "route": "/erp",
+    "path": "/_pages/apps/erp/index.html",
+    "title": "ERP Operations",
+    "category": "Apps",
+    "keywords": [],
+    "content": "ERP Operations Aerea-Nexus ERP Operations Live Nexus-DB Sign In Required Live procurement ledger S3 document storage Wasmtime cell status and IAM administration. Users IAM ERP Chat Sign in to access live ERP operations All records S3 attachments and Wasmtime workflows are enforced server-side by Nexus-IO IAM. Create Workspace Admin Sign In via Profile Purchase Orders 0 Live in Nexus-DB Pending Review 0 Awaiting approval Approved Spend 0.00 Verified receipts in S3 Wasm Cells 0 Wasmtime 51 runtime Procurement POs Audit Trail 0 Team IAM Admin Create Purchase Order Persists to Nexus-DB logs audit pushes live notification Create PO All Pending Review Approved Rejected No purchase orders match this filter yet. Attach Receipt S3 Approve Reject Read-Only Time Action Target Actor Details Workspace Users Nexus-IO IAM VIEWER EDITOR OWNER Add User Wasmtime Cells Refresh No active Wasm cells deployed yet."
+  },
+  {
     "id": "flow",
     "route": "/flow",
     "path": "/_pages/apps/flow/index.html",
@@ -46,6 +55,24 @@
     "category": "Apps",
     "keywords": [],
     "content": "Flow Canvas Flow Canvas Signal Driven Complete spatial node graph with reactive fine-grained proxies Shift Drag Marquee Del Delete Arrows Nudge Nodes Edges Zoom Fit Add Node In Out Pos Fit View Live Reactive Store ZCZS 60fps Viewport Pan Canvas Studio Grid Snapping Grid Spacing Snap to Grid Show Minimap Wire Routing Engine Default Routing Style SmoothStep Rounded Orthogonal Bezier Cubic Directional Step Sharp 90 Angles Straight Direct Linear Animate All Stop Wires Active Connectors No active connections. Drag between node handles to create wires. Graph Schema IO Export Graph JSON Import Graph JSON Clear Canvas xyFlow Spatial Engine Nexus-UX ZCZS Tune spatial coordinates ports subflow nesting and schema Visual Studio JSON Schema Node Identifier Display Label Node Kind Standard Action Card Input Trigger Green Accent Output Sink Warning Accent Subflow Group Container Parent Subflow Group None Root Canvas Pos X Pos Y Width Height Connection Ports Edge Points No connection ports attached. Click below to add an edge point. Source Output Port Target Input Port Right Side Left Side Top Side Bottom Side Add Port Direct Schema JSON Definition Real-time synchronization Cancel Save Changes close Configure Wire Connector Spatial curve routing arrow markers animation and port attachments Visual Studio JSON Schema Wire ID Display Badge Label Routing Algorithm SmoothStep Rounded Orthogonal Bezier Cubic Directional Step Sharp 90 Angles Straight Direct Linear Arrowhead Marker None Bare Wire Ch"
+  },
+  {
+    "id": "iam",
+    "route": "/iam",
+    "path": "/_pages/apps/iam/index.html",
+    "title": "Users &amp; Groups (IAM)",
+    "category": "Apps",
+    "keywords": [],
+    "content": "Users Groups IAM Users Groups Roles Permissions Server-Enforced IAM Full account profiles group membership management custom capability roles and live Nexus-DB / SurrealQL record-level permissions. New Group New Role OWNER Role Required IAM administration and record-level database policies are strictly enforced server-side for OWNER accounts. Open Profile / Sign In Users 0 Groups 0 Roles 3 Record / Field Policies 0 Users Groups Members Roles Permissions Record Field Policies Add User VIEWER Read-Only EDITOR Read/Write Cells OWNER Full Admin Add User Account Roles Groups Effective Capabilities Actions Suspended View / Edit Profile Delete Groups grant inherited roles and capabilities to all assigned members. Create Group No groups created yet. Click Create Group to organize members and inherited permissions. Manage Delete Members None Built-in kernel roles plus custom capability bundles assignable to users and groups. Create Custom Role System Manage Delete Define Record-Level Policy Cancel Row / Record-Level DEFINE TABLE Field-Level DEFINE FIELD PERMISSIONS FOR ... WHERE PERMISSIONS FULL PERMISSIONS NONE Presets owner auth created_by auth Apply Policy Live Edit Delete Profile Groups Memberships Roles Permissions Security Display Name Email Job Title Department Status Active Suspended Upload Avatar S3 Save Profile Toggle which groups belongs to changes persist live in Nexus-DB Base Kernel Role Server-Enforced VIEWER Read-Only EDITOR Read/Write Wasm Cells OWNER Full Admin Custom"
+  },
+  {
+    "id": "profile",
+    "route": "/profile",
+    "path": "/_pages/apps/profile/index.html",
+    "title": "My Profile &amp; Account",
+    "category": "Apps",
+    "keywords": [],
+    "content": "My Profile Account My Profile Account View your verified Nexus-IO identity groups capabilities and security settings. Sign in to view your profile Sign In Open IAM Admin Profile Information Display Name Email Job Title Department Save Profile Read-Only Account Server-Verified Capabilities Change Password Update Password"
   },
   {
     "id": "todo",

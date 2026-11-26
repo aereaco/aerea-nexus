@@ -1,6 +1,19 @@
 <div class="grid grid-cols-[0rem_1fr] transition-[grid-template-columns] duration-300"
   data-on-keydown_window="if (($evt.ctrlKey || $evt.metaKey) && ($evt.key === 'k' || $evt.key === 'K')) { $evt.preventDefault(); favModalOpen = false; favDeleteModalOpen = false; searchQuery = ''; searchDebouncedQuery = ''; searchTokens = []; searchResults = []; flatResults = []; searchActiveIndex = 0; searchOpen = true; } else if ($evt.ctrlKey && ($evt.key === '`' || $evt.key === '~')) { $evt.preventDefault(); if (typeof toggleTerminalHud === 'function') toggleTerminalHud(); }"
   data-signal_global="{
+    shellConfig: Object.assign({
+      mode: 'platform',
+      showMegamenu: true,
+      showTerminal: true,
+      showSearch: true,
+      showChatbar: true,
+      showDropdowns: true,
+      showMail: true,
+      showCart: true,
+      showNotifications: true,
+      showProfile: true,
+      showLanguage: true
+    }, (typeof shellConfig !== 'undefined' && shellConfig) ? shellConfig : {}),
     collapsed: localStorage.collapsed !== 'false',
     pageTabs: localStorage.pageTabs !== 'false',
     fixedHeader: localStorage.fixedHeader !== 'false',
@@ -43,10 +56,9 @@
     <!-- Top Navbar Header -->
     <layout-header data-component="'_components/layout-header.html'"></layout-header>
 
-    <!-- [SYNC:SHELL-ONLY:START] -->
     <!-- Composite Navbar Dropdown (Notifications, Mail, Cart, Profile) -->
-    <layout-dropdowns data-component="'_components/layout-dropdowns.html'"></layout-dropdowns>
-    <!-- [SYNC:SHELL-ONLY:END] -->
+    <layout-dropdowns data-show="shellConfig?.showDropdowns !== false"
+      data-component="'_components/layout-dropdowns.html'"></layout-dropdowns>
 
     <!-- Workspace Tab Bar -->
     <layout-tabs data-component="'_components/layout-tabs.html'"></layout-tabs>
@@ -87,20 +99,18 @@
           <!-- Floating In-Page Search Matches Badge & Scrollbar Location Ticks -->
           <layout-search-highlights data-component="'_components/layout-search-highlights.html'"></layout-search-highlights>
 
-          <!-- [SYNC:SHELL-ONLY:START] -->
           <!-- Collaborative Chat FAB & Speed Dial -->
-          <layout-chat-fab data-component="'_components/layout-chat-fab.html'"></layout-chat-fab>
-          <!-- [SYNC:SHELL-ONLY:END] -->
+          <layout-chat-fab data-show="shellConfig?.showChatbar !== false"
+            data-component="'_components/layout-chat-fab.html'"></layout-chat-fab>
         </div>
       </div>
 
       <!-- Page Footer with Inline Diagnostics -->
       <layout-footer data-component="'_components/layout-footer.html'"></layout-footer>
 
-      <!-- [SYNC:SHELL-ONLY:START] -->
       <!-- Reverse Quake Terminal / CLI HUD -->
-      <layout-terminal data-component="'_components/layout-terminal.html'"></layout-terminal>
-      <!-- [SYNC:SHELL-ONLY:END] -->
+      <layout-terminal data-show="shellConfig?.showTerminal !== false"
+        data-component="'_components/layout-terminal.html'"></layout-terminal>
     </div>
 
     <!-- Search Modal -->
@@ -119,8 +129,7 @@
   <!-- App-Wide Declarative Toaster Notifications -->
   <layout-toasts data-component="'_components/layout-toasts.html'"></layout-toasts>
 
-  <!-- [SYNC:SHELL-ONLY:START] -->
   <!-- Right-Side Collaborative Chatbar -->
-  <layout-chatbar data-component="'_components/layout-chatbar.html'"></layout-chatbar>
-  <!-- [SYNC:SHELL-ONLY:END] -->
+  <layout-chatbar data-show="shellConfig?.showChatbar !== false"
+    data-component="'_components/layout-chatbar.html'"></layout-chatbar>
 </div>

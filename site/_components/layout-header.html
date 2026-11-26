@@ -20,8 +20,7 @@
     </div>
 
   </div>
-  <div class="navbar-center flex-1 flex justify-start">
-    <!-- [SYNC:SHELL-ONLY:START] -->
+  <div class="navbar-center flex-1 flex justify-start" data-show="shellConfig?.showMegamenu !== false">
     <div class="megamenu max-md:megamenu-vertical megamenu-wide  w-full flex justify-center" id="my-megamenu-4"
       popover>
       <span class="megamenu-active"></span>
@@ -123,22 +122,21 @@
         </div>
       </div>
     </div>
-    <!-- [SYNC:SHELL-ONLY:END] -->
   </div>
   <div class="flex-1 justify-end flex gap-2">
 
-    <!-- [SYNC:SHELL-ONLY:START] -->
     <!-- Terminal HUD Button -->
-    <button type="button" class="btn btn-ghost btn-circle hover:scale-105 transition-all"
+    <button type="button" data-show="shellConfig?.showTerminal !== false"
+      class="btn btn-ghost btn-circle hover:scale-105 transition-all"
       aria-label="Toggle Terminal HUD (Ctrl+` or Click)" title="Terminal HUD (Ctrl+`)"
       data-class="{ 'text-primary bg-primary/10 ring-1 ring-primary/30': terminalOpen }"
       data-on-click="if (typeof toggleTerminalHud === 'function') toggleTerminalHud()">
       <iconify-icon icon="material-symbols-light:terminal" class="text-2xl"></iconify-icon>
     </button>
-    <!-- [SYNC:SHELL-ONLY:END] -->
 
     <!-- Search Button -->
-    <button type="button" class="btn btn-ghost btn-circle hover:scale-102" aria-label="Open search (Ctrl+K)"
+    <button type="button" data-show="shellConfig?.showSearch !== false"
+      class="btn btn-ghost btn-circle hover:scale-102" aria-label="Open search (Ctrl+K)"
       title="Search (Ctrl+K)"
       data-on-click="favModalOpen = false; favDeleteModalOpen = false; searchQuery = ''; searchDebouncedQuery = ''; searchTokens = []; searchResults = []; flatResults = []; searchActiveIndex = 0; searchOpen = true;">
       <iconify-icon icon="material-symbols-light:search" class="text-2xl"></iconify-icon>
@@ -151,9 +149,9 @@
       <iconify-icon data-bind-icon="$themeIcon" class="text-2xl transition-all duration-300"></iconify-icon>
     </button>
 
-    <!-- [SYNC:SHELL-ONLY:START] -->
     <!-- Mail Button -->
-    <button type="button" class="btn btn-ghost btn-circle" aria-label="Messages" title="Messages"
+    <button type="button" data-show="shellConfig?.showMail !== false"
+      class="btn btn-ghost btn-circle" aria-label="Messages" title="Messages"
       data-on-click_stop="headerDropdownTab = 'mail'; headerDropdownOpen = (headerDropdownOpen && headerDropdownTab === 'mail') ? false : true">
       <div class="indicator">
         <iconify-icon icon="material-symbols-light:mail-outline" class="text-2xl"></iconify-icon>
@@ -164,7 +162,8 @@
     </button>
 
     <!-- Cart Button -->
-    <button type="button" class="btn btn-ghost btn-circle" aria-label="Shopping Cart" title="Shopping Cart"
+    <button type="button" data-show="shellConfig?.showCart !== false"
+      class="btn btn-ghost btn-circle" aria-label="Shopping Cart" title="Shopping Cart"
       data-on-click_stop="headerDropdownTab = 'cart'; headerDropdownOpen = (headerDropdownOpen && headerDropdownTab === 'cart') ? false : true">
       <div class="indicator">
         <iconify-icon icon="material-symbols-light:shopping-cart-outline" class="text-2xl"></iconify-icon>
@@ -175,7 +174,8 @@
     </button>
 
     <!-- Notification Bell Button -->
-    <button type="button" class="btn btn-ghost btn-circle" aria-label="Notifications" title="Notifications"
+    <button type="button" data-show="shellConfig?.showNotifications !== false"
+      class="btn btn-ghost btn-circle" aria-label="Notifications" title="Notifications"
       data-on-click_stop="headerDropdownTab = 'notifications'; headerDropdownOpen = (headerDropdownOpen && headerDropdownTab === 'notifications') ? false : true">
       <div class="indicator">
         <iconify-icon icon="material-symbols-light:notifications-outline" class="text-2xl"></iconify-icon>
@@ -186,7 +186,8 @@
     </button>
 
     <!-- User Avatar Button -->
-    <button type="button" class="btn btn-ghost btn-circle avatar placeholder" aria-label="User Profile"
+    <button type="button" data-show="shellConfig?.showProfile !== false"
+      class="btn btn-ghost btn-circle avatar placeholder" aria-label="User Profile"
       title="User Profile"
       data-on-click_stop="headerDropdownTab = 'profile'; headerDropdownOpen = (headerDropdownOpen && headerDropdownTab === 'profile') ? false : true">
       <div
@@ -194,10 +195,9 @@
         <iconify-icon icon="material-symbols-light:person" class="text-xl"></iconify-icon>
       </div>
     </button>
-    <!-- [SYNC:SHELL-ONLY:END] -->
 
     <!-- Language Switcher -->
-    <div>
+    <div data-show="shellConfig?.showLanguage !== false">
       <button popovertarget="language-change" style="anchor-name:--language-change"
         class="btn btn-sm btn-ghost gap-1 px-1.5 text-[.5625rem] font-bold" aria-label="Language"
         title="Change Language">
