@@ -13167,8 +13167,11 @@ ${match}</ul>
     token: null,
     loading: false,
     hydrated: false,
+    initialized: true,
     error: null,
     endpoint: "/_nexus/auth/me",
+    setupStatusEndpoint: "/_nexus/setup/status",
+    bootstrapEndpoint: "/_nexus/setup/bootstrap",
     signinEndpoint: "/signin",
     signoutEndpoint: "/signout",
     hasRole: (role) => {
@@ -13243,6 +13246,20 @@ ${match}</ul>
         authScope.isAuthenticated = false;
         authScope.roles = [];
         authScope.capabilities = [];
+        try {
+          const setupRes = await fetch(authScope.setupStatusEndpoint, {
+            method: "GET",
+            credentials: "same-origin",
+            headers: { "Accept": "application/json" }
+          });
+          if (setupRes.ok) {
+            const setupData = await setupRes.json().catch(() => ({}));
+            if (typeof setupData?.initialized === "boolean") {
+              authScope.initialized = setupData.initialized;
+            }
+          }
+        } catch {
+        }
         authScope.hydrated = true;
         return {
           authenticated: false,
@@ -13260,6 +13277,48 @@ ${match}</ul>
         authScope.capabilities = [];
         authScope.hydrated = true;
         return null;
+      } finally {
+        authScope.loading = false;
+      }
+    },
+    bootstrap: async (credentials) => {
+      if (typeof fetch !== "function")
+        return false;
+      authScope.loading = true;
+      authScope.error = null;
+      try {
+        const payload = {
+          user: (credentials?.user || "").trim(),
+          pass: credentials?.pass || ""
+        };
+        if (!payload.user || payload.pass.length < 4) {
+          authScope.error = "Username and password (min 4 chars) are required";
+          return false;
+        }
+        const res = await fetch(authScope.bootstrapEndpoint, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: {
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+          },
+          body: JSON.stringify(payload)
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          authScope.error = body?.details || `Setup failed (${res.status})`;
+          return false;
+        }
+        authScope.initialized = true;
+        const identity = await authScope.refresh();
+        const ok = Boolean(identity?.authenticated);
+        if (ok) {
+          dispatchAuthChanged(true, authScope.actor);
+        }
+        return ok;
+      } catch (err) {
+        authScope.error = err instanceof Error ? err.message : "Network error during setup";
+        return false;
       } finally {
         authScope.loading = false;
       }

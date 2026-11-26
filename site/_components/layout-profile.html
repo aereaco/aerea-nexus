@@ -47,8 +47,49 @@
     </ul>
   </div>
 
+  <!-- First-Run Workspace Admin Setup (only when DB has zero users) -->
+  <div data-show="!$auth.isAuthenticated && $auth.initialized === false" class="space-y-3">
+    <div class="flex items-center gap-3 p-2.5 bg-primary/10 rounded-xl border border-primary/20">
+      <div class="avatar placeholder">
+        <div class="w-10 rounded-full bg-primary/20 text-primary flex items-center justify-center">
+          <iconify-icon icon="material-symbols-light:admin-panel-settings-outline" class="text-xl"></iconify-icon>
+        </div>
+      </div>
+      <div class="flex-1 min-w-0">
+        <div class="font-bold text-sm truncate">First-Run Setup</div>
+        <div class="text-[11px] opacity-70 truncate">Create initial OWNER admin</div>
+      </div>
+    </div>
+
+    <div data-show="$auth.error" id="iam-setup-error"
+      class="alert alert-error py-2 px-3 text-xs rounded-lg">
+      <span data-bind="$auth.error"></span>
+    </div>
+
+    <form class="space-y-2"
+      data-on-submit_prevent="$auth.bootstrap({ user: loginUser, pass: loginPass }).then(ok => { if (ok) { loginPass = ''; notify('Workspace Initialized', 'Signed in as ' + $auth.actor + ' (OWNER)', 'success'); } })">
+      <label class="form-control w-full">
+        <span class="label-text text-xs opacity-70 mb-1">Admin Username</span>
+        <input id="iam-setup-user" name="setup_username" type="text" autocomplete="username"
+          class="input input-bordered input-sm w-full" placeholder="e.g. director"
+          data-bind-value="loginUser" />
+      </label>
+      <label class="form-control w-full">
+        <span class="label-text text-xs opacity-70 mb-1">Admin Password</span>
+        <input id="iam-setup-pass" name="setup_password" type="password" autocomplete="new-password"
+          class="input input-bordered input-sm w-full" placeholder="Min 4 characters"
+          data-bind-value="loginPass" />
+      </label>
+      <button id="iam-setup-submit" type="submit" class="btn btn-primary btn-sm w-full"
+        data-bind-disabled="$auth.loading">
+        <span data-show="!$auth.loading">Create Workspace Admin</span>
+        <span data-show="$auth.loading">Initializing…</span>
+      </button>
+    </form>
+  </div>
+
   <!-- Anonymous / Sign In Form -->
-  <div data-show="!$auth.isAuthenticated" class="space-y-3">
+  <div data-show="!$auth.isAuthenticated && $auth.initialized !== false" class="space-y-3">
     <div class="flex items-center gap-3 p-2.5 bg-base-200/50 rounded-xl">
       <div class="avatar placeholder">
         <div class="w-10 rounded-full bg-base-300 text-base-content/70 flex items-center justify-center">
