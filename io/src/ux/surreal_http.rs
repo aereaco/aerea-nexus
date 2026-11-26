@@ -64,11 +64,69 @@ fn is_loopback_addr(req: &Request) -> bool {
     addr.contains("127.0.0.1") || addr.contains("::1") || addr.contains("localhost")
 }
 
+pub const SESSION_COOKIE_NAME: &str = "nexus_session";
+
+fn is_secure_request(req: &Request) -> bool {
+    if req.uri().scheme_str() == Some("https") {
+        return true;
+    }
+    if req
+        .headers()
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.eq_ignore_ascii_case("https"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    std::env::var("NEXUS_TLS_CERT").is_ok() && std::env::var("NEXUS_TLS_KEY").is_ok()
+}
+
+pub(crate) fn extract_session_cookie(req: &Request) -> Option<String> {
+    for val in req.headers().get_all(salvo::http::header::COOKIE) {
+        if let Ok(raw) = val.to_str() {
+            for part in raw.split(';') {
+                let trimmed = part.trim();
+                if let Some(tok) = trimmed.strip_prefix(&format!("{}=", SESSION_COOKIE_NAME)) {
+                    let tok = tok.trim();
+                    if !tok.is_empty() {
+                        return Some(tok.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn set_session_cookie(req: &Request, res: &mut Response, token: &str) {
+    let secure = if is_secure_request(req) { "; Secure" } else { "" };
+    let cookie = format!(
+        "{}={}; HttpOnly; SameSite=Lax; Path=/{}",
+        SESSION_COOKIE_NAME, token, secure
+    );
+    if let Ok(val) = salvo::http::header::HeaderValue::from_str(&cookie) {
+        res.headers_mut().append(salvo::http::header::SET_COOKIE, val);
+    }
+}
+
+fn clear_session_cookie(req: &Request, res: &mut Response) {
+    let secure = if is_secure_request(req) { "; Secure" } else { "" };
+    let cookie = format!(
+        "{}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0{}",
+        SESSION_COOKIE_NAME, secure
+    );
+    if let Ok(val) = salvo::http::header::HeaderValue::from_str(&cookie) {
+        res.headers_mut().append(salvo::http::header::SET_COOKIE, val);
+    }
+}
+
 /// Resolve and enforce HTTP authentication for all data/query endpoints.
 ///
 /// Explicit security boundary:
 /// - `Authorization: Bearer <jwt|bearer>` or `Basic <base64>` is ALWAYS verified via `nexus-db`.
-/// - Missing `Authorization` is REJECTED (`401 Unauthorized`) by default.
+/// - Browser `HttpOnly` session cookie (`nexus_session=<jwt>`) is verified identically via `nexus-db`.
+/// - Missing credentials are REJECTED (`401 Unauthorized`) by default.
 /// - Unauthenticated local dev access is ONLY permitted when BOTH `NEXUS_ALLOW_UNAUTH_LOCAL=1`
 ///   AND the request originates from loopback (`127.0.0.1` / `::1`).
 pub(crate) fn resolve_http_auth(
@@ -77,37 +135,46 @@ pub(crate) fn resolve_http_auth(
     ns: &str,
     database: &str,
 ) -> Result<Option<AuthContext>, String> {
-    let Some(header) = req.headers().get("authorization").and_then(|v| v.to_str().ok()) else {
-        if std::env::var("NEXUS_ALLOW_UNAUTH_LOCAL").as_deref() == Ok("1") && is_loopback_addr(req) {
-            return Ok(None);
+    if let Some(header) = req.headers().get("authorization").and_then(|v| v.to_str().ok()) {
+        if let Some(bearer) = header.strip_prefix("Bearer ").or_else(|| header.strip_prefix("bearer ")) {
+            return db
+                .inner
+                .authenticate_token(ns, database, bearer.trim())
+                .map(Some)
+                .map_err(|e| e.to_string());
         }
-        return Err(
-            "Authentication required (provide Authorization: Bearer <token> or Basic <creds>; for local dev set NEXUS_ALLOW_UNAUTH_LOCAL=1)"
-                .to_string(),
-        );
-    };
-    if let Some(bearer) = header.strip_prefix("Bearer ").or_else(|| header.strip_prefix("bearer ")) {
+        if let Some(b64) = header.strip_prefix("Basic ").or_else(|| header.strip_prefix("basic ")) {
+            let decoded = BASE64_STD
+                .decode(b64.trim())
+                .map_err(|_| "Invalid Basic auth base64".to_string())?;
+            let creds = String::from_utf8(decoded).map_err(|_| "Invalid Basic auth UTF-8".to_string())?;
+            let (user, pass) = creds
+                .split_once(':')
+                .ok_or_else(|| "Basic auth must be user:pass".to_string())?;
+            let (_, ctx) = db
+                .inner
+                .signin_user(ns, database, user, pass)
+                .map_err(|e| e.to_string())?;
+            return Ok(Some(ctx));
+        }
+        return Err("Unsupported Authorization scheme".to_string());
+    }
+
+    if let Some(cookie_token) = extract_session_cookie(req) {
         return db
             .inner
-            .authenticate_token(ns, database, bearer.trim())
+            .authenticate_token(ns, database, &cookie_token)
             .map(Some)
             .map_err(|e| e.to_string());
     }
-    if let Some(b64) = header.strip_prefix("Basic ").or_else(|| header.strip_prefix("basic ")) {
-        let decoded = BASE64_STD
-            .decode(b64.trim())
-            .map_err(|_| "Invalid Basic auth base64".to_string())?;
-        let creds = String::from_utf8(decoded).map_err(|_| "Invalid Basic auth UTF-8".to_string())?;
-        let (user, pass) = creds
-            .split_once(':')
-            .ok_or_else(|| "Basic auth must be user:pass".to_string())?;
-        let (_, ctx) = db
-            .inner
-            .signin_user(ns, database, user, pass)
-            .map_err(|e| e.to_string())?;
-        return Ok(Some(ctx));
+
+    if std::env::var("NEXUS_ALLOW_UNAUTH_LOCAL").as_deref() == Ok("1") && is_loopback_addr(req) {
+        return Ok(None);
     }
-    Err("Unsupported Authorization scheme".to_string())
+    Err(
+        "Authentication required (provide Authorization: Bearer <token>, Basic <creds>, or valid nexus_session cookie; for local dev set NEXUS_ALLOW_UNAUTH_LOCAL=1)"
+            .to_string(),
+    )
 }
 
 /// `POST /sql` — SurrealDB HTTP SQL endpoint.
@@ -262,12 +329,112 @@ impl Handler for SurrealAuthHandler {
             res.status_code(StatusCode::FORBIDDEN);
             res.render(Json(json!({ "code": 403, "details": err.message })));
         } else {
+            let token_val = resp.result.unwrap_or(JsonValue::Null);
+            if let Some(tok) = token_val.as_str().filter(|s| !s.is_empty()) {
+                set_session_cookie(req, res, tok);
+            }
+            res.headers_mut().insert(
+                salvo::http::header::CACHE_CONTROL,
+                salvo::http::header::HeaderValue::from_static("no-store"),
+            );
             res.render(Json(json!({
                 "code": 200,
                 "details": "Authentication succeeded",
-                "token": resp.result.unwrap_or(JsonValue::Null)
+                "token": token_val
             })));
         }
+    }
+}
+
+/// `POST /signout` — Clears the browser `HttpOnly` session cookie.
+#[derive(Clone)]
+pub struct SurrealSignoutHandler;
+
+#[async_trait]
+impl Handler for SurrealSignoutHandler {
+    async fn handle(&self, req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
+        clear_session_cookie(req, res);
+        res.headers_mut().insert(
+            salvo::http::header::CACHE_CONTROL,
+            salvo::http::header::HeaderValue::from_static("no-store"),
+        );
+        res.render(Json(json!({
+            "code": 200,
+            "ok": true,
+            "details": "Signed out"
+        })));
+    }
+}
+
+/// `GET /_nexus/auth/me` — Returns the server-verified IAM identity, roles, and effective capabilities
+/// for the current caller (via `Authorization` header or `nexus_session` cookie).
+/// Never treats unauthenticated local-dev bypass as a signed-in user.
+#[derive(Clone)]
+pub struct AuthMeHandler {
+    pub db: Arc<Database>,
+}
+
+#[async_trait]
+impl Handler for AuthMeHandler {
+    async fn handle(&self, req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
+        use crate::iam::capabilities::CapabilitySet;
+        use nexus_db::auth::AuthLevel;
+
+        res.headers_mut().insert(
+            salvo::http::header::CACHE_CONTROL,
+            salvo::http::header::HeaderValue::from_static("no-store"),
+        );
+
+        let (ns, database) = extract_ns_db(req);
+        let resolved: Option<AuthContext> = if let Some(header) = req.headers().get("authorization").and_then(|v| v.to_str().ok()) {
+            if let Some(bearer) = header.strip_prefix("Bearer ").or_else(|| header.strip_prefix("bearer ")) {
+                self.db.inner.authenticate_token(&ns, &database, bearer.trim()).ok()
+            } else {
+                None
+            }
+        } else if let Some(cookie_token) = extract_session_cookie(req) {
+            match self.db.inner.authenticate_token(&ns, &database, &cookie_token) {
+                Ok(ctx) => Some(ctx),
+                Err(_) => {
+                    clear_session_cookie(req, res);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let Some(ctx) = resolved else {
+            res.render(Json(json!({
+                "authenticated": false,
+                "actor": JsonValue::Null,
+                "level": "anonymous",
+                "ns": ns,
+                "db": database,
+                "roles": [],
+                "capabilities": []
+            })));
+            return;
+        };
+
+        let level = match &ctx.level {
+            AuthLevel::System => "system",
+            AuthLevel::Root => "root",
+            AuthLevel::Namespace(_) => "namespace",
+            AuthLevel::Database(_, _) => "database",
+            AuthLevel::Record { .. } => "record",
+            AuthLevel::Anonymous => "anonymous",
+        };
+        let caps = CapabilitySet::from_auth_context(Some(&ctx));
+        res.render(Json(json!({
+            "authenticated": true,
+            "actor": ctx.actor,
+            "level": level,
+            "ns": ns,
+            "db": database,
+            "roles": ctx.roles,
+            "capabilities": caps.caps
+        })));
     }
 }
 

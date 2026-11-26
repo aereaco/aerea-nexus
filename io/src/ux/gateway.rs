@@ -614,6 +614,8 @@ impl UxGateway {
             )
             .push(Router::with_path("/signin").post(crate::ux::surreal_http::SurrealAuthHandler { db: self.db.clone(), is_signup: false }))
             .push(Router::with_path("/signup").post(crate::ux::surreal_http::SurrealAuthHandler { db: self.db.clone(), is_signup: true }))
+            .push(Router::with_path("/signout").post(crate::ux::surreal_http::SurrealSignoutHandler))
+            .push(Router::with_path("/_nexus/auth/me").get(crate::ux::surreal_http::AuthMeHandler { db: self.db.clone() }))
             .push(
                 Router::with_path("/export")
                     .hoop(gate.clone())
@@ -1087,6 +1089,7 @@ fn is_reserved_non_spa_prefix(rel_path: &str) -> bool {
         "/proxy/",
         "/signin",
         "/signup",
+        "/signout",
         "/export",
         "/import",
         "/query",
