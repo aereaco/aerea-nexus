@@ -712,6 +712,26 @@ impl CellManager {
         body: &[u8],
         request_id: Option<String>,
     ) -> Result<CellHttpResponse> {
+        self.invoke_http_with_auth(app, cell_id, method, path, query_string, body, request_id, None)
+            .await
+    }
+
+    /// Same as `invoke_http_with_request_id`, also intersecting the caller's verified IAM
+    /// `AuthContext` into `NexusHostContext` so Wasmtime `nexus_host` syscalls enforce the
+    /// caller's real capability ceiling (e.g. `VIEWER` cannot invoke `DbWrite` or `BlobWrite`).
+    #[cfg(all(feature = "runtime-wasm", not(target_os = "ios")))]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn invoke_http_with_auth(
+        &self,
+        app: &str,
+        cell_id: &str,
+        method: &str,
+        path: &str,
+        query_string: &str,
+        body: &[u8],
+        request_id: Option<String>,
+        auth: Option<nexus_db::auth::AuthContext>,
+    ) -> Result<CellHttpResponse> {
         let key = CellKey {
             app: app.to_string(),
             cell_id: cell_id.to_string(),
@@ -742,6 +762,7 @@ impl CellManager {
             self.engine.clone(),
             self.blobs.clone(),
         )
+        .with_auth(auth.as_ref())
         .with_request_id(request_id);
         let crystal = self.crystal.clone();
 
