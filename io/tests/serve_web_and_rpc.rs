@@ -688,8 +688,8 @@ async fn opt_in_default_mounts_zero_services_and_manifest_compiles_cleanly() {
     assert!(compiled.enable_s3);
     assert!(compiled.enable_web);
     assert!(!compiled.enable_proxy);
-    assert_eq!(compiled.web_root.as_deref(), Some(repo_root.join("site").as_path()));
-    assert_eq!(compiled.dist_root.as_deref(), Some(repo_root.join("dist").as_path()));
+    assert_eq!(compiled.web_root.as_deref(), Some(repo_root.join("./shell").as_path()));
+    assert_eq!(compiled.dist_root.as_deref(), Some(repo_root.join("./ux/dist").as_path()));
 
     // 3. Declared missing web root fails fast at compile time (zero silent fallback)
     let bad = AppManifest::from_toml(

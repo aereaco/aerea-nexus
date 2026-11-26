@@ -183,6 +183,10 @@ impl BlobBridge {
         &self.node.node_id
     }
 
+    pub fn db(&self) -> &Arc<Database> {
+        &self.db
+    }
+
     /// Always pin `BlobBridge` metadata operations to the `pinned` `nexus::system` scope
     /// so concurrent `elastic` cell `(ns, db)` switches never leak into storage metadata.
     async fn system_db(&self) -> Result<&crate::db::DbClient> {

@@ -737,6 +737,35 @@ impl UxGateway {
                         .hoop(gate.clone())
                         .hoop(crate::ux::iam::IamMiddleware::admin(self.db.clone()))
                         .post(crate::ux::surreal_http::WalReplicationHandler { db: self.db.clone(), is_apply: true }),
+                )
+                .push(
+                    Router::with_path("/_nexus/mesh/status")
+                        .hoop(gate.clone())
+                        .hoop(crate::ux::iam::IamMiddleware::authenticated(self.db.clone()))
+                        .get(MeshStatusHandler {
+                            db: self.db.clone(),
+                            garage: self.garage.clone(),
+                        }),
+                )
+                .push(
+                    Router::with_path("/_nexus/mesh/gossip")
+                        .hoop(gate.clone())
+                        .hoop(crate::ux::iam::IamMiddleware::authenticated(self.db.clone()))
+                        .post(MeshGossipHandler {
+                            db: self.db.clone(),
+                            garage: self.garage.clone(),
+                        }),
+                )
+                .push(
+                    Router::with_path("/_nexus/mesh/blobs/{cid}")
+                        .hoop(gate.clone())
+                        .hoop(crate::ux::iam::IamMiddleware::authenticated(self.db.clone()))
+                        .get(MeshBlobTransferHandler {
+                            garage: self.garage.clone(),
+                        })
+                        .put(MeshBlobTransferHandler {
+                            garage: self.garage.clone(),
+                        }),
                 );
         }
 
@@ -1037,6 +1066,214 @@ impl Handler for DeployedAppHandler {
             Err(e) => {
                 res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
                 res.render(Json(serde_json::json!({ "error": e.to_string() })));
+            }
+        }
+    }
+}
+
+#[cfg(feature = "runtime-wasm")]
+#[derive(Clone)]
+struct MeshStatusHandler {
+    db: Arc<Database>,
+    garage: Arc<BlobBridge>,
+}
+
+#[cfg(feature = "runtime-wasm")]
+#[async_trait]
+impl Handler for MeshStatusHandler {
+    async fn handle(
+        &self,
+        _req: &mut Request,
+        _depot: &mut Depot,
+        res: &mut Response,
+        _ctrl: &mut FlowCtrl,
+    ) {
+        use crate::compute::NodeResources;
+        use crate::storage::mesh::MeshReactor;
+        use crate::storage::wireguard::{derive_mesh_ipv4, derive_mesh_ipv6, WireGuardInterface};
+
+        let node_id = self.garage.node_id().to_string();
+        let wg_ipv4 = derive_mesh_ipv4(&node_id);
+        let wg_ipv6 = derive_mesh_ipv6(&node_id);
+        let local_resources = NodeResources::scan();
+        let (peers, peer_configs, _) = MeshReactor::load_mesh_snapshot(&self.db)
+            .await
+            .unwrap_or_default();
+        let uapi_preview = WireGuardInterface::format_uapi_set_peers(&peer_configs);
+
+        res.status_code(StatusCode::OK);
+        res.render(Json(serde_json::json!({
+            "node_id": node_id,
+            "wg_ipv4": wg_ipv4,
+            "wg_ipv6": wg_ipv6,
+            "resources": local_resources,
+            "peer_count": peers.len(),
+            "peers": peers,
+            "wireguard_uapi_bytes": uapi_preview.len()
+        })));
+    }
+}
+
+#[cfg(feature = "runtime-wasm")]
+#[derive(Clone)]
+struct MeshGossipHandler {
+    db: Arc<Database>,
+    garage: Arc<BlobBridge>,
+}
+
+#[cfg(feature = "runtime-wasm")]
+#[async_trait]
+impl Handler for MeshGossipHandler {
+    async fn handle(
+        &self,
+        req: &mut Request,
+        depot: &mut Depot,
+        res: &mut Response,
+        _ctrl: &mut FlowCtrl,
+    ) {
+        use crate::compute::NodeResources;
+        use crate::iam::capabilities::{Capability, CapabilitySet};
+        use crate::storage::mesh::{MeshGossipPayload, MeshReactor};
+        use crate::storage::wireguard::{derive_mesh_ipv4, derive_mesh_ipv6};
+
+        let auth = crate::ux::iam::depot_auth_context(depot);
+        let caller_caps = CapabilitySet::from_auth_context(auth.as_ref());
+        if !caller_caps.has(Capability::CellSpawn) && !caller_caps.has(Capability::DbWrite) {
+            crate::observability::global_metrics().inc_iam_auth_denial();
+            res.status_code(StatusCode::FORBIDDEN);
+            res.render(Json(serde_json::json!({
+                "error": "Missing required capability for /_nexus/mesh/gossip"
+            })));
+            return;
+        }
+
+        let payload: MeshGossipPayload = match req.parse_json().await {
+            Ok(p) => p,
+            Err(e) => {
+                res.status_code(StatusCode::BAD_REQUEST);
+                res.render(Json(serde_json::json!({ "error": format!("Invalid gossip JSON: {}", e) })));
+                return;
+            }
+        };
+
+        let target_pubkey = payload.pubkey.clone();
+        match MeshReactor::ingest_gossip(&self.db, &self.garage, payload).await {
+            Ok(merged) => {
+                let node_id = self.garage.node_id().to_string();
+                let (peers, _, _) = MeshReactor::load_mesh_snapshot(&self.db)
+                    .await
+                    .unwrap_or_default();
+                let mesh_ipv4 = derive_mesh_ipv4(&target_pubkey);
+                let mesh_ipv6 = derive_mesh_ipv6(&target_pubkey);
+                res.status_code(StatusCode::OK);
+                res.render(Json(serde_json::json!({
+                    "status": "ok",
+                    "accepted": true,
+                    "merged": merged,
+                    "node_id": node_id,
+                    "mesh_ipv4": mesh_ipv4,
+                    "mesh_ipv6": mesh_ipv6,
+                    "wg_ipv4": derive_mesh_ipv4(&node_id),
+                    "wg_ipv6": derive_mesh_ipv6(&node_id),
+                    "resources": NodeResources::scan(),
+                    "peers": peers
+                })));
+            }
+            Err(e) => {
+                res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+                res.render(Json(serde_json::json!({ "error": e.to_string() })));
+            }
+        }
+    }
+}
+
+#[cfg(feature = "runtime-wasm")]
+#[derive(Clone)]
+struct MeshBlobTransferHandler {
+    garage: Arc<BlobBridge>,
+}
+
+#[cfg(feature = "runtime-wasm")]
+#[async_trait]
+impl Handler for MeshBlobTransferHandler {
+    async fn handle(
+        &self,
+        req: &mut Request,
+        depot: &mut Depot,
+        res: &mut Response,
+        _ctrl: &mut FlowCtrl,
+    ) {
+        use crate::iam::capabilities::{Capability, CapabilitySet};
+        use crate::storage::cas_store::CasStore;
+
+        let raw_cid = req.param::<String>("cid").unwrap_or_default();
+        let hex_cid = raw_cid.strip_prefix("blake3:").unwrap_or(&raw_cid).to_ascii_lowercase();
+        if hex_cid.len() != 64 || !hex_cid.chars().all(|c| c.is_ascii_hexdigit()) {
+            res.status_code(StatusCode::BAD_REQUEST);
+            res.render(Json(serde_json::json!({ "error": "Invalid BLAKE3 CID format" })));
+            return;
+        }
+
+        let auth = crate::ux::iam::depot_auth_context(depot);
+        let caller_caps = CapabilitySet::from_auth_context(auth.as_ref());
+        let cas = CasStore::new(self.garage.clone());
+        let mesh_bucket = "nexus-mesh-cas";
+
+        match *req.method() {
+            salvo::http::Method::GET => {
+                if !caller_caps.has(Capability::BlobRead) {
+                    res.status_code(StatusCode::FORBIDDEN);
+                    return;
+                }
+                match cas.get_verified_blob(mesh_bucket, "blobs/", &hex_cid).await {
+                    Ok(bytes) => {
+                        res.status_code(StatusCode::OK);
+                        res.headers_mut().insert(
+                            salvo::http::header::CONTENT_TYPE,
+                            salvo::http::HeaderValue::from_static("application/octet-stream"),
+                        );
+                        let _ = res.write_body(bytes);
+                    }
+                    Err(e) => {
+                        res.status_code(StatusCode::NOT_FOUND);
+                        res.render(Json(serde_json::json!({ "error": e.to_string() })));
+                    }
+                }
+            }
+            salvo::http::Method::PUT => {
+                if !caller_caps.has(Capability::BlobWrite) {
+                    res.status_code(StatusCode::FORBIDDEN);
+                    return;
+                }
+                let Ok(payload) = req.payload_with_max_size(16 * 1024 * 1024).await else {
+                    res.status_code(StatusCode::BAD_REQUEST);
+                    return;
+                };
+                let actual_hex = blake3::hash(payload).to_hex().to_string();
+                if actual_hex != hex_cid {
+                    res.status_code(StatusCode::BAD_REQUEST);
+                    res.render(Json(serde_json::json!({
+                        "error": format!("BLAKE3 digest mismatch: expected {}, got {}", hex_cid, actual_hex)
+                    })));
+                    return;
+                }
+                let _ = self.garage.create_bucket(mesh_bucket).await;
+                match cas.put_verified_blob(mesh_bucket, "blobs/", bytes::Bytes::copy_from_slice(payload)).await {
+                    Ok(stored_cid) => {
+                        res.status_code(StatusCode::CREATED);
+                        res.render(Json(serde_json::json!({
+                            "status": "verified",
+                            "cid": format!("blake3:{}", stored_cid)
+                        })));
+                    }
+                    Err(e) => {
+                        res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+                        res.render(Json(serde_json::json!({ "error": e.to_string() })));
+                    }
+                }
+            }
+            _ => {
+                res.status_code(StatusCode::METHOD_NOT_ALLOWED);
             }
         }
     }

@@ -909,6 +909,10 @@ pub struct DeployedCellState {
     pub placement: PlacementTarget,
     pub migration_policy: MigrationPolicy,
     pub replicas: u32,
+    #[serde(default)]
+    pub assigned_nodes: Vec<String>,
+    #[serde(default)]
+    pub mesh_endpoints: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1007,14 +1011,50 @@ impl ManifestReconciler {
         let app = &validated.manifest.metadata.name;
         let plan = Self::plan(blobs, validated).await?;
 
-        // Enforce local acceptance boundary: reject mesh placement explicitly until mesh scheduler lands
-        for a in &plan.actions {
-            if a.action != CellActionKind::Remove && a.placement == PlacementTarget::Mesh {
-                anyhow::bail!(
-                    "Cell '{}/{}' targets `placement = mesh`, which is declared in schema but not yet supported by the local reconciler",
-                    app,
-                    a.cell_id
+        // Pre-validate mesh placement against live 4D MeshScheduler (`peer_registry` + `NodeResources`)
+        let mut scheduled_mesh_targets: BTreeMap<String, (Vec<String>, Vec<String>)> = BTreeMap::new();
+        let has_mesh_actions = plan
+            .actions
+            .iter()
+            .any(|a| a.action != CellActionKind::Remove && a.placement == PlacementTarget::Mesh);
+        if has_mesh_actions {
+            let (_records, peer_configs, grid_state) =
+                crate::storage::mesh::MeshReactor::load_mesh_snapshot(blobs.db()).await?;
+            let scheduler = crate::compute::InferenceRouter::from_snapshot(grid_state);
+            let empty_labels: Vec<String> = Vec::new();
+            for a in &plan.actions {
+                if a.action == CellActionKind::Remove || a.placement != PlacementTarget::Mesh {
+                    continue;
+                }
+                let spec = &validated.manifest.cells[&a.cell_id];
+                let (requires, labels) = match &spec.placement {
+                    Some(p) => (p.requires.as_slice(), &p.labels),
+                    None => (&[][..], &empty_labels),
+                };
+                let min_ram_mb = 64u64;
+                let replicas = (spec.replicas.max(1)) as usize;
+                let req = crate::compute::ComputeRequirements::from_placement(
+                    requires,
+                    labels,
+                    min_ram_mb,
+                    Some(format!("{}/{}", app, a.cell_id)),
                 );
+                let winners = scheduler.select_ranked_nodes(&peer_configs, &req, replicas);
+                if winners.len() < replicas {
+                    anyhow::bail!(
+                        "Cell '{}/{}' targets `placement = mesh`, but no eligible mesh peers in peer_registry satisfy its 4D resource/capability requirements (needed {}, found {})",
+                        app,
+                        a.cell_id,
+                        replicas,
+                        winners.len()
+                    );
+                }
+                let node_ids: Vec<String> = winners.iter().map(|(p, _)| p.public_key.clone()).collect();
+                let endpoints: Vec<String> = winners
+                    .iter()
+                    .map(|(p, _)| p.endpoint.clone().unwrap_or_else(|| p.mesh_ipv4()))
+                    .collect();
+                scheduled_mesh_targets.insert(a.cell_id.clone(), (node_ids, endpoints));
             }
         }
 
@@ -1087,6 +1127,10 @@ impl ManifestReconciler {
                     .await?;
 
                 let live_state = cells.cell_state(app, &act.cell_id).await;
+                let (assigned_nodes, mesh_endpoints) = scheduled_mesh_targets
+                    .get(&act.cell_id)
+                    .cloned()
+                    .unwrap_or_else(|| (vec![blobs.node_id().to_string()], vec!["127.0.0.1".to_string()]));
                 next_cells.insert(
                     act.cell_id.clone(),
                     DeployedCellState {
@@ -1098,6 +1142,8 @@ impl ManifestReconciler {
                         placement: compiled.effective_placement,
                         migration_policy: compiled.migration_policy,
                         replicas: compiled.replicas,
+                        assigned_nodes,
+                        mesh_endpoints,
                     },
                 );
             }
