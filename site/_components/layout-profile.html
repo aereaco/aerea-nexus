@@ -40,6 +40,9 @@
       <li><a data-on-click="openSession('session-erp'); headerDropdownOpen = false"><iconify-icon
             icon="material-symbols-light:groups" class="text-base"></iconify-icon>Open Executive ERP Chat</a>
       </li>
+      <li data-show="$auth.hasRole('OWNER')"><a data-on-click="router.navigate('/iam'); headerDropdownOpen = false"><iconify-icon
+            icon="material-symbols-light:admin-panel-settings-outline" class="text-base"></iconify-icon>Users &amp; Groups (IAM)</a>
+      </li>
       <div class="divider my-1"></div>
       <li><a id="iam-signout-btn" class="text-error hover:bg-error/10"
           data-on-click="$auth.signout().then(() => { notify('Signed Out', 'IAM session cleared', 'info'); headerDropdownOpen = false; })"><iconify-icon

@@ -1,0 +1,736 @@
+<head>
+  <title>Users &amp; Groups (IAM)</title>
+  <meta name="id" content="iam">
+  <meta name="route" content="/iam">
+  <meta name="icon" content="material-symbols-light:admin-panel-settings-outline">
+  <meta name="order" content="2">
+  <meta name="category" content="Apps">
+</head>
+
+<div id="iam-workbench" class="max-w-6xl mx-auto w-full space-y-6"
+  data-signal="{
+    iamTab: 'users',
+    iamSyncedActor: null,
+    iamSyncing: false,
+    users: [],
+    groupsLive: null,
+    rolesLive: null,
+    policiesLive: null,
+    allCaps: ['db.read','db.write','db.admin','blob.read','blob.write','cell.spawn','cell.manage','runtime.install','secrets.read','metrics.read'],
+    systemRoles: [
+      { name: 'OWNER', desc: 'Full database, storage, cell, and IAM administration', caps: ['db.read','db.write','db.admin','blob.read','blob.write','cell.spawn','cell.manage','runtime.install','secrets.read','metrics.read'] },
+      { name: 'EDITOR', desc: 'Read/write data, S3 blobs, and spawn Wasm cells', caps: ['db.read','db.write','blob.read','blob.write','cell.spawn','metrics.read'] },
+      { name: 'VIEWER', desc: 'Read-only access to permitted tables and S3 blobs', caps: ['db.read','blob.read'] }
+    ],
+
+    // User form state (add + edit)
+    uName: '',
+    uPass: '',
+    uRole: 'VIEWER',
+    editingUser: null,
+    editUserRole: 'VIEWER',
+    editUserPass: '',
+
+    // Group form state (add + edit)
+    editingGroupId: null,
+    gName: '',
+    gDesc: '',
+    gRole: 'VIEWER',
+    gMembers: [],
+
+    // Custom Role form state (add + edit)
+    editingRoleId: null,
+    rName: '',
+    rDesc: '',
+    rBase: 'VIEWER',
+    rCaps: ['db.read','blob.read'],
+
+    // Record / Field Policy form state (add + edit)
+    editingPolicyId: null,
+    pTable: 'erp_po',
+    pScope: 'table',
+    pField: '',
+    pMode: 'where',
+    pOps: 'select, create, update, delete',
+    pExpr: 'owner == $auth',
+
+    getGroups: () => {
+      const list = (groupsLive && Array.isArray(groupsLive.data)) ? groupsLive.data : [];
+      return [...list].sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+    },
+    getCustomRoles: () => {
+      const list = (rolesLive && Array.isArray(rolesLive.data)) ? rolesLive.data : [];
+      return [...list].sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+    },
+    getPolicies: () => {
+      const list = (policiesLive && Array.isArray(policiesLive.data)) ? policiesLive.data : [];
+      return [...list].sort((a, b) => String(a.table || '').localeCompare(String(b.table || '')));
+    },
+    getUserGroups: (username) => {
+      return getGroups().filter(g => Array.isArray(g.members) && g.members.includes(username));
+    },
+    getRoleCaps: (roleName) => {
+      const sys = systemRoles.find(r => r.name === roleName);
+      if (sys) return sys.caps;
+      const custom = getCustomRoles().find(r => r.name === roleName);
+      return custom && Array.isArray(custom.caps) ? custom.caps : ['db.read'];
+    },
+    refreshUsers: async () => {
+      try {
+        const res = await window.fetch('/_nexus/iam/users', { credentials: 'same-origin' });
+        if (res.ok) {
+          const data = await res.json();
+          users = Array.isArray(data.users) ? data.users : [];
+        }
+      } catch (_) {}
+    },
+    disconnectIam: async () => {
+      const handles = [groupsLive, rolesLive, policiesLive].filter(Boolean);
+      groupsLive = null;
+      rolesLive = null;
+      policiesLive = null;
+      users = [];
+      iamSyncedActor = null;
+      for (const h of handles) {
+        try { if (typeof h.unsubscribe === 'function') await h.unsubscribe(); } catch (_) {}
+      }
+    },
+    connectIam: async (sqlFn, actor) => {
+      if (!sqlFn || !actor || iamSyncing || iamSyncedActor === actor) return;
+      iamSyncing = true;
+      try {
+        await disconnectIam();
+        await refreshUsers();
+        groupsLive = await sqlFn('LIVE SELECT * FROM iam_group');
+        rolesLive = await sqlFn('LIVE SELECT * FROM iam_role');
+        policiesLive = await sqlFn('LIVE SELECT * FROM iam_policy');
+        iamSyncedActor = actor;
+      } catch (_) {
+        iamSyncedActor = null;
+      } finally {
+        iamSyncing = false;
+      }
+    },
+
+    // --- USERS CRUD ---
+    addUser: async () => {
+      const name = (uName || '').trim();
+      const pass = uPass || '';
+      if (!name || pass.length < 4) {
+        if (typeof notify === 'function') notify('Validation', 'Username and password (min 4 chars) required', 'warning');
+        return;
+      }
+      const res = await window.fetch('/_nexus/iam/users', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: name, pass: pass, roles: [uRole || 'VIEWER'] })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (typeof notify === 'function') notify('Create User Failed', data.details || ('HTTP ' + res.status), 'error');
+        return;
+      }
+      uName = '';
+      uPass = '';
+      uRole = 'VIEWER';
+      await refreshUsers();
+      if (typeof notify === 'function') notify('User Created', name + ' added to Nexus-IO IAM', 'success');
+    },
+    startEditUser: (u) => {
+      editingUser = u.name;
+      editUserRole = (Array.isArray(u.roles) && u.roles[0]) ? u.roles[0] : 'VIEWER';
+      editUserPass = '';
+    },
+    saveEditUser: async () => {
+      if (!editingUser) return;
+      const body = { roles: [editUserRole || 'VIEWER'] };
+      if (editUserPass && editUserPass.length > 0) body.pass = editUserPass;
+      const res = await window.fetch('/_nexus/iam/users/' + encodeURIComponent(editingUser), {
+        method: 'PUT',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (typeof notify === 'function') notify('Update Rejected', data.details || ('HTTP ' + res.status), 'error');
+        return;
+      }
+      const savedName = editingUser;
+      editingUser = null;
+      editUserPass = '';
+      await refreshUsers();
+      if (typeof notify === 'function') notify('User Updated', savedName + ' updated', 'success');
+    },
+    deleteUser: async (name) => {
+      const res = await window.fetch('/_nexus/iam/users/' + encodeURIComponent(name), {
+        method: 'DELETE',
+        credentials: 'same-origin'
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (typeof notify === 'function') notify('Delete Blocked', data.details || ('HTTP ' + res.status), 'error');
+        return;
+      }
+      if (editingUser === name) editingUser = null;
+      await refreshUsers();
+      if (typeof notify === 'function') notify('User Deleted', name + ' removed from IAM', 'info');
+    },
+
+    // --- GROUPS CRUD ---
+    toggleGroupMember: (username) => {
+      const cur = Array.isArray(gMembers) ? gMembers : [];
+      gMembers = cur.includes(username) ? cur.filter(m => m !== username) : [...cur, username];
+    },
+    startEditGroup: (grp) => {
+      editingGroupId = grp.id;
+      gName = grp.name || '';
+      gDesc = grp.description || '';
+      gRole = grp.role || 'VIEWER';
+      gMembers = Array.isArray(grp.members) ? [...grp.members] : [];
+    },
+    cancelEditGroup: () => {
+      editingGroupId = null;
+      gName = '';
+      gDesc = '';
+      gRole = 'VIEWER';
+      gMembers = [];
+    },
+    saveGroup: async (sqlFn) => {
+      const name = (gName || '').trim();
+      if (!name || !sqlFn) {
+        if (typeof notify === 'function') notify('Validation', 'Group name is required', 'warning');
+        return;
+      }
+      const ts = window.Date.now();
+      const targetId = editingGroupId || ('iam_group:grp_' + ts);
+      const q = editingGroupId
+        ? ('UPDATE ' + targetId + ' SET name = $name, description = $desc, role = $role, members = $members;')
+        : ('CREATE ' + targetId + ' SET name = $name, description = $desc, role = $role, members = $members, ts = $ts;');
+      const r = await sqlFn(q, { name: name, desc: (gDesc || '').trim(), role: gRole || 'VIEWER', members: [...(gMembers || [])], ts: ts });
+      if (r && r.status === 'error') {
+        if (typeof notify === 'function') notify('Group Error', r.error, 'error');
+        return;
+      }
+      const wasEdit = Boolean(editingGroupId);
+      cancelEditGroup();
+      if (typeof notify === 'function') notify(wasEdit ? 'Group Updated' : 'Group Created', name + ' saved in Nexus-DB', 'success');
+    },
+    deleteGroup: async (grp, sqlFn) => {
+      if (!grp || !grp.id || !sqlFn) return;
+      const r = await sqlFn('DELETE ' + grp.id + ';');
+      if (r && r.status === 'error') {
+        if (typeof notify === 'function') notify('Delete Error', r.error, 'error');
+        return;
+      }
+      if (editingGroupId === grp.id) cancelEditGroup();
+      if (typeof notify === 'function') notify('Group Deleted', grp.name + ' removed', 'info');
+    },
+
+    // --- CUSTOM ROLES CRUD ---
+    toggleRoleCap: (cap) => {
+      const cur = Array.isArray(rCaps) ? rCaps : [];
+      rCaps = cur.includes(cap) ? cur.filter(c => c !== cap) : [...cur, cap];
+    },
+    startEditRole: (role) => {
+      editingRoleId = role.id;
+      rName = role.name || '';
+      rDesc = role.description || '';
+      rBase = role.base_role || 'VIEWER';
+      rCaps = Array.isArray(role.caps) ? [...role.caps] : ['db.read'];
+    },
+    cancelEditRole: () => {
+      editingRoleId = null;
+      rName = '';
+      rDesc = '';
+      rBase = 'VIEWER';
+      rCaps = ['db.read','blob.read'];
+    },
+    saveRole: async (sqlFn) => {
+      const name = (rName || '').trim();
+      if (!name || !sqlFn) {
+        if (typeof notify === 'function') notify('Validation', 'Role name is required', 'warning');
+        return;
+      }
+      const ts = window.Date.now();
+      const targetId = editingRoleId || ('iam_role:role_' + ts);
+      const q = editingRoleId
+        ? ('UPDATE ' + targetId + ' SET name = $name, description = $desc, base_role = $base, caps = $caps;')
+        : ('CREATE ' + targetId + ' SET name = $name, description = $desc, base_role = $base, caps = $caps, ts = $ts;');
+      const r = await sqlFn(q, { name: name, desc: (rDesc || '').trim(), base: rBase || 'VIEWER', caps: [...(rCaps || [])], ts: ts });
+      if (r && r.status === 'error') {
+        if (typeof notify === 'function') notify('Role Error', r.error, 'error');
+        return;
+      }
+      const wasEdit = Boolean(editingRoleId);
+      cancelEditRole();
+      if (typeof notify === 'function') notify(wasEdit ? 'Role Updated' : 'Role Created', name + ' saved', 'success');
+    },
+    deleteRole: async (role, sqlFn) => {
+      if (!role || !role.id || !sqlFn) return;
+      const r = await sqlFn('DELETE ' + role.id + ';');
+      if (r && r.status === 'error') {
+        if (typeof notify === 'function') notify('Delete Error', r.error, 'error');
+        return;
+      }
+      if (editingRoleId === role.id) cancelEditRole();
+      if (typeof notify === 'function') notify('Role Deleted', role.name + ' removed', 'info');
+    },
+
+    // --- RECORD & FIELD PERMISSIONS CRUD ---
+    startEditPolicy: (pol) => {
+      editingPolicyId = pol.id;
+      pTable = pol.table || 'erp_po';
+      pScope = pol.scope || 'table';
+      pField = pol.field || '';
+      pMode = pol.mode || 'where';
+      pOps = pol.ops || 'select, create, update, delete';
+      pExpr = pol.where_expr || 'owner == $auth';
+    },
+    cancelEditPolicy: () => {
+      editingPolicyId = null;
+      pTable = 'erp_po';
+      pScope = 'table';
+      pField = '';
+      pMode = 'where';
+      pOps = 'select, create, update, delete';
+      pExpr = 'owner == $auth';
+    },
+    savePolicy: async (sqlFn, actor) => {
+      const table = (pTable || '').trim();
+      if (!table || !sqlFn) {
+        if (typeof notify === 'function') notify('Validation', 'Table name is required', 'warning');
+        return;
+      }
+      // 1. Apply live to Nexus-DB engine (DEFINE TABLE / DEFINE FIELD ... PERMISSIONS)
+      const applyRes = await window.fetch('/_nexus/iam/policies/apply', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          table: table,
+          scope: pScope || 'table',
+          field: (pField || '').trim(),
+          mode: pMode || 'where',
+          ops: (pOps || 'select, create, update, delete').trim(),
+          where_expr: (pExpr || '').trim()
+        })
+      });
+      const applyData = await applyRes.json().catch(() => ({}));
+      if (!applyRes.ok) {
+        if (typeof notify === 'function') notify('Policy Rejected', applyData.details || ('HTTP ' + applyRes.status), 'error');
+        return;
+      }
+      // 2. Persist policy record in iam_policy for UI CRUD
+      const ts = window.Date.now();
+      const targetId = editingPolicyId || ('iam_policy:pol_' + ts);
+      const q = editingPolicyId
+        ? ('UPDATE ' + targetId + ' SET table = $table, scope = $scope, field = $field, mode = $mode, ops = $ops, where_expr = $expr, surql = $surql, updated_by = $actor;')
+        : ('CREATE ' + targetId + ' SET table = $table, scope = $scope, field = $field, mode = $mode, ops = $ops, where_expr = $expr, surql = $surql, updated_by = $actor, ts = $ts;');
+      await sqlFn(q, {
+        table: table,
+        scope: pScope || 'table',
+        field: (pField || '').trim(),
+        mode: pMode || 'where',
+        ops: (pOps || '').trim(),
+        expr: (pExpr || '').trim(),
+        surql: applyData.surql || '',
+        actor: actor || 'unknown',
+        ts: ts
+      });
+      const wasEdit = Boolean(editingPolicyId);
+      cancelEditPolicy();
+      if (typeof notify === 'function') notify(wasEdit ? 'Policy Updated' : 'Policy Applied Live', applyData.surql || table, 'success');
+    },
+    deletePolicy: async (pol, sqlFn) => {
+      if (!pol || !pol.id || !sqlFn) return;
+      // Reset table/field back to PERMISSIONS FULL in Nexus-DB
+      await window.fetch('/_nexus/iam/policies/apply', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          table: pol.table,
+          scope: pol.scope || 'table',
+          field: pol.field || '',
+          mode: 'remove'
+        })
+      });
+      await sqlFn('DELETE ' + pol.id + ';');
+      if (editingPolicyId === pol.id) cancelEditPolicy();
+      if (typeof notify === 'function') notify('Policy Removed', (pol.table || '') + ' reset to PERMISSIONS FULL', 'info');
+    }
+  }"
+  data-effect="if ($auth.isAuthenticated && $auth.hasRole('OWNER') && $auth.actor) { if (iamSyncedActor !== $auth.actor) { connectIam($sql, $auth.actor); } } else if (iamSyncedActor) { disconnectIam(); }">
+
+  <!-- Header -->
+  <div class="flex flex-wrap items-center justify-between gap-4 border-b border-base-300 pb-4">
+    <div>
+      <div class="flex items-center gap-2">
+        <h1 class="text-2xl font-bold tracking-tight">Users, Groups, Roles &amp; Permissions</h1>
+        <span data-show="iamSyncedActor" class="badge badge-success badge-sm">Server-Enforced IAM</span>
+      </div>
+      <p class="text-sm opacity-70 mt-0.5">Manage Nexus-IO identities, group memberships, capability roles, and live Nexus-DB / SurrealQL record-level permissions.</p>
+    </div>
+  </div>
+
+  <!-- Non-OWNER / Unauthenticated Gate -->
+  <div data-show="!$auth.isAuthenticated || !$auth.hasRole('OWNER')"
+    class="card bg-base-200 border border-base-300 p-8 text-center max-w-lg mx-auto">
+    <iconify-icon icon="material-symbols-light:shield-lock-outline" class="text-5xl text-warning mx-auto mb-3"></iconify-icon>
+    <h2 class="text-lg font-bold">OWNER Role Required</h2>
+    <p class="text-sm opacity-70 mt-1 mb-4">IAM administration and record-level database policies are strictly enforced server-side for OWNER accounts.</p>
+    <button type="button" class="btn btn-primary btn-sm mx-auto"
+      data-on-click="headerDropdownTab = 'profile'; headerDropdownOpen = true">
+      Open Profile / Sign In
+    </button>
+  </div>
+
+  <!-- Authenticated OWNER Console -->
+  <div data-show="$auth.isAuthenticated && $auth.hasRole('OWNER')" class="space-y-6">
+    <!-- Summary KPIs -->
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div class="stat bg-base-200/70 rounded-xl border border-base-300 p-4">
+        <div class="stat-title text-xs">Users</div>
+        <div class="stat-value text-2xl" id="iam-kpi-users" data-bind="(users || []).length">0</div>
+      </div>
+      <div class="stat bg-base-200/70 rounded-xl border border-base-300 p-4">
+        <div class="stat-title text-xs">Groups</div>
+        <div class="stat-value text-2xl" id="iam-kpi-groups" data-bind="getGroups().length">0</div>
+      </div>
+      <div class="stat bg-base-200/70 rounded-xl border border-base-300 p-4">
+        <div class="stat-title text-xs">Roles</div>
+        <div class="stat-value text-2xl" id="iam-kpi-roles" data-bind="systemRoles.length + getCustomRoles().length">3</div>
+      </div>
+      <div class="stat bg-base-200/70 rounded-xl border border-base-300 p-4">
+        <div class="stat-title text-xs">Record / Field Policies</div>
+        <div class="stat-value text-2xl text-primary" id="iam-kpi-policies" data-bind="getPolicies().length">0</div>
+      </div>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <div role="tablist" class="tabs tabs-bordered">
+      <button type="button" role="tab" id="iam-tab-users" class="tab gap-1.5"
+        data-class="{ 'tab-active font-semibold': iamTab === 'users' }"
+        data-on-click="iamTab = 'users'; refreshUsers()">
+        <iconify-icon icon="material-symbols-light:person-outline" class="text-base"></iconify-icon>
+        <span>Users</span>
+      </button>
+      <button type="button" role="tab" id="iam-tab-groups" class="tab gap-1.5"
+        data-class="{ 'tab-active font-semibold': iamTab === 'groups' }"
+        data-on-click="iamTab = 'groups'">
+        <iconify-icon icon="material-symbols-light:groups-outline" class="text-base"></iconify-icon>
+        <span>Groups</span>
+      </button>
+      <button type="button" role="tab" id="iam-tab-roles" class="tab gap-1.5"
+        data-class="{ 'tab-active font-semibold': iamTab === 'roles' }"
+        data-on-click="iamTab = 'roles'">
+        <iconify-icon icon="material-symbols-light:badge-outline" class="text-base"></iconify-icon>
+        <span>Roles &amp; Permissions</span>
+      </button>
+      <button type="button" role="tab" id="iam-tab-policies" class="tab gap-1.5"
+        data-class="{ 'tab-active font-semibold': iamTab === 'policies' }"
+        data-on-click="iamTab = 'policies'">
+        <iconify-icon icon="material-symbols-light:policy-outline" class="text-base"></iconify-icon>
+        <span>Record &amp; Field Policies</span>
+      </button>
+    </div>
+
+    <!-- ==================== TAB 1: USERS ==================== -->
+    <div data-show="iamTab === 'users'" class="space-y-4">
+      <!-- Add User Form -->
+      <form class="card bg-base-200/60 border border-base-300 p-4 space-y-3"
+        data-on-submit_prevent="addUser()">
+        <h2 class="font-semibold text-sm">Add User</h2>
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-2.5">
+          <input id="iam-add-user" type="text" class="input input-bordered input-sm"
+            placeholder="Username" data-bind-value="uName" />
+          <input id="iam-add-pass" type="password" class="input input-bordered input-sm"
+            placeholder="Password (min 4 chars)" data-bind-value="uPass" />
+          <select id="iam-add-role" class="select select-bordered select-sm" data-bind-value="uRole">
+            <option value="VIEWER">VIEWER (Read-Only)</option>
+            <option value="EDITOR">EDITOR (Read/Write + Cells)</option>
+            <option value="OWNER">OWNER (Full Admin)</option>
+          </select>
+          <button id="iam-add-btn" type="submit" class="btn btn-primary btn-sm">Add User</button>
+        </div>
+      </form>
+
+      <!-- Inline Edit User Panel -->
+      <form data-show="editingUser" id="iam-edit-user-panel"
+        class="card bg-primary/5 border border-primary/30 p-4 space-y-3"
+        data-on-submit_prevent="saveEditUser()">
+        <div class="flex items-center justify-between">
+          <h2 class="font-semibold text-sm">Edit User: <span class="text-primary font-mono" data-bind="editingUser"></span></h2>
+          <button type="button" class="btn btn-ghost btn-xs" data-on-click="editingUser = null">Cancel</button>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+          <select id="iam-edit-role" class="select select-bordered select-sm" data-bind-value="editUserRole">
+            <option value="VIEWER">VIEWER</option>
+            <option value="EDITOR">EDITOR</option>
+            <option value="OWNER">OWNER</option>
+          </select>
+          <input id="iam-edit-pass" type="password" class="input input-bordered input-sm"
+            placeholder="New password (leave blank to keep)" data-bind-value="editUserPass" />
+          <button id="iam-edit-save-btn" type="submit" class="btn btn-primary btn-sm">Save Changes</button>
+        </div>
+      </form>
+
+      <!-- Users Table -->
+      <div class="overflow-x-auto rounded-xl border border-base-300">
+        <table class="table table-sm w-full">
+          <thead>
+            <tr class="bg-base-200/70">
+              <th>User</th>
+              <th>Roles</th>
+              <th>Groups</th>
+              <th>Effective Capabilities</th>
+              <th class="text-end">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="iam-users-table">
+            <template data-for="u in (users || [])">
+              <tr>
+                <td class="font-semibold text-sm" data-bind="u.name"></td>
+                <td>
+                  <div class="flex gap-1 flex-wrap">
+                    <template data-for="r in (u.roles || [])">
+                      <span class="badge badge-primary badge-xs" data-bind="r"></span>
+                    </template>
+                  </div>
+                </td>
+                <td>
+                  <div class="flex gap-1 flex-wrap">
+                    <template data-for="ug in getUserGroups(u.name)">
+                      <span class="badge badge-secondary badge-outline badge-xs" data-bind="ug.name"></span>
+                    </template>
+                  </div>
+                </td>
+                <td>
+                  <div class="flex gap-1 flex-wrap max-w-xs">
+                    <template data-for="c in getRoleCaps((u.roles || [])[0] || 'VIEWER')">
+                      <span class="badge badge-ghost badge-xs font-mono text-[10px]" data-bind="c"></span>
+                    </template>
+                  </div>
+                </td>
+                <td class="text-end space-x-1 whitespace-nowrap">
+                  <button type="button" class="btn btn-ghost btn-xs"
+                    data-on-click="startEditUser(u)">Edit</button>
+                  <button type="button" class="btn btn-ghost btn-xs text-error"
+                    data-on-click="deleteUser(u.name)">Delete</button>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ==================== TAB 2: GROUPS ==================== -->
+    <div data-show="iamTab === 'groups'" class="space-y-4">
+      <form class="card bg-base-200/60 border border-base-300 p-4 space-y-3"
+        data-on-submit_prevent="saveGroup($sql)">
+        <div class="flex items-center justify-between">
+          <h2 class="font-semibold text-sm" data-bind="editingGroupId ? 'Edit Group' : 'Create Group'">Create Group</h2>
+          <button type="button" data-show="editingGroupId" class="btn btn-ghost btn-xs" data-on-click="cancelEditGroup()">Cancel</button>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+          <input id="grp-name" type="text" class="input input-bordered input-sm"
+            placeholder="Group Name (e.g. Finance Approvers)" data-bind-value="gName" />
+          <input id="grp-desc" type="text" class="input input-bordered input-sm"
+            placeholder="Description" data-bind-value="gDesc" />
+          <select id="grp-role" class="select select-bordered select-sm" data-bind-value="gRole">
+            <option value="VIEWER">Inherited Role: VIEWER</option>
+            <option value="EDITOR">Inherited Role: EDITOR</option>
+            <option value="OWNER">Inherited Role: OWNER</option>
+          </select>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="text-xs opacity-70 font-medium">Members:</span>
+          <template data-for="u in (users || [])">
+            <label class="badge badge-sm gap-1.5 cursor-pointer py-2.5"
+              data-class="{ 'badge-primary': (gMembers || []).includes(u.name), 'badge-ghost': !(gMembers || []).includes(u.name) }"
+              data-on-click="toggleGroupMember(u.name)">
+              <span data-bind="u.name"></span>
+            </label>
+          </template>
+        </div>
+        <div>
+          <button id="grp-save-btn" type="submit" class="btn btn-primary btn-sm"
+            data-bind="editingGroupId ? 'Update Group' : 'Create Group'">Create Group</button>
+        </div>
+      </form>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3" id="iam-groups-list">
+        <template data-for="grp in getGroups()">
+          <div class="card bg-base-100 border border-base-300 p-4 space-y-2">
+            <div class="flex items-start justify-between gap-2">
+              <div>
+                <div class="font-semibold text-sm flex items-center gap-2">
+                  <span data-bind="grp.name"></span>
+                  <span class="badge badge-primary badge-xs" data-bind="grp.role"></span>
+                </div>
+                <div class="text-xs opacity-60" data-bind="grp.description || 'No description'"></div>
+              </div>
+              <div class="flex gap-1">
+                <button type="button" class="btn btn-ghost btn-xs" data-on-click="startEditGroup(grp)">Edit</button>
+                <button type="button" class="btn btn-ghost btn-xs text-error" data-on-click="deleteGroup(grp, $sql)">Delete</button>
+              </div>
+            </div>
+            <div class="flex flex-wrap gap-1 pt-1">
+              <template data-for="m in (grp.members || [])">
+                <span class="badge badge-ghost badge-xs" data-bind="m"></span>
+              </template>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- ==================== TAB 3: ROLES & PERMISSIONS ==================== -->
+    <div data-show="iamTab === 'roles'" class="space-y-4">
+      <form class="card bg-base-200/60 border border-base-300 p-4 space-y-3"
+        data-on-submit_prevent="saveRole($sql)">
+        <div class="flex items-center justify-between">
+          <h2 class="font-semibold text-sm" data-bind="editingRoleId ? 'Edit Custom Role' : 'Create Custom Role'">Create Custom Role</h2>
+          <button type="button" data-show="editingRoleId" class="btn btn-ghost btn-xs" data-on-click="cancelEditRole()">Cancel</button>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+          <input id="role-name" type="text" class="input input-bordered input-sm"
+            placeholder="Role Name (e.g. Finance Auditor)" data-bind-value="rName" />
+          <input id="role-desc" type="text" class="input input-bordered input-sm"
+            placeholder="Description" data-bind-value="rDesc" />
+          <select id="role-base" class="select select-bordered select-sm" data-bind-value="rBase">
+            <option value="VIEWER">Base Kernel Level: VIEWER</option>
+            <option value="EDITOR">Base Kernel Level: EDITOR</option>
+            <option value="OWNER">Base Kernel Level: OWNER</option>
+          </select>
+        </div>
+        <div class="flex flex-wrap items-center gap-1.5">
+          <span class="text-xs opacity-70 font-medium me-1">Capabilities:</span>
+          <template data-for="cap in allCaps">
+            <button type="button" class="badge badge-sm font-mono cursor-pointer py-2.5"
+              data-class="{ 'badge-primary': (rCaps || []).includes(cap), 'badge-ghost': !(rCaps || []).includes(cap) }"
+              data-on-click="toggleRoleCap(cap)" data-bind="cap"></button>
+          </template>
+        </div>
+        <div>
+          <button id="role-save-btn" type="submit" class="btn btn-primary btn-sm"
+            data-bind="editingRoleId ? 'Update Role' : 'Create Role'">Create Role</button>
+        </div>
+      </form>
+
+      <!-- Built-in + Custom Roles -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <template data-for="sr in systemRoles">
+          <div class="card bg-base-200/40 border border-base-300 p-4 space-y-2">
+            <div class="flex items-center justify-between">
+              <span class="font-semibold text-sm" data-bind="sr.name"></span>
+              <span class="badge badge-xs badge-outline">System</span>
+            </div>
+            <p class="text-xs opacity-70" data-bind="sr.desc"></p>
+            <div class="flex flex-wrap gap-1">
+              <template data-for="c in sr.caps">
+                <span class="badge badge-ghost badge-xs font-mono text-[10px]" data-bind="c"></span>
+              </template>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3" id="iam-custom-roles-list">
+        <template data-for="cr in getCustomRoles()">
+          <div class="card bg-base-100 border border-base-300 p-4 space-y-2">
+            <div class="flex items-start justify-between gap-2">
+              <div>
+                <div class="font-semibold text-sm flex items-center gap-2">
+                  <span data-bind="cr.name"></span>
+                  <span class="badge badge-secondary badge-xs" data-bind="'Base: ' + (cr.base_role || 'VIEWER')"></span>
+                </div>
+                <p class="text-xs opacity-60" data-bind="cr.description || 'Custom role'"></p>
+              </div>
+              <div class="flex gap-1">
+                <button type="button" class="btn btn-ghost btn-xs" data-on-click="startEditRole(cr)">Edit</button>
+                <button type="button" class="btn btn-ghost btn-xs text-error" data-on-click="deleteRole(cr, $sql)">Delete</button>
+              </div>
+            </div>
+            <div class="flex flex-wrap gap-1">
+              <template data-for="c in (cr.caps || [])">
+                <span class="badge badge-primary badge-outline badge-xs font-mono text-[10px]" data-bind="c"></span>
+              </template>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- ==================== TAB 4: RECORD & FIELD POLICIES ==================== -->
+    <div data-show="iamTab === 'policies'" class="space-y-4">
+      <form class="card bg-base-200/60 border border-base-300 p-4 space-y-3"
+        data-on-submit_prevent="savePolicy($sql, $auth.actor)">
+        <div class="flex items-center justify-between">
+          <h2 class="font-semibold text-sm" data-bind="editingPolicyId ? 'Edit Record/Field Policy' : 'Define Record-Level or Field-Level Policy (Nexus-DB / SurrealQL)'">Define Record-Level Policy</h2>
+          <button type="button" data-show="editingPolicyId" class="btn btn-ghost btn-xs" data-on-click="cancelEditPolicy()">Cancel</button>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-2.5">
+          <input id="pol-table" type="text" class="input input-bordered input-sm font-mono"
+            placeholder="Table (e.g. erp_po)" data-bind-value="pTable" />
+          <select id="pol-scope" class="select select-bordered select-sm" data-bind-value="pScope">
+            <option value="table">Row / Record-Level (DEFINE TABLE)</option>
+            <option value="field">Field-Level (DEFINE FIELD)</option>
+          </select>
+          <input id="pol-field" type="text" class="input input-bordered input-sm font-mono"
+            data-show="pScope === 'field'"
+            placeholder="Field (e.g. salary)" data-bind-value="pField" />
+          <select id="pol-mode" class="select select-bordered select-sm" data-bind-value="pMode">
+            <option value="where">PERMISSIONS FOR ... WHERE</option>
+            <option value="full">PERMISSIONS FULL</option>
+            <option value="none">PERMISSIONS NONE</option>
+          </select>
+        </div>
+
+        <div data-show="pMode === 'where'" class="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+          <input id="pol-ops" type="text" class="input input-bordered input-sm font-mono"
+            placeholder="Operations (e.g. select, update)" data-bind-value="pOps" />
+          <input id="pol-expr" type="text" class="input input-bordered input-sm font-mono md:col-span-2"
+            placeholder="WHERE expression (e.g. owner == $auth)" data-bind-value="pExpr" />
+        </div>
+
+        <div data-show="pMode === 'where'" class="flex flex-wrap items-center gap-1.5 text-xs">
+          <span class="opacity-60">Presets:</span>
+          <button type="button" class="badge badge-ghost badge-sm font-mono cursor-pointer hover:badge-primary"
+            data-on-click="pExpr = 'owner == $auth'">owner == $auth</button>
+          <button type="button" class="badge badge-ghost badge-sm font-mono cursor-pointer hover:badge-primary"
+            data-on-click="pExpr = 'created_by == $auth'">created_by == $auth</button>
+          <button type="button" class="badge badge-ghost badge-sm font-mono cursor-pointer hover:badge-primary"
+            data-on-click="pExpr = 'status != \'Approved\' || owner == $auth'">editable until approved</button>
+        </div>
+
+        <div>
+          <button id="pol-save-btn" type="submit" class="btn btn-primary btn-sm"
+            data-bind="editingPolicyId ? 'Update &amp; Apply Policy' : 'Apply Policy Live'">Apply Policy Live</button>
+        </div>
+      </form>
+
+      <div class="space-y-2.5" id="iam-policies-list">
+        <template data-for="pol in getPolicies()">
+          <div class="card bg-base-100 border border-base-300 p-4 space-y-1.5">
+            <div class="flex items-center justify-between gap-2">
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="badge badge-primary badge-xs font-mono" data-bind="pol.scope === 'field' ? (pol.table + '.' + pol.field) : pol.table"></span>
+                <span class="badge badge-outline badge-xs" data-bind="pol.scope === 'field' ? 'Field-Level' : 'Record-Level'"></span>
+              </div>
+              <div class="flex gap-1">
+                <button type="button" class="btn btn-ghost btn-xs" data-on-click="startEditPolicy(pol)">Edit</button>
+                <button type="button" class="btn btn-ghost btn-xs text-error" data-on-click="deletePolicy(pol, $sql)">Delete</button>
+              </div>
+            </div>
+            <pre class="text-xs font-mono bg-base-200/70 rounded-lg px-3 py-2 overflow-x-auto" data-bind="pol.surql"></pre>
+          </div>
+        </template>
+      </div>
+    </div>
+  </div>
+</div>

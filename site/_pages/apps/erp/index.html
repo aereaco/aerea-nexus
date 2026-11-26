@@ -291,6 +291,11 @@
       <p class="text-sm opacity-70 mt-0.5">Live procurement ledger, S3 document storage, Wasmtime cell status, and IAM administration.</p>
     </div>
     <div class="flex items-center gap-2" data-show="$auth.isAuthenticated">
+      <button type="button" data-show="$auth.hasRole('OWNER')" class="btn btn-sm btn-ghost gap-1.5"
+        data-on-click="router.navigate('/iam')">
+        <iconify-icon icon="material-symbols-light:admin-panel-settings-outline" class="text-lg"></iconify-icon>
+        <span>Users &amp; IAM</span>
+      </button>
       <button type="button" class="btn btn-sm btn-ghost gap-1.5"
         data-on-click="openSession('session-erp')">
         <iconify-icon icon="material-symbols-light:chat-outline" class="text-lg"></iconify-icon>
