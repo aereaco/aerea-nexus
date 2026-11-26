@@ -188,6 +188,54 @@
       if (!fn) return false;
       const groups = fn(query, g.searchIndex);
       return groups.some(grp => grp.items && grp.items.length !== 0);
+    },
+    runSearch: (rawQuery) => {
+      const g = window.UX?.signals || window.Nexus?.coordinator?.runtimeContext?.globalSignals?.() || {};
+      const q = (rawQuery || '').trim();
+      g.searchDebouncedQuery = q;
+      g.searchTokens = (typeof g.getSearchTokens === 'function' ? g.getSearchTokens(q) : q.toLowerCase().split(/\s+/).filter(Boolean));
+      if (!q) {
+        g.searchResults = [];
+        g.flatResults = [];
+        g.searchActiveIndex = 0;
+        return;
+      }
+      const applyGroups = (groups) => {
+        if ((g.searchDebouncedQuery || '').trim() !== q) return;
+        const safeGroups = Array.isArray(groups) ? groups : [];
+        g.searchResults = safeGroups;
+        g.flatResults = safeGroups.flatMap(function(grp) { return grp.items || []; });
+        g.searchActiveIndex = 0;
+      };
+      const fallbackToStaticIndex = () => {
+        if (Array.isArray(g.searchIndex) && g.searchIndex.length > 0) {
+          applyGroups(typeof g.searchResultGroups === 'function' ? g.searchResultGroups(q, g.searchIndex) : []);
+          return;
+        }
+        window.fetch('/_pages/search-index.json')
+          .then(function(r) {
+            if (!r.ok) throw new Error('search-index unavailable');
+            return r.json();
+          })
+          .then(function(entries) {
+            const list = Array.isArray(entries) ? entries : [];
+            g.searchIndex = list;
+            applyGroups(typeof g.searchResultGroups === 'function' ? g.searchResultGroups(q, list) : []);
+          })
+          .catch(function() {
+            applyGroups(typeof g.searchResultGroups === 'function' ? g.searchResultGroups(q, []) : []);
+          });
+      };
+      window.fetch('/api/search?q=' + encodeURIComponent(q))
+        .then(function(r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        })
+        .then(function(groups) {
+          if (!Array.isArray(groups)) throw new Error('Invalid search payload');
+          applyGroups(groups);
+        })
+        .catch(fallbackToStaticIndex);
     }
   }"
   data-class="{ 'modal-open': searchOpen }"
@@ -200,33 +248,7 @@
         class="input input-ghost w-full text-lg focus:outline-none border-0 focus:border-0 px-0"
         placeholder="Search pages and features…" data-bind="searchQuery"
         data-on-input="if (!$el.value.trim()) { searchQuery = ''; searchDebouncedQuery = ''; searchResults = []; flatResults = []; searchTokens = []; searchActiveIndex = 0; }"
-        data-on-input_debounce.200="
-          const q = ($el.value || '').trim();
-          searchDebouncedQuery = q;
-          searchTokens = (typeof getSearchTokens === 'function' ? getSearchTokens(q) : q.toLowerCase().split(/\s+/).filter(Boolean));
-          if (q) {
-            window.fetch('/api/search?q=' + encodeURIComponent(q))
-              .then(function(r) { return r.ok ? r.json() : []; })
-              .then(function(groups) {
-                searchResults = groups || [];
-                flatResults = (groups || []).flatMap(function(grp) { return grp.items || []; });
-                searchActiveIndex = 0;
-              })
-              .catch(function() {
-                window.fetch('/_pages/search-index.json')
-                  .then(function(r) { return r.ok ? r.json() : []; })
-                  .then(function(entries) {
-                    searchResults = (typeof searchResultGroups === 'function') ? searchResultGroups(q, entries) : [];
-                    flatResults = (searchResults || []).flatMap(function(grp) { return grp.items || []; });
-                    searchActiveIndex = 0;
-                  });
-              });
-          } else {
-            searchResults = [];
-            flatResults = [];
-            searchActiveIndex = 0;
-          }
-        "
+        data-on-input_debounce.200="runSearch($el.value)"
         data-on-keydown_escape="searchOpen = false; if (typeof CSS !== 'undefined' && CSS.highlights) { CSS.highlights.delete('search-match'); }"
         data-on-keydown_prevent_down="
           const total = (searchDebouncedQuery || searchQuery || '').trim() ? (flatResults || []).length : (recentSearches || []).length;
@@ -278,15 +300,7 @@
             const activeRecent = recents[searchActiveIndex];
             if (activeRecent) {
               searchQuery = activeRecent;
-              searchDebouncedQuery = activeRecent;
-              searchTokens = (typeof getSearchTokens === 'function' ? getSearchTokens(activeRecent) : [activeRecent]);
-              window.fetch('/api/search?q=' + encodeURIComponent(activeRecent))
-                .then(function(r) { return r.ok ? r.json() : []; })
-                .then(function(groups) {
-                  searchResults = groups || [];
-                  flatResults = (groups || []).flatMap(function(grp) { return grp.items || []; });
-                  searchActiveIndex = 0;
-                });
+              runSearch(activeRecent);
             }
           }
         "
@@ -333,18 +347,7 @@
               data-effect="if (!searchQuery.trim() && (recentSearches || [])[searchActiveIndex] === recent) $el.scrollIntoView({ block: 'nearest' });">
               <a class="flex items-center gap-2.5 flex-1 min-w-0 py-2 px-3"
                 data-bind-aria-selected="(!searchQuery.trim() && (recentSearches || [])[searchActiveIndex] === recent) ? 'true' : 'false'"
-                data-on-click="
-                  searchQuery = recent;
-                  searchDebouncedQuery = recent;
-                  searchTokens = (typeof getSearchTokens === 'function' ? getSearchTokens(recent) : [recent]);
-                  window.fetch('/api/search?q=' + encodeURIComponent(recent))
-                    .then(function(r) { return r.ok ? r.json() : []; })
-                    .then(function(groups) {
-                      searchResults = groups || [];
-                      flatResults = (groups || []).flatMap(function(grp) { return grp.items || []; });
-                      searchActiveIndex = 0;
-                    });
-                ">
+                data-on-click="searchQuery = recent; runSearch(recent);">
                 <iconify-icon icon="material-symbols-light:history"
                   class="text-lg opacity-60 shrink-0"
                   data-class="{ 'text-primary opacity-100': !searchQuery.trim() && (recentSearches || [])[searchActiveIndex] === recent }"></iconify-icon>

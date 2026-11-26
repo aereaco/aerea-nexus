@@ -4,14 +4,23 @@
  */
 
 const CACHE_NAME = 'nexus-cache-v1';
-const SEARCH_CACHE = 'nexus-search-v1';
+const SEARCH_CACHE = 'nexus-search-v2';
+let cachedSearchIndex = null;
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
-  event.waitUntil(self.clients.claim());
+  event.waitUntil(
+    caches.keys()
+      .then((keys) => Promise.all(
+        keys
+          .filter((k) => k.startsWith('nexus-search-') && k !== SEARCH_CACHE)
+          .map((k) => caches.delete(k))
+      ))
+      .then(() => self.clients.claim())
+  );
 });
 
 /**
@@ -44,47 +53,29 @@ async function handleSearchRequest(request) {
     });
   }
 
-  const prefix = q.charAt(0).toLowerCase();
-  const shardPath = `/_pages/search-shards/${encodeURIComponent(prefix)}.json`;
-  const manifestPath = `/_pages/search-shards/manifest.json`;
+  const indexPath = '/_pages/search-index.json';
+  let entries = Array.isArray(cachedSearchIndex) ? cachedSearchIndex : [];
 
-  let entries = [];
-  const searchCache = await caches.open(SEARCH_CACHE).catch(() => null);
-
-  // 1. Try prefix shard
-  try {
-    let shardRes = searchCache ? await searchCache.match(shardPath) : null;
-    if (!shardRes) {
-      shardRes = await fetch(shardPath);
-      if (shardRes.ok && searchCache) {
-        searchCache.put(shardPath, shardRes.clone()).catch(() => {});
-      }
-    }
-    if (shardRes && shardRes.ok) {
-      entries = await shardRes.json();
-    }
-  } catch (_) {
-    // Shard fetch failed, proceed to fallback
-  }
-
-  // 2. Fallback to lightweight manifest if shard was empty/failed
-  if (!Array.isArray(entries) || entries.length === 0) {
+  if (entries.length === 0) {
+    const searchCache = await caches.open(SEARCH_CACHE).catch(() => null);
     try {
-      let manRes = searchCache ? await searchCache.match(manifestPath) : null;
-      if (!manRes) {
-        manRes = await fetch(manifestPath);
-        if (manRes.ok && searchCache) {
-          searchCache.put(manifestPath, manRes.clone()).catch(() => {});
+      let idxRes = searchCache ? await searchCache.match(indexPath) : null;
+      if (!idxRes) {
+        idxRes = await fetch(indexPath);
+        if (idxRes.ok && searchCache) {
+          searchCache.put(indexPath, idxRes.clone()).catch(() => {});
         }
       }
-      if (manRes && manRes.ok) {
-        entries = await manRes.json();
+      if (idxRes && idxRes.ok) {
+        const parsed = await idxRes.json();
+        if (Array.isArray(parsed)) {
+          entries = parsed;
+          cachedSearchIndex = parsed;
+        }
       }
-    } catch (_) {}
-  }
-
-  if (!Array.isArray(entries)) {
-    entries = [];
+    } catch (_) {
+      entries = [];
+    }
   }
 
   const navMatches = [];
