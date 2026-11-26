@@ -120,31 +120,34 @@
     getActiveMessages: () => {
       const g = window.UX?.signals || window.Nexus?.coordinator?.runtimeContext?.globalSignals?.() || {};
       const id = g.activeSessionId || 'session-erp';
-      if (id === 'session-erp' && g.erpConnected && g.erpMsgLive && Array.isArray(g.erpMsgLive.data) && g.erpMsgLive.data.length > 0) {
-        const poList = (g.erpPoLive && Array.isArray(g.erpPoLive.data)) ? g.erpPoLive.data : [];
-        return [...g.erpMsgLive.data]
-          .sort((a, b) => Number(a.seq || a.created_at || 0) - Number(b.seq || b.created_at || 0))
-          .map(m => {
-            if (!m.po_id) return m;
-            const livePo = poList.find(p => p.id === m.po_id || p.po_key === m.po_id);
-            if (!livePo) return m;
-            return {
-              ...m,
-              artifact: {
-                ...(m.artifact || {}),
-                id: livePo.id,
-                type: 'invoice_draft',
-                title: livePo.title || m.artifact?.title,
-                amount: livePo.amount || m.artifact?.amount,
-                status: livePo.status || m.artifact?.status || 'Pending Review',
-                approved_by: livePo.approved_by || null,
-                approved_at: livePo.approved_at || null,
-                receipt_path: livePo.receipt_path || null,
-                attachments: Array.isArray(livePo.attachments) ? livePo.attachments : [],
-                items: Array.isArray(livePo.items) ? livePo.items : (m.artifact?.items || [])
-              }
-            };
-          });
+      if (g.erpConnected && g.erpMsgLive && Array.isArray(g.erpMsgLive.data)) {
+        const scoped = g.erpMsgLive.data.filter(m => (m.session_id || 'session-erp') === id);
+        if (scoped.length > 0) {
+          const poList = (g.erpPoLive && Array.isArray(g.erpPoLive.data)) ? g.erpPoLive.data : [];
+          return [...scoped]
+            .sort((a, b) => Number(a.seq || a.created_at || 0) - Number(b.seq || b.created_at || 0))
+            .map(m => {
+              if (!m.po_id) return m;
+              const livePo = poList.find(p => p.id === m.po_id || p.po_key === m.po_id);
+              if (!livePo) return m;
+              return {
+                ...m,
+                artifact: {
+                  ...(m.artifact || {}),
+                  id: livePo.id,
+                  type: 'invoice_draft',
+                  title: livePo.title || m.artifact?.title,
+                  amount: livePo.amount || m.artifact?.amount,
+                  status: livePo.status || m.artifact?.status || 'Pending Review',
+                  approved_by: livePo.approved_by || null,
+                  approved_at: livePo.approved_at || null,
+                  receipt_path: livePo.receipt_path || null,
+                  attachments: Array.isArray(livePo.attachments) ? livePo.attachments : [],
+                  items: Array.isArray(livePo.items) ? livePo.items : (m.artifact?.items || [])
+                }
+              };
+            });
+        }
       }
       return (g.chatMessages || {})[id] || [];
     },
@@ -347,7 +350,7 @@
       const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       const senderName = actor || 'Vernon';
 
-      if (g.erpConnected && sId === 'session-erp' && typeof sqlFn === 'function') {
+      if (g.erpConnected && typeof sqlFn === 'function') {
         g.chatInputText = '';
         try {
           await sqlFn(

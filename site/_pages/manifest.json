@@ -9,6 +9,16 @@
     "parent": null
   },
   {
+    "id": "erp",
+    "route": "/erp",
+    "path": "/_pages/apps/erp/index.html",
+    "title": "ERP Operations",
+    "icon": "material-symbols-light:inventory-2-outline",
+    "order": 1,
+    "parent": null,
+    "category": "Apps"
+  },
+  {
     "id": "doc-reference",
     "route": "/docs/reference",
     "path": "/_pages/docs/reference.md",

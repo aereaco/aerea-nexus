@@ -1,0 +1,552 @@
+<head>
+  <title>ERP Operations</title>
+  <meta name="id" content="erp">
+  <meta name="route" content="/erp">
+  <meta name="icon" content="material-symbols-light:inventory-2-outline">
+  <meta name="order" content="1">
+  <meta name="category" content="Apps">
+</head>
+
+<div id="erp-workbench" class="max-w-6xl mx-auto w-full space-y-6"
+  data-signal="{
+    erpTab: 'pos',
+    poFilter: 'all',
+    erpPoLive: null,
+    erpAuditLive: null,
+    erpSyncedActor: null,
+    erpSyncing: false,
+    iamUsers: [],
+    activeCells: [],
+    newPoVendor: '',
+    newPoTitle: '',
+    newPoAmount: '',
+    newPoItemDesc: '',
+    newPoItemQty: 1,
+    newUserName: '',
+    newUserPass: '',
+    newUserRole: 'VIEWER',
+    erpStatusMsg: '',
+    getPos: () => {
+      const list = (erpPoLive && Array.isArray(erpPoLive.data)) ? erpPoLive.data : [];
+      return [...list].sort((a, b) => Number(b.created_ts || 0) - Number(a.created_ts || 0));
+    },
+    getFilteredPos: () => {
+      const all = getPos();
+      if (poFilter === 'all') return all;
+      return all.filter(p => String(p.status || '').toLowerCase() === poFilter.toLowerCase());
+    },
+    getAudits: () => {
+      const list = (erpAuditLive && Array.isArray(erpAuditLive.data)) ? erpAuditLive.data : [];
+      return [...list].sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0));
+    },
+    getApprovedTotal: () => {
+      return getPos()
+        .filter(p => p.status === 'Approved')
+        .reduce((sum, p) => sum + (Number(p.amount_num) || Number(String(p.amount || '0').replace(/[^0-9.]/g, '')) || 0), 0);
+    },
+    formatCurrency: (val) => {
+      const num = Number(val) || 0;
+      return '$' + num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    },
+    refreshAdminData: async (isOwner) => {
+      try {
+        const cRes = await window.fetch('/_nexus/cells', { credentials: 'same-origin' });
+        if (cRes.ok) {
+          const cData = await cRes.json();
+          activeCells = Array.isArray(cData.cells) ? cData.cells : [];
+        }
+      } catch (_) {}
+      if (isOwner) {
+        try {
+          const uRes = await window.fetch('/_nexus/iam/users', { credentials: 'same-origin' });
+          if (uRes.ok) {
+            const uData = await uRes.json();
+            iamUsers = Array.isArray(uData.users) ? uData.users : [];
+          }
+        } catch (_) {}
+      } else {
+        iamUsers = [];
+      }
+    },
+    disconnectErpPage: async () => {
+      const handles = [erpPoLive, erpAuditLive].filter(Boolean);
+      erpPoLive = null;
+      erpAuditLive = null;
+      erpSyncedActor = null;
+      iamUsers = [];
+      activeCells = [];
+      for (const h of handles) {
+        try { if (typeof h.unsubscribe === 'function') await h.unsubscribe(); } catch (_) {}
+      }
+    },
+    connectErpPage: async (sqlFn, actor, isOwner) => {
+      if (!sqlFn || !actor || erpSyncing || erpSyncedActor === actor) return;
+      erpSyncing = true;
+      try {
+        await disconnectErpPage();
+        erpPoLive = await sqlFn('LIVE SELECT * FROM erp_po');
+        erpAuditLive = await sqlFn('LIVE SELECT * FROM erp_audit');
+        erpSyncedActor = actor;
+        await refreshAdminData(isOwner);
+      } catch (_) {
+        erpSyncedActor = null;
+      } finally {
+        erpSyncing = false;
+      }
+    },
+    createPo: async (sqlFn, actor) => {
+      const vendor = (newPoVendor || '').trim();
+      const title = (newPoTitle || '').trim();
+      const amountNum = Number(newPoAmount) || 0;
+      if (!vendor || !title || amountNum <= 0) {
+        if (typeof notify === 'function') notify('Validation', 'Vendor, Title, and positive Amount are required', 'warning');
+        return;
+      }
+      const ts = window.Date.now();
+      const poCode = 'PO-' + new window.Date().getFullYear() + '-' + String(ts).slice(-4);
+      const amountFmt = formatCurrency(amountNum);
+      const itemDesc = (newPoItemDesc || '').trim() || title;
+      const itemQty = Math.max(1, Number(newPoItemQty) || 1);
+      try {
+        await sqlFn(
+          'CREATE erp_po SET po_code = $code, vendor = $vendor, title = $title, amount = $amt, amount_num = $amtNum, status = $status, created_by = $actor, created_ts = $ts, attachments = [], items = $items;',
+          {
+            code: poCode,
+            vendor: vendor,
+            title: poCode + ' (' + vendor + ') — ' + title,
+            amt: amountFmt,
+            amtNum: amountNum,
+            status: 'Pending Review',
+            actor: actor || 'unknown',
+            ts: ts,
+            items: [{ sku: poCode, desc: itemDesc, qty: itemQty, cost: amountFmt }]
+          }
+        );
+        await sqlFn(
+          'CREATE erp_audit SET action = $act, target = $target, actor = $actor, details = $details, ts = $ts, time = $time;',
+          {
+            act: 'PO_CREATED',
+            target: poCode,
+            actor: actor || 'unknown',
+            details: vendor + ' — ' + amountFmt,
+            ts: ts,
+            time: new window.Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          }
+        );
+        await sqlFn(
+          'CREATE erp_notification SET title = $title, message = $msg, type = $type, priority = $prio, read = false, ts = $ts, time = $time;',
+          {
+            title: 'New Purchase Order',
+            msg: (actor || 'User') + ' created ' + poCode + ' (' + vendor + ', ' + amountFmt + ')',
+            type: 'info',
+            prio: 'normal',
+            ts: ts,
+            time: new window.Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          }
+        );
+        newPoVendor = '';
+        newPoTitle = '';
+        newPoAmount = '';
+        newPoItemDesc = '';
+        newPoItemQty = 1;
+        if (typeof notify === 'function') notify('PO Created', poCode + ' persisted in Nexus-DB', 'success');
+      } catch (err) {
+        if (typeof notify === 'function') notify('Create PO Rejected', (err && err.message) ? err.message : 'Server rejected mutation', 'error');
+      }
+    },
+    transitionPo: async (po, newStatus, sqlFn, actor, canBlob) => {
+      if (!po || !po.id || !sqlFn) return;
+      const ts = window.Date.now();
+      const timeStr = new window.Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const safeKey = String(po.id).replace(/[^a-zA-Z0-9_-]/g, '_');
+      let receiptPath = po.receipt_path || null;
+      try {
+        if (newStatus === 'Approved' && canBlob) {
+          const rPath = '/s3/erp-receipts/' + safeKey + '-receipt.json';
+          const receiptPayload = JSON.stringify({
+            po_id: po.id,
+            title: po.title,
+            amount: po.amount,
+            status: 'Approved',
+            approved_by: actor || 'unknown',
+            approved_at: new window.Date().toISOString()
+          });
+          const putRes = await window.fetch(rPath, {
+            method: 'PUT',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: receiptPayload
+          });
+          if (putRes.ok) receiptPath = rPath;
+        }
+        await sqlFn(
+          'UPDATE ' + po.id + ' SET status = $status, approved_by = $actor, approved_at = $at, receipt_path = $rpath;',
+          { status: newStatus, actor: actor || 'unknown', at: new window.Date().toISOString(), rpath: receiptPath }
+        );
+        await sqlFn(
+          'CREATE erp_audit SET action = $act, target = $target, actor = $actor, details = $details, ts = $ts, time = $time;',
+          {
+            act: newStatus === 'Approved' ? 'PO_APPROVED' : 'PO_REJECTED',
+            target: po.po_code || po.id,
+            actor: actor || 'unknown',
+            details: (po.title || po.id) + ' (' + (po.amount || '') + ')',
+            ts: ts,
+            time: timeStr
+          }
+        );
+        await sqlFn(
+          'CREATE erp_notification SET title = $title, message = $msg, type = $type, priority = $prio, read = false, ts = $ts, time = $time;',
+          {
+            title: 'PO ' + newStatus,
+            msg: (po.title || po.id) + ' was ' + newStatus.toLowerCase() + ' by ' + (actor || 'unknown'),
+            type: newStatus === 'Approved' ? 'success' : 'warning',
+            prio: 'normal',
+            ts: ts,
+            time: timeStr
+          }
+        );
+        if (typeof notify === 'function') notify('PO ' + newStatus, (po.title || po.id) + ' updated live', newStatus === 'Approved' ? 'success' : 'warning');
+      } catch (err) {
+        if (typeof notify === 'function') notify('Action Rejected', (err && err.message) ? err.message : 'Insufficient IAM permissions', 'error');
+      }
+    },
+    attachFileToPo: async (po, fileInput, sqlFn, actor) => {
+      const file = fileInput && fileInput.files && fileInput.files[0];
+      if (!file || !po || !po.id) return;
+      const safeId = String(po.id).replace(/[^a-zA-Z0-9_-]/g, '_');
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const s3Path = '/s3/erp-attachments/' + safeId + '/' + safeName;
+      try {
+        const putRes = await window.fetch(s3Path, {
+          method: 'PUT',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': file.type || 'application/octet-stream' },
+          body: file
+        });
+        if (!putRes.ok) {
+          const msg = await putRes.text().catch(() => 'Upload rejected');
+          if (typeof notify === 'function') notify('Upload Rejected', msg, 'error');
+          return;
+        }
+        const etag = (putRes.headers.get('etag') || '').replace(/\x22/g, '');
+        const prev = Array.isArray(po.attachments) ? po.attachments : [];
+        const next = [...prev.filter(a => a.path !== s3Path), {
+          name: safeName,
+          path: s3Path,
+          size: file.size,
+          etag: etag,
+          uploaded_by: actor || 'unknown'
+        }];
+        await sqlFn('UPDATE ' + po.id + ' SET attachments = $atts;', { atts: next });
+        if (typeof notify === 'function') notify('Attachment Saved', safeName + ' stored in S3', 'success');
+      } catch (err) {
+        if (typeof notify === 'function') notify('Upload Error', (err && err.message) ? err.message : 'Upload failed', 'error');
+      } finally {
+        if (fileInput) fileInput.value = '';
+      }
+    },
+    createIamUser: async () => {
+      const u = (newUserName || '').trim();
+      const p = newUserPass || '';
+      const r = newUserRole || 'VIEWER';
+      if (!u || p.length < 4) {
+        if (typeof notify === 'function') notify('Validation', 'Username and password (min 4 chars) required', 'warning');
+        return;
+      }
+      try {
+        const res = await window.fetch('/_nexus/iam/users', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user: u, pass: p, role: r })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          if (typeof notify === 'function') notify('IAM Error', data.details || ('HTTP ' + res.status), 'error');
+          return;
+        }
+        newUserName = '';
+        newUserPass = '';
+        await refreshAdminData(true);
+        if (typeof notify === 'function') notify('User Created', u + ' (' + r + ') added to Nexus-IO IAM', 'success');
+      } catch (err) {
+        if (typeof notify === 'function') notify('IAM Error', (err && err.message) ? err.message : 'Request failed', 'error');
+      }
+    }
+  }"
+  data-effect="if ($auth.isAuthenticated && $auth.actor) { if (erpSyncedActor !== $auth.actor) { connectErpPage($sql, $auth.actor, $auth.hasRole('OWNER')); } } else if (erpSyncedActor) { disconnectErpPage(); }">
+
+  <!-- Header -->
+  <div class="flex flex-wrap items-center justify-between gap-4 border-b border-base-300 pb-4">
+    <div>
+      <div class="flex items-center gap-2">
+        <h1 class="text-2xl font-bold tracking-tight">Aerea-Nexus ERP &amp; Operations</h1>
+        <span data-show="erpSyncedActor" class="badge badge-success badge-sm gap-1">Live Nexus-DB</span>
+        <span data-show="!$auth.isAuthenticated" class="badge badge-ghost badge-sm">Sign In Required</span>
+      </div>
+      <p class="text-sm opacity-70 mt-0.5">Live procurement ledger, S3 document storage, Wasmtime cell status, and IAM administration.</p>
+    </div>
+    <div class="flex items-center gap-2" data-show="$auth.isAuthenticated">
+      <button type="button" class="btn btn-sm btn-ghost gap-1.5"
+        data-on-click="openSession('session-erp')">
+        <iconify-icon icon="material-symbols-light:chat-outline" class="text-lg"></iconify-icon>
+        <span>ERP Chat</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Unauthenticated Gate -->
+  <div data-show="!$auth.isAuthenticated" class="card bg-base-200 border border-base-300 p-8 text-center max-w-lg mx-auto">
+    <iconify-icon icon="material-symbols-light:lock-outline" class="text-5xl text-primary mx-auto mb-3"></iconify-icon>
+    <h2 class="text-lg font-bold">Sign in to access live ERP operations</h2>
+    <p class="text-sm opacity-70 mt-1 mb-4">All records, S3 attachments, and Wasmtime workflows are enforced server-side by Nexus-IO IAM.</p>
+    <button type="button" id="erp-open-signin-btn" class="btn btn-primary btn-sm mx-auto"
+      data-on-click="headerDropdownTab = 'profile'; headerDropdownOpen = true">
+      <span data-show="$auth.initialized === false">Create Workspace Admin</span>
+      <span data-show="$auth.initialized !== false">Sign In via Profile</span>
+    </button>
+  </div>
+
+  <!-- Authenticated Live Workbench -->
+  <div data-show="$auth.isAuthenticated" class="space-y-6">
+    <!-- Live KPI Strip -->
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div class="stat bg-base-200/70 rounded-xl border border-base-300 p-4">
+        <div class="stat-title text-xs">Purchase Orders</div>
+        <div class="stat-value text-2xl" id="erp-kpi-total" data-bind="getPos().length">0</div>
+        <div class="stat-desc text-[11px]">Live in Nexus-DB</div>
+      </div>
+      <div class="stat bg-base-200/70 rounded-xl border border-base-300 p-4">
+        <div class="stat-title text-xs">Pending Review</div>
+        <div class="stat-value text-2xl text-warning" id="erp-kpi-pending"
+          data-bind="getPos().filter(p => p.status === 'Pending Review').length">0</div>
+        <div class="stat-desc text-[11px]">Awaiting approval</div>
+      </div>
+      <div class="stat bg-base-200/70 rounded-xl border border-base-300 p-4">
+        <div class="stat-title text-xs">Approved Spend</div>
+        <div class="stat-value text-2xl text-success" id="erp-kpi-approved"
+          data-bind="formatCurrency(getApprovedTotal())">$0.00</div>
+        <div class="stat-desc text-[11px]">Verified receipts in S3</div>
+      </div>
+      <div class="stat bg-base-200/70 rounded-xl border border-base-300 p-4">
+        <div class="stat-title text-xs">Wasm Cells</div>
+        <div class="stat-value text-2xl text-primary" id="erp-kpi-cells" data-bind="(activeCells || []).length">0</div>
+        <div class="stat-desc text-[11px]">Wasmtime 51 runtime</div>
+      </div>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <div role="tablist" class="tabs tabs-bordered">
+      <button type="button" role="tab" class="tab gap-1.5"
+        data-class="{ 'tab-active font-semibold': erpTab === 'pos' }"
+        data-on-click="erpTab = 'pos'">
+        <iconify-icon icon="material-symbols-light:receipt-long" class="text-base"></iconify-icon>
+        <span>Procurement &amp; POs</span>
+      </button>
+      <button type="button" role="tab" id="erp-tab-audit" class="tab gap-1.5"
+        data-class="{ 'tab-active font-semibold': erpTab === 'audit' }"
+        data-on-click="erpTab = 'audit'">
+        <iconify-icon icon="material-symbols-light:history" class="text-base"></iconify-icon>
+        <span>Audit Trail</span>
+        <span class="badge badge-xs badge-ghost" data-bind="getAudits().length">0</span>
+      </button>
+      <button type="button" role="tab" id="erp-tab-iam" class="tab gap-1.5"
+        data-show="$auth.hasRole('OWNER')"
+        data-class="{ 'tab-active font-semibold': erpTab === 'iam' }"
+        data-on-click="erpTab = 'iam'; refreshAdminData(true)">
+        <iconify-icon icon="material-symbols-light:admin-panel-settings-outline" class="text-base"></iconify-icon>
+        <span>Team &amp; IAM Admin</span>
+      </button>
+    </div>
+
+    <!-- TAB 1: PROCUREMENT & POs -->
+    <div data-show="erpTab === 'pos'" class="space-y-4">
+      <!-- Create PO Form (gated by db.write) -->
+      <form data-show="$auth.can('db.write')"
+        class="card bg-base-200/60 border border-base-300 p-4 space-y-3"
+        data-on-submit_prevent="createPo($sql, $auth.actor)">
+        <div class="flex items-center justify-between">
+          <h2 class="font-semibold text-sm">Create Purchase Order</h2>
+          <span class="text-[11px] opacity-60">Persists to Nexus-DB + logs audit + pushes live notification</span>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-2.5">
+          <input id="erp-po-vendor" type="text" class="input input-bordered input-sm"
+            placeholder="Vendor (e.g. Acme Robotics)" data-bind-value="newPoVendor" />
+          <input id="erp-po-title" type="text" class="input input-bordered input-sm"
+            placeholder="Description (e.g. Q4 Sensor Batch)" data-bind-value="newPoTitle" />
+          <input id="erp-po-amount" type="number" step="0.01" min="0" class="input input-bordered input-sm"
+            placeholder="Amount USD (e.g. 4200)" data-bind-value="newPoAmount" />
+          <button id="erp-po-create-btn" type="submit" class="btn btn-primary btn-sm">
+            Create PO
+          </button>
+        </div>
+      </form>
+
+      <!-- Filter Pills -->
+      <div class="flex items-center gap-2 flex-wrap">
+        <button type="button" class="btn btn-xs rounded-full"
+          data-class="{ 'btn-primary': poFilter === 'all', 'btn-ghost': poFilter !== 'all' }"
+          data-on-click="poFilter = 'all'">All</button>
+        <button type="button" class="btn btn-xs rounded-full"
+          data-class="{ 'btn-warning': poFilter === 'Pending Review', 'btn-ghost': poFilter !== 'Pending Review' }"
+          data-on-click="poFilter = 'Pending Review'">Pending Review</button>
+        <button type="button" class="btn btn-xs rounded-full"
+          data-class="{ 'btn-success': poFilter === 'Approved', 'btn-ghost': poFilter !== 'Approved' }"
+          data-on-click="poFilter = 'Approved'">Approved</button>
+        <button type="button" class="btn btn-xs rounded-full"
+          data-class="{ 'btn-error': poFilter === 'Rejected', 'btn-ghost': poFilter !== 'Rejected' }"
+          data-on-click="poFilter = 'Rejected'">Rejected</button>
+      </div>
+
+      <!-- Empty State -->
+      <div data-show="getFilteredPos().length === 0"
+        class="p-8 text-center rounded-xl border border-dashed border-base-300 opacity-60 text-sm">
+        No purchase orders match this filter yet.
+      </div>
+
+      <!-- Live PO Cards -->
+      <div class="space-y-3" id="erp-po-list">
+        <template data-for="po in getFilteredPos()">
+          <div class="card bg-base-100 border border-base-300 p-4 shadow-sm space-y-2.5">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div class="min-w-0">
+                <div class="font-semibold text-sm flex items-center gap-2">
+                  <span data-bind="po.title || po.id"></span>
+                  <span class="badge badge-xs"
+                    data-class="{
+                      'badge-success': po.status === 'Approved',
+                      'badge-warning': po.status === 'Pending Review',
+                      'badge-error': po.status === 'Rejected'
+                    }"
+                    data-bind="po.status"></span>
+                </div>
+                <div class="text-xs opacity-60 mt-0.5">
+                  <span data-show="po.created_by" data-bind="'Created by ' + po.created_by + ' · '"></span>
+                  <span class="font-mono font-semibold text-primary" data-bind="po.amount"></span>
+                  <span data-show="po.approved_by" data-bind="' · ' + po.status + ' by ' + po.approved_by"></span>
+                </div>
+              </div>
+
+              <div class="flex items-center gap-1.5 flex-wrap">
+                <label data-show="$auth.can('blob.write')"
+                  class="btn btn-xs btn-ghost cursor-pointer gap-1">
+                  <iconify-icon icon="material-symbols-light:attach-file" class="text-sm"></iconify-icon>
+                  <span>Attach</span>
+                  <input type="file" class="hidden"
+                    data-on-change="attachFileToPo(po, $el, $sql, $auth.actor)" />
+                </label>
+                <a data-show="po.receipt_path" target="_blank" rel="noopener"
+                  data-bind-href="po.receipt_path || '#'"
+                  class="btn btn-xs btn-outline btn-success gap-1">
+                  <iconify-icon icon="material-symbols-light:verified-outline" class="text-sm"></iconify-icon>
+                  <span>Receipt (S3)</span>
+                </a>
+                <button type="button" class="btn btn-xs btn-primary"
+                  data-show="po.status === 'Pending Review' && $auth.can('db.write')"
+                  data-on-click="transitionPo(po, 'Approved', $sql, $auth.actor, $auth.can('blob.write'))">
+                  Approve
+                </button>
+                <button type="button" class="btn btn-xs btn-outline btn-error"
+                  data-show="po.status === 'Pending Review' && $auth.can('db.write')"
+                  data-on-click="transitionPo(po, 'Rejected', $sql, $auth.actor, false)">
+                  Reject
+                </button>
+                <span data-show="po.status === 'Pending Review' && !$auth.can('db.write')"
+                  class="badge badge-ghost badge-xs">Read-Only</span>
+              </div>
+            </div>
+
+            <!-- Attachments -->
+            <div data-show="po.attachments && po.attachments.length > 0"
+              class="flex flex-wrap gap-1.5 pt-2 border-t border-base-200">
+              <template data-for="att in (po.attachments || [])">
+                <a target="_blank" rel="noopener" data-bind-href="att.path"
+                  class="badge badge-ghost badge-sm gap-1 hover:badge-primary transition-colors">
+                  <iconify-icon icon="material-symbols-light:attach-file" class="text-xs"></iconify-icon>
+                  <span data-bind="att.name"></span>
+                </a>
+              </template>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- TAB 2: AUDIT TRAIL -->
+    <div data-show="erpTab === 'audit'" class="overflow-x-auto rounded-xl border border-base-300">
+      <table class="table table-sm w-full">
+        <thead>
+          <tr class="bg-base-200/70">
+            <th>Time</th>
+            <th>Action</th>
+            <th>Target</th>
+            <th>Actor</th>
+            <th>Details</th>
+          </tr>
+        </thead>
+        <tbody id="erp-audit-rows">
+          <template data-for="entry in getAudits()">
+            <tr>
+              <td class="font-mono text-xs opacity-70" data-bind="entry.time || ''"></td>
+              <td><span class="badge badge-xs badge-outline font-mono" data-bind="entry.action"></span></td>
+              <td class="font-mono text-xs" data-bind="entry.target"></td>
+              <td class="font-medium text-xs" data-bind="entry.actor"></td>
+              <td class="text-xs opacity-80" data-bind="entry.details"></td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- TAB 3: TEAM & IAM ADMIN (OWNER ONLY) -->
+    <div data-show="erpTab === 'iam' && $auth.hasRole('OWNER')" class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <!-- Users Roster + Add User -->
+      <div class="card bg-base-100 border border-base-300 p-4 space-y-4">
+        <h2 class="font-semibold text-sm">Workspace Users (Nexus-IO IAM)</h2>
+        <form class="grid grid-cols-1 sm:grid-cols-4 gap-2" data-on-submit_prevent="createIamUser()">
+          <input id="erp-iam-user" type="text" class="input input-bordered input-xs"
+            placeholder="Username" data-bind-value="newUserName" />
+          <input id="erp-iam-pass" type="password" class="input input-bordered input-xs"
+            placeholder="Password" data-bind-value="newUserPass" />
+          <select id="erp-iam-role" class="select select-bordered select-xs" data-bind-value="newUserRole">
+            <option value="VIEWER">VIEWER</option>
+            <option value="EDITOR">EDITOR</option>
+            <option value="OWNER">OWNER</option>
+          </select>
+          <button id="erp-iam-add-btn" type="submit" class="btn btn-primary btn-xs">Add User</button>
+        </form>
+        <div class="space-y-1.5" id="erp-iam-user-list">
+          <template data-for="u in (iamUsers || [])">
+            <div class="flex items-center justify-between px-3 py-2 rounded-lg bg-base-200/60 text-xs">
+              <span class="font-semibold" data-bind="u.name"></span>
+              <div class="flex gap-1">
+                <template data-for="r in (u.roles || [])">
+                  <span class="badge badge-primary badge-xs" data-bind="r"></span>
+                </template>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <!-- Active Wasm Cells -->
+      <div class="card bg-base-100 border border-base-300 p-4 space-y-3">
+        <div class="flex items-center justify-between">
+          <h2 class="font-semibold text-sm">Wasmtime Cells</h2>
+          <button type="button" class="btn btn-ghost btn-xs" data-on-click="refreshAdminData(true)">Refresh</button>
+        </div>
+        <div data-show="(activeCells || []).length === 0" class="text-xs opacity-60 py-4 text-center">
+          No active Wasm cells deployed yet.
+        </div>
+        <div class="space-y-1.5">
+          <template data-for="c in (activeCells || [])">
+            <div class="flex items-center justify-between px-3 py-2 rounded-lg bg-base-200/60 text-xs">
+              <span class="font-mono" data-bind="c.app + '/' + c.cell_id"></span>
+              <span class="badge badge-xs badge-success" data-bind="c.state"></span>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
