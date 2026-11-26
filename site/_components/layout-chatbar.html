@@ -139,6 +139,8 @@
                 status: livePo.status || m.artifact?.status || 'Pending Review',
                 approved_by: livePo.approved_by || null,
                 approved_at: livePo.approved_at || null,
+                receipt_path: livePo.receipt_path || null,
+                attachments: Array.isArray(livePo.attachments) ? livePo.attachments : [],
                 items: Array.isArray(livePo.items) ? livePo.items : (m.artifact?.items || [])
               }
             };
@@ -184,6 +186,33 @@
         return;
       }
       const targetId = poId || 'erp_po:po_088';
+      // 1. Prefer executing approval through the stateful Wasmtime cell (/cells/erp/po-workflow)
+      try {
+        const cellRes = await window.fetch('/cells/erp/po-workflow', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ po_id: targetId, actor: actor || 'unknown' })
+        });
+        if (cellRes.ok) {
+          const cellJson = await cellRes.json().catch(() => null);
+          if (cellJson && cellJson.ok) {
+            if (typeof g.notify === 'function') {
+              g.notify('PO Approved via Wasm Cell', targetId + ' approved in Wasmtime & receipt saved to S3', 'success');
+            }
+            return;
+          }
+          if (cellJson && cellJson.error) {
+            if (typeof g.notify === 'function') {
+              g.notify('Approval Rejected by Wasm Sandbox', cellJson.error, 'error');
+            }
+            return;
+          }
+        }
+      } catch (_) {
+        // Cell not deployed yet — fall back to direct Nexus-DB SQL update
+      }
+      // 2. Fallback: direct Nexus-DB SQL update (still enforced by server RBAC)
       try {
         await sqlFn(
           'UPDATE ' + targetId + ' SET status = $status, approved_by = $actor, approved_at = $at;',
@@ -196,6 +225,51 @@
         if (typeof g.notify === 'function') {
           g.notify('Approval Rejected by Server', (err && err.message) ? err.message : 'Insufficient IAM permissions', 'error');
         }
+      }
+    },
+    uploadPoAttachment: async (poId, fileInput, sqlFn, actor) => {
+      const g = window.UX?.signals || window.Nexus?.coordinator?.runtimeContext?.globalSignals?.() || {};
+      const file = fileInput && fileInput.files && fileInput.files[0];
+      if (!file) return;
+      const targetId = poId || 'erp_po:po_088';
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const s3Path = '/s3/erp-attachments/po_088/' + safeName;
+      try {
+        const putRes = await window.fetch(s3Path, {
+          method: 'PUT',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': file.type || 'application/octet-stream' },
+          body: file
+        });
+        if (!putRes.ok) {
+          const msg = await putRes.text().catch(() => 'Upload failed');
+          if (typeof g.notify === 'function') g.notify('Upload Rejected', msg, 'error');
+          return;
+        }
+        const etag = (putRes.headers.get('etag') || '').replace(/"/g, '');
+        const existingPo = (g.erpPoLive && Array.isArray(g.erpPoLive.data))
+          ? g.erpPoLive.data.find(p => p.id === targetId || p.po_key === targetId)
+          : null;
+        const prev = Array.isArray(existingPo?.attachments) ? existingPo.attachments : [];
+        const next = [...prev.filter(a => a.path !== s3Path), {
+          name: safeName,
+          path: s3Path,
+          size: file.size,
+          etag: etag,
+          uploaded_by: actor || 'unknown'
+        }];
+        if (typeof sqlFn === 'function') {
+          await sqlFn('UPDATE ' + targetId + ' SET attachments = $atts;', { atts: next });
+        }
+        if (typeof g.notify === 'function') {
+          g.notify('Attachment Uploaded', safeName + ' stored in Nexus-IO S3', 'success');
+        }
+      } catch (err) {
+        if (typeof g.notify === 'function') {
+          g.notify('Upload Error', (err && err.message) ? err.message : 'Failed to upload file', 'error');
+        }
+      } finally {
+        if (fileInput) fileInput.value = '';
       }
     },
     openSession: (id) => {
@@ -489,11 +563,45 @@
                 </template>
               </div>
 
+              <!-- S3 Attachments & Wasm Receipt -->
+              <div data-show="(msg.artifact?.attachments && msg.artifact.attachments.length > 0) || msg.artifact?.receipt_path"
+                class="mt-2.5 pt-2 border-t border-base-200 space-y-1">
+                <template data-for="att in (msg.artifact?.attachments || [])">
+                  <a target="_blank" rel="noopener"
+                    data-bind-href="att.path"
+                    class="flex items-center justify-between gap-2 text-[11px] px-2 py-1 rounded-lg bg-base-200/70 hover:bg-base-200 text-base-content transition-colors">
+                    <span class="flex items-center gap-1.5 truncate">
+                      <iconify-icon icon="material-symbols-light:attach-file" class="text-sm text-primary shrink-0"></iconify-icon>
+                      <span class="truncate font-medium" data-bind="att.name"></span>
+                    </span>
+                    <span class="font-mono text-[10px] opacity-60 shrink-0" data-bind="(att.size || 0) + ' B'"></span>
+                  </a>
+                </template>
+                <a data-show="msg.artifact?.receipt_path" target="_blank" rel="noopener"
+                  id="po-wasm-receipt-link"
+                  data-bind-href="msg.artifact?.receipt_path || '#'"
+                  class="flex items-center justify-between gap-2 text-[11px] px-2 py-1 rounded-lg bg-success/10 hover:bg-success/20 text-success transition-colors">
+                  <span class="flex items-center gap-1.5 truncate">
+                    <iconify-icon icon="material-symbols-light:verified-outline" class="text-sm shrink-0"></iconify-icon>
+                    <span class="truncate font-medium">Wasmtime Approval Receipt (S3)</span>
+                  </span>
+                  <iconify-icon icon="material-symbols-light:open-in-new" class="text-xs shrink-0"></iconify-icon>
+                </a>
+              </div>
+
               <!-- Total & Action Buttons -->
-              <div class="mt-3 pt-2 border-t border-base-200 flex items-center justify-between gap-2">
+              <div class="mt-3 pt-2 border-t border-base-200 flex items-center justify-between gap-2 flex-wrap">
                 <span class="text-xs font-semibold">Total: <span class="font-mono text-primary"
                     data-bind="msg.artifact?.amount"></span></span>
                 <div class="flex items-center gap-1.5">
+                  <label data-show="erpConnected && $auth.can('blob.write')"
+                    class="btn btn-xs btn-ghost font-normal cursor-pointer gap-1 px-1.5"
+                    title="Attach file to Nexus-IO S3">
+                    <iconify-icon icon="material-symbols-light:attach-file" class="text-sm"></iconify-icon>
+                    <span>Attach</span>
+                    <input id="po-attachment-input" type="file" class="hidden"
+                      data-on-change="uploadPoAttachment(msg.artifact?.id || msg.po_id, $el, $sql, $auth.actor)" />
+                  </label>
                   <span data-show="msg.artifact?.status === 'Approved' && msg.artifact?.approved_by"
                     class="text-[11px] text-success font-medium"
                     data-bind="'Approved by ' + msg.artifact?.approved_by"></span>
