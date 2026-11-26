@@ -68,74 +68,78 @@ impl Handler for ReadinessHandler {
     }
 }
 
-/// Gateway configuration - controls which ports and web policies are exposed
+/// Gateway configuration — strictly opt-in service activation and bind policies.
+/// **Zero-trust default:** `GatewayConfig::default()` enables zero application/data/web/proxy
+/// services (only `/health`, `/ready`, `/status`, `/version`, and `/_nexus/capabilities` probes).
 #[derive(Clone)]
 pub struct GatewayConfig {
-    pub enable_https: bool,          // Port 443 (primary gateway)
-    pub enable_http: bool,           // Port 80 (ACME + redirects)
+    pub enable_https: bool,          // Primary gateway listener (HTTPS when TLS configured, else dev HTTP)
+    pub enable_http: bool,           // Port 80/8080 HTTP->HTTPS redirect (opt-in)
+    pub bind_addr: Option<String>,   // Explicit bind address (default: 127.0.0.1:8443 in dev / 0.0.0.0:443 with TLS)
+    pub enable_rpc: bool,            // /rpc, /sql, /query, /signin, /signup, /signout, /_nexus/auth/me, /export, /import, /key/*, /api/*
+    pub enable_cells: bool,          // /cells/*, /_nexus/deploy*, /_nexus/apps/*
+    pub enable_s3: bool,             // /s3/*
+    pub enable_web: bool,            // Static web app & SPA serving (requires `serve-web` + explicit `web_root`)
+    pub enable_proxy: bool,          // /proxy/* reverse proxy (requires `serve-proxy`)
+    pub enable_graphql: bool,        // /graphql (requires `db-graphql`)
+    pub enable_sqlite: bool,         // /v2/pipeline (requires `db-sqlite`)
     pub enable_surreal_direct: bool, // Port 8000 (direct DB access)
     pub enable_pgwire: bool,         // Port 5432 (PostgreSQL v3 wire protocol)
     pub pgwire_port: u16,            // Default 5432
     pub enable_mysqlwire: bool,      // Port 3306 (MySQL v10 wire protocol)
     pub mysqlwire_port: u16,         // Default 3306
     pub enable_s3_direct: bool,      // Port 3900 (S3 API)
-    pub enable_metrics: bool,        // Port 9090 (Prometheus)
+    pub enable_metrics: bool,        // Port 9090 (Prometheus) & /_nexus/metrics
     pub acme_domain: Option<String>, // Domain for ACME certs
     pub acme_email: Option<String>,  // Contact email for Let's Encrypt
     pub web_root: Option<std::path::PathBuf>,
     pub dist_root: Option<std::path::PathBuf>,
+    pub spa_fallback: bool,
     pub coop_header: Option<String>,
     pub coep_header: Option<String>,
-}
-
-fn parse_optional_header_env(var: &str, default_val: &str) -> Option<String> {
-    match std::env::var(var) {
-        Ok(v) => {
-            let trimmed = v.trim();
-            if trimmed.is_empty()
-                || trimmed.eq_ignore_ascii_case("none")
-                || trimmed.eq_ignore_ascii_case("off")
-                || trimmed.eq_ignore_ascii_case("false")
-            {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        }
-        Err(_) => Some(default_val.to_string()),
-    }
 }
 
 impl Default for GatewayConfig {
     fn default() -> Self {
         Self {
             enable_https: true,
-            enable_http: true,
+            enable_http: false,
+            bind_addr: None,
+            enable_rpc: false,
+            enable_cells: false,
+            enable_s3: false,
+            enable_web: false,
+            enable_proxy: false,
+            enable_graphql: false,
+            enable_sqlite: false,
             enable_surreal_direct: false,
-            enable_pgwire: std::env::var("NEXUS_ENABLE_PGWIRE").as_deref() == Ok("1"),
-            pgwire_port: std::env::var("NEXUS_PGWIRE_PORT")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(5432),
-            enable_mysqlwire: std::env::var("NEXUS_ENABLE_MYSQLWIRE").as_deref() == Ok("1"),
-            mysqlwire_port: std::env::var("NEXUS_MYSQLWIRE_PORT")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(3306),
+            enable_pgwire: false,
+            pgwire_port: 5432,
+            enable_mysqlwire: false,
+            mysqlwire_port: 3306,
             enable_s3_direct: false,
             enable_metrics: false,
             acme_domain: None,
             acme_email: None,
-            web_root: std::env::var("NEXUS_WEB_ROOT")
-                .ok()
-                .filter(|s| !s.trim().is_empty())
-                .map(std::path::PathBuf::from),
-            dist_root: std::env::var("NEXUS_DIST_ROOT")
-                .ok()
-                .filter(|s| !s.trim().is_empty())
-                .map(std::path::PathBuf::from),
-            coop_header: parse_optional_header_env("NEXUS_WEB_COOP", "same-origin"),
-            coep_header: parse_optional_header_env("NEXUS_WEB_COEP", "credentialless"),
+            web_root: None,
+            dist_root: None,
+            spa_fallback: true,
+            coop_header: Some("same-origin".to_string()),
+            coep_header: Some("credentialless".to_string()),
+        }
+    }
+}
+
+impl GatewayConfig {
+    /// Convenience constructor for programmatic embedders and tests that explicitly opt into
+    /// the core data-plane services (`rpc`, `cells`, `s3`) without web/proxy serving.
+    pub fn all_core() -> Self {
+        Self {
+            enable_rpc: true,
+            enable_cells: true,
+            enable_s3: true,
+            enable_metrics: true,
+            ..Self::default()
         }
     }
 }
@@ -209,11 +213,12 @@ impl UxGateway {
             );
         }
 
-        println!("🌐 Nexus-IO Gateway starting...");
-        println!("   HTTPS (443): {}", if self.config.enable_https { "✅" } else { "❌" });
-        println!("   HTTP (80):   {}", if self.config.enable_http { "✅" } else { "❌" });
-        println!("   DB Direct:   {}", if self.config.enable_surreal_direct { "✅" } else { "❌" });
-        println!("   S3 Direct:   {}", if self.config.enable_s3_direct { "✅" } else { "❌" });
+        println!("🌐 Nexus-IO Gateway starting (explicit opt-in services):");
+        println!("   RPC / DB:    {}", if self.config.enable_rpc { "✅" } else { "❌" });
+        println!("   Wasm Cells:  {}", if self.config.enable_cells { "✅" } else { "❌" });
+        println!("   S3 Storage:  {}", if self.config.enable_s3 { "✅" } else { "❌" });
+        println!("   Web Server:  {}", if self.config.enable_web { "✅" } else { "❌" });
+        println!("   Web Proxy:   {}", if self.config.enable_proxy { "✅" } else { "❌" });
         println!("   Metrics:     {}", if self.config.enable_metrics { "✅" } else { "❌" });
 
         let mut handles = vec![];
@@ -308,8 +313,12 @@ impl UxGateway {
             std::env::var("NEXUS_TLS_CERT"),
             std::env::var("NEXUS_TLS_KEY"),
         ) {
-            let bind_addr =
-                std::env::var("NEXUS_HTTPS_BIND").unwrap_or_else(|_| "0.0.0.0:443".to_string());
+            let bind_addr = self
+                .config
+                .bind_addr
+                .clone()
+                .or_else(|| std::env::var("NEXUS_HTTPS_BIND").ok())
+                .unwrap_or_else(|| "0.0.0.0:443".to_string());
             let cert = std::fs::read(&cert_path)?;
             let key = std::fs::read(&key_path)?;
             let config = salvo::conn::rustls::RustlsConfig::new(
@@ -321,8 +330,12 @@ impl UxGateway {
             return Ok(());
         }
 
-        let dev_bind =
-            std::env::var("NEXUS_HTTP_BIND").unwrap_or_else(|_| "127.0.0.1:8443".to_string());
+        let dev_bind = self
+            .config
+            .bind_addr
+            .clone()
+            .or_else(|| std::env::var("NEXUS_HTTP_BIND").ok())
+            .unwrap_or_else(|| "127.0.0.1:8443".to_string());
         println!(
             "⚠️  Dev HTTP Gateway (TLS DISABLED — plaintext) listening on http://{}",
             dev_bind
@@ -592,88 +605,167 @@ impl UxGateway {
         let gate = BootRecoveryGateMiddleware {
             storage_ready: self.storage_ready.clone(),
         };
-        let router = Router::new()
-            // WebSocket & HTTP JSON-RPC / CBOR Signal Hub (SurrealDB SDK wire protocol)
-            .push({
-                let db = self.db.clone();
-                let ws_handler = WebSocketHandler { db: db.clone() };
-                let http_rpc = crate::ux::surreal_http::SurrealHttpRpcHandler { db: db.clone() };
-                let iam = crate::ux::iam::IamMiddleware::authenticated(db);
-                Router::with_path("/rpc")
-                    .hoop(gate.clone())
-                    .hoop(iam)
-                    .get(ws_handler)
-                    .post(http_rpc)
-            })
-            // SurrealDB-compatible HTTP REST API (/sql, /signin, /signup, /export, /import, /key, /api)
-            .push(
-                Router::with_path("/sql")
-                    .hoop(gate.clone())
-                    .hoop(crate::ux::iam::IamMiddleware::authenticated(self.db.clone()))
-                    .post(crate::ux::surreal_http::SurrealSqlHandler { db: self.db.clone() }),
-            )
-            .push(Router::with_path("/signin").post(crate::ux::surreal_http::SurrealAuthHandler { db: self.db.clone(), is_signup: false }))
-            .push(Router::with_path("/signup").post(crate::ux::surreal_http::SurrealAuthHandler { db: self.db.clone(), is_signup: true }))
-            .push(Router::with_path("/signout").post(crate::ux::surreal_http::SurrealSignoutHandler))
-            .push(Router::with_path("/_nexus/auth/me").get(crate::ux::surreal_http::AuthMeHandler { db: self.db.clone() }))
-            .push(
-                Router::with_path("/export")
-                    .hoop(gate.clone())
-                    .hoop(crate::ux::iam::IamMiddleware::authenticated(self.db.clone()))
-                    .get(crate::ux::surreal_http::SurrealExportImportHandler { db: self.db.clone(), is_import: false })
-                    .post(crate::ux::surreal_http::SurrealExportImportHandler { db: self.db.clone(), is_import: false }),
-            )
-            .push(
-                Router::with_path("/import")
-                    .hoop(gate.clone())
-                    .hoop(crate::ux::iam::IamMiddleware::admin(self.db.clone()))
-                    .post(crate::ux::surreal_http::SurrealExportImportHandler { db: self.db.clone(), is_import: true }),
-            )
-            .push(
-                Router::with_path("/key/{table}")
-                    .hoop(gate.clone())
-                    .hoop(crate::ux::iam::IamMiddleware::authenticated(self.db.clone()))
-                    .get(crate::ux::surreal_http::SurrealKeyHandler { db: self.db.clone() })
-                    .post(crate::ux::surreal_http::SurrealKeyHandler { db: self.db.clone() })
-                    .delete(crate::ux::surreal_http::SurrealKeyHandler { db: self.db.clone() }),
-            )
-            .push(
-                Router::with_path("/key/{table}/{id}")
-                    .hoop(gate.clone())
-                    .hoop(crate::ux::iam::IamMiddleware::authenticated(self.db.clone()))
-                    .get(crate::ux::surreal_http::SurrealKeyHandler { db: self.db.clone() })
-                    .put(crate::ux::surreal_http::SurrealKeyHandler { db: self.db.clone() })
-                    .patch(crate::ux::surreal_http::SurrealKeyHandler { db: self.db.clone() })
-                    .delete(crate::ux::surreal_http::SurrealKeyHandler { db: self.db.clone() }),
-            )
-            .push(
-                Router::with_path("/api/{ns}/{db}/{**path}")
-                    .hoop(gate.clone())
-                    .hoop(crate::ux::iam::IamMiddleware::authenticated(self.db.clone()))
-                    .get(crate::ux::surreal_http::SurrealCustomApiHandler { db: self.db.clone() })
-                    .post(crate::ux::surreal_http::SurrealCustomApiHandler { db: self.db.clone() })
-                    .put(crate::ux::surreal_http::SurrealCustomApiHandler { db: self.db.clone() })
-                    .delete(crate::ux::surreal_http::SurrealCustomApiHandler { db: self.db.clone() }),
-            )
-            // Public liveness (/status, /health), storage-aware readiness (/ready), version, metrics
+
+        // Baseline operational probes (always available so orchestrators can monitor node health)
+        let mut router = Router::new()
+            .push(Router::with_path("/health").get(health_check))
             .push(Router::with_path("/status").get(crate::ux::surreal_http::surreal_status))
             .push(Router::with_path("/ready").get(ReadinessHandler {
                 storage_ready: self.storage_ready.clone(),
             }))
             .push(Router::with_path("/version").get(crate::ux::surreal_http::surreal_version))
-            .push(Router::with_path("/_nexus/metrics").get(serve_metrics))
-            // Unified External Multi-Flavor Query API (`POST /query`, `POST /cells/:app/:cell_id/query`)
-            .push(
-                Router::with_path("/query")
+            .push(Router::with_path("/_nexus/capabilities").get(capabilities_handler));
+
+        if self.config.enable_metrics {
+            router = router.push(Router::with_path("/_nexus/metrics").get(serve_metrics));
+        }
+
+        // Opt-in RPC / Database / IAM Authentication surface
+        if self.config.enable_rpc {
+            router = router
+                .push({
+                    let db = self.db.clone();
+                    let ws_handler = WebSocketHandler { db: db.clone() };
+                    let http_rpc = crate::ux::surreal_http::SurrealHttpRpcHandler { db: db.clone() };
+                    let iam = crate::ux::iam::IamMiddleware::authenticated(db);
+                    Router::with_path("/rpc")
+                        .hoop(gate.clone())
+                        .hoop(iam)
+                        .get(ws_handler)
+                        .post(http_rpc)
+                })
+                .push(
+                    Router::with_path("/sql")
+                        .hoop(gate.clone())
+                        .hoop(crate::ux::iam::IamMiddleware::authenticated(self.db.clone()))
+                        .post(crate::ux::surreal_http::SurrealSqlHandler { db: self.db.clone() }),
+                )
+                .push(Router::with_path("/signin").post(crate::ux::surreal_http::SurrealAuthHandler { db: self.db.clone(), is_signup: false }))
+                .push(Router::with_path("/signup").post(crate::ux::surreal_http::SurrealAuthHandler { db: self.db.clone(), is_signup: true }))
+                .push(Router::with_path("/signout").post(crate::ux::surreal_http::SurrealSignoutHandler))
+                .push(Router::with_path("/_nexus/auth/me").get(crate::ux::surreal_http::AuthMeHandler { db: self.db.clone() }))
+                .push(
+                    Router::with_path("/export")
+                        .hoop(gate.clone())
+                        .hoop(crate::ux::iam::IamMiddleware::authenticated(self.db.clone()))
+                        .get(crate::ux::surreal_http::SurrealExportImportHandler { db: self.db.clone(), is_import: false })
+                        .post(crate::ux::surreal_http::SurrealExportImportHandler { db: self.db.clone(), is_import: false }),
+                )
+                .push(
+                    Router::with_path("/import")
+                        .hoop(gate.clone())
+                        .hoop(crate::ux::iam::IamMiddleware::admin(self.db.clone()))
+                        .post(crate::ux::surreal_http::SurrealExportImportHandler { db: self.db.clone(), is_import: true }),
+                )
+                .push(
+                    Router::with_path("/key/{table}")
+                        .hoop(gate.clone())
+                        .hoop(crate::ux::iam::IamMiddleware::authenticated(self.db.clone()))
+                        .get(crate::ux::surreal_http::SurrealKeyHandler { db: self.db.clone() })
+                        .post(crate::ux::surreal_http::SurrealKeyHandler { db: self.db.clone() })
+                        .delete(crate::ux::surreal_http::SurrealKeyHandler { db: self.db.clone() }),
+                )
+                .push(
+                    Router::with_path("/key/{table}/{id}")
+                        .hoop(gate.clone())
+                        .hoop(crate::ux::iam::IamMiddleware::authenticated(self.db.clone()))
+                        .get(crate::ux::surreal_http::SurrealKeyHandler { db: self.db.clone() })
+                        .put(crate::ux::surreal_http::SurrealKeyHandler { db: self.db.clone() })
+                        .patch(crate::ux::surreal_http::SurrealKeyHandler { db: self.db.clone() })
+                        .delete(crate::ux::surreal_http::SurrealKeyHandler { db: self.db.clone() }),
+                )
+                .push(
+                    Router::with_path("/api/{ns}/{db}/{**path}")
+                        .hoop(gate.clone())
+                        .hoop(crate::ux::iam::IamMiddleware::authenticated(self.db.clone()))
+                        .get(crate::ux::surreal_http::SurrealCustomApiHandler { db: self.db.clone() })
+                        .post(crate::ux::surreal_http::SurrealCustomApiHandler { db: self.db.clone() })
+                        .put(crate::ux::surreal_http::SurrealCustomApiHandler { db: self.db.clone() })
+                        .delete(crate::ux::surreal_http::SurrealCustomApiHandler { db: self.db.clone() }),
+                )
+                .push(
+                    Router::with_path("/query")
+                        .hoop(gate.clone())
+                        .hoop(crate::ux::iam::IamMiddleware::authenticated(self.db.clone()))
+                        .post(crate::ux::surreal_http::UnifiedQueryHandler {
+                            db: self.db.clone(),
+                            cells: self.cells.clone(),
+                            default_flavor: "surql",
+                        }),
+                )
+                .push(
+                    Router::with_path("/_nexus/wal/entries")
+                        .hoop(gate.clone())
+                        .hoop(crate::ux::iam::IamMiddleware::admin(self.db.clone()))
+                        .get(crate::ux::surreal_http::WalReplicationHandler { db: self.db.clone(), is_apply: false }),
+                )
+                .push(
+                    Router::with_path("/_nexus/wal/apply")
+                        .hoop(gate.clone())
+                        .hoop(crate::ux::iam::IamMiddleware::admin(self.db.clone()))
+                        .post(crate::ux::surreal_http::WalReplicationHandler { db: self.db.clone(), is_apply: true }),
+                );
+        }
+
+        // Opt-in GraphQL endpoint
+        #[cfg(feature = "db-graphql")]
+        if self.config.enable_graphql {
+            router = router.push(
+                Router::with_path("/graphql")
                     .hoop(gate.clone())
                     .hoop(crate::ux::iam::IamMiddleware::authenticated(self.db.clone()))
                     .post(crate::ux::surreal_http::UnifiedQueryHandler {
                         db: self.db.clone(),
                         cells: self.cells.clone(),
-                        default_flavor: "surql",
+                        default_flavor: "graphql",
                     }),
-            )
-            .push(
+            );
+        }
+
+        // Opt-in SQLite Hrana endpoint
+        #[cfg(feature = "db-sqlite")]
+        if self.config.enable_sqlite {
+            router = router.push(
+                Router::with_path("/v2/pipeline")
+                    .hoop(gate.clone())
+                    .hoop(crate::ux::iam::IamMiddleware::authenticated(self.db.clone()))
+                    .post(crate::ux::surreal_http::SqliteHranaHandler { db: self.db.clone() }),
+            );
+        }
+
+        // Opt-in Reverse Proxy surface
+        #[cfg(feature = "serve-proxy")]
+        if self.config.enable_proxy {
+            router = router.push(
+                Router::with_path("/proxy/{upstream}/{**path}")
+                    .hoop(crate::ux::iam::IamMiddleware::authenticated(self.db.clone()))
+                    .get(crate::ux::reverse_proxy::ReverseProxyHandler::from_env())
+                    .post(crate::ux::reverse_proxy::ReverseProxyHandler::from_env())
+                    .put(crate::ux::reverse_proxy::ReverseProxyHandler::from_env())
+                    .delete(crate::ux::reverse_proxy::ReverseProxyHandler::from_env()),
+            );
+        }
+
+        // Opt-in S3 Object Storage Proxy surface
+        if self.config.enable_s3 {
+            let db = self.db.clone();
+            let garage = self.garage.clone();
+            let s3_handler = S3ProxyHandler { garage };
+            let iam = crate::ux::iam::IamMiddleware::authenticated(db);
+            router = router.push(
+                Router::with_path("/s3/{**path}")
+                    .hoop(gate.clone())
+                    .hoop(iam)
+                    .get(s3_handler.clone())
+                    .put(s3_handler.clone())
+                    .delete(s3_handler.clone())
+                    .head(s3_handler),
+            );
+        }
+
+        // Opt-in Wasmtime Cell Ingress & AppManifest Deploy surface
+        if self.config.enable_cells {
+            router = router.push(
                 Router::with_path("/cells/{app}/{cell_id}/query")
                     .hoop(gate.clone())
                     .hoop(crate::ux::iam::IamMiddleware::authenticated(self.db.clone()))
@@ -682,136 +774,66 @@ impl UxGateway {
                         cells: self.cells.clone(),
                         default_flavor: "surql",
                     }),
-            )
-            // Privileged Multi-node WAL replication transport (Admin tier)
-            .push(
-                Router::with_path("/_nexus/wal/entries")
-                    .hoop(gate.clone())
-                    .hoop(crate::ux::iam::IamMiddleware::admin(self.db.clone()))
-                    .get(crate::ux::surreal_http::WalReplicationHandler { db: self.db.clone(), is_apply: false }),
-            )
-            .push(
-                Router::with_path("/_nexus/wal/apply")
-                    .hoop(gate.clone())
-                    .hoop(crate::ux::iam::IamMiddleware::admin(self.db.clone()))
-                    .post(crate::ux::surreal_http::WalReplicationHandler { db: self.db.clone(), is_apply: true }),
             );
 
-        #[cfg(feature = "db-graphql")]
-        let router = router.push(
-            Router::with_path("/graphql")
-                .hoop(gate.clone())
-                .hoop(crate::ux::iam::IamMiddleware::authenticated(self.db.clone()))
-                .post(crate::ux::surreal_http::UnifiedQueryHandler {
-                    db: self.db.clone(),
-                    cells: self.cells.clone(),
-                    default_flavor: "graphql",
-                }),
-        );
+            #[cfg(feature = "runtime-wasm")]
+            {
+                router = router
+                    .push(
+                        Router::with_path("/_nexus/deploy")
+                            .hoop(gate.clone())
+                            .hoop(crate::ux::iam::IamMiddleware::authenticated(self.db.clone()))
+                            .post(DeploySubmitHandler {
+                                cells: self.cells.clone(),
+                                garage: self.garage.clone(),
+                            }),
+                    )
+                    .push(
+                        Router::with_path("/_nexus/deploy/{operation_id}")
+                            .hoop(gate.clone())
+                            .hoop(crate::ux::iam::IamMiddleware::authenticated(self.db.clone()))
+                            .get(DeployOperationHandler {
+                                garage: self.garage.clone(),
+                            }),
+                    )
+                    .push(
+                        Router::with_path("/_nexus/apps/{app_id}")
+                            .hoop(gate.clone())
+                            .hoop(crate::ux::iam::IamMiddleware::authenticated(self.db.clone()))
+                            .get(DeployedAppHandler {
+                                garage: self.garage.clone(),
+                            }),
+                    );
+            }
 
-        #[cfg(feature = "db-sqlite")]
-        let router = router.push(
-            Router::with_path("/v2/pipeline")
-                .hoop(gate.clone())
-                .hoop(crate::ux::iam::IamMiddleware::authenticated(self.db.clone()))
-                .post(crate::ux::surreal_http::SqliteHranaHandler { db: self.db.clone() }),
-        );
-
-        #[cfg(feature = "serve-web")]
-        let web_handler = WebStaticHandler::from_config(&self.config);
-        #[cfg(feature = "serve-web")]
-        let dist_handler = DistStaticHandler::from_config(&self.config);
-
-        #[cfg(feature = "serve-web")]
-        let router = router
-            .push(Router::with_path("/dist/{**path}").get(dist_handler))
-            .push(Router::with_path("/web/{**path}").get(web_handler.clone()));
-
-        #[cfg(feature = "serve-proxy")]
-        let router = router.push(
-            Router::with_path("/proxy/{upstream}/{**path}")
-                .hoop(crate::ux::iam::IamMiddleware::authenticated(self.db.clone()))
-                .get(crate::ux::reverse_proxy::ReverseProxyHandler::from_env())
-                .post(crate::ux::reverse_proxy::ReverseProxyHandler::from_env())
-                .put(crate::ux::reverse_proxy::ReverseProxyHandler::from_env())
-                .delete(crate::ux::reverse_proxy::ReverseProxyHandler::from_env()),
-        );
-
-        #[cfg(feature = "runtime-wasm")]
-        let router = router
-            .push(
-                Router::with_path("/_nexus/deploy")
-                    .hoop(gate.clone())
-                    .hoop(crate::ux::iam::IamMiddleware::authenticated(self.db.clone()))
-                    .post(DeploySubmitHandler {
-                        cells: self.cells.clone(),
-                        garage: self.garage.clone(),
-                    }),
-            )
-            .push(
-                Router::with_path("/_nexus/deploy/{operation_id}")
-                    .hoop(gate.clone())
-                    .hoop(crate::ux::iam::IamMiddleware::authenticated(self.db.clone()))
-                    .get(DeployOperationHandler {
-                        garage: self.garage.clone(),
-                    }),
-            )
-            .push(
-                Router::with_path("/_nexus/apps/{app_id}")
-                    .hoop(gate.clone())
-                    .hoop(crate::ux::iam::IamMiddleware::authenticated(self.db.clone()))
-                    .get(DeployedAppHandler {
-                        garage: self.garage.clone(),
-                    }),
-            );
-
-        let router = router
-            
-            // S3 Proxy (browser-friendly)
-            .push({
-                let db = self.db.clone();
-                let garage = self.garage.clone();
-                let s3_handler = S3ProxyHandler { garage };
-                let iam = crate::ux::iam::IamMiddleware::authenticated(db);
-                Router::with_path("/s3/{**path}")
-                    .hoop(gate.clone())
-                    .hoop(iam)
-                    .get(s3_handler.clone())
-                    .put(s3_handler.clone())
-                    .delete(s3_handler.clone())
-                    .head(s3_handler)
-            })
-            
-            // Unified Cell Ingress (/cells/<app>/<cell_id> & POST /cells/deploy-md)
-            .push({
-                let db = self.db.clone();
-                let cell_handler = CellGatewayHandler {
-                    db: db.clone(),
-                    cells: self.cells.clone(),
-                };
-                let iam = crate::ux::iam::IamMiddleware::authenticated(db);
+            let db = self.db.clone();
+            let cell_handler = CellGatewayHandler {
+                db: db.clone(),
+                cells: self.cells.clone(),
+            };
+            let iam = crate::ux::iam::IamMiddleware::authenticated(db);
+            router = router.push(
                 Router::with_path("/cells/{**path}")
                     .hoop(gate)
                     .hoop(iam)
                     .get(cell_handler.clone())
                     .post(cell_handler.clone())
                     .put(cell_handler.clone())
-                    .delete(cell_handler)
-            })
-            
-            // Health check (liveness) & runtime capability diagnostics
-            .push(Router::with_path("/health").get(health_check))
-            .push(Router::with_path("/_nexus/capabilities").get(capabilities_handler));
+                    .delete(cell_handler),
+            );
+        }
 
-        // Mount web application root & SPA fallback LAST so API, RPC, cell, S3, and probe routes
-        // always take precedence and missing assets return genuine 404s.
+        // Opt-in Static Web Application & SPA Fallback (mounted LAST, ONLY when explicitly declared)
         #[cfg(feature = "serve-web")]
-        let router = router
-            .push(Router::with_path("/").get(web_handler.clone()))
-            .push(Router::with_path("/{**path}").get(web_handler));
-
-        #[cfg(not(feature = "serve-web"))]
-        let router = router.push(Router::with_path("/").get(serve_static));
+        if self.config.enable_web {
+            let web_handler = WebStaticHandler::from_config(&self.config);
+            let dist_handler = DistStaticHandler::from_config(&self.config);
+            router = router
+                .push(Router::with_path("/dist/{**path}").get(dist_handler))
+                .push(Router::with_path("/web/{**path}").get(web_handler.clone()))
+                .push(Router::with_path("/").get(web_handler.clone()))
+                .push(Router::with_path("/{**path}").get(web_handler));
+        }
 
         router
     }
@@ -981,44 +1003,10 @@ impl Handler for DeployedAppHandler {
     }
 }
 
+/// Explicitly resolve a configured asset directory — NEVER guesses CWD or `<exe_dir>`.
 #[cfg(feature = "serve-web")]
-fn resolve_asset_root(
-    explicit: Option<&std::path::PathBuf>,
-    subdir: &str,
-) -> Option<std::path::PathBuf> {
-    // 1. Explicitly configured path (`GatewayConfig` / `NEXUS_WEB_ROOT` / `NEXUS_DIST_ROOT`)
-    if let Some(p) = explicit {
-        if p.is_dir() {
-            return Some(p.clone());
-        }
-        // Explicit path configured but missing — do NOT silently fall through to an unrelated directory.
-        return None;
-    }
-
-    // 2. Path relative to executable directory (packaged / deployed binary layout)
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(exe_dir) = exe.parent() {
-            let candidate = exe_dir.join(subdir);
-            if candidate.is_dir() {
-                return Some(candidate);
-            }
-        }
-    }
-
-    // 3. Development-only repository-relative fallback (never active in release builds)
-    #[cfg(debug_assertions)]
-    {
-        for rel in [
-            std::path::PathBuf::from(subdir),
-            std::path::PathBuf::from("..").join(subdir),
-        ] {
-            if rel.is_dir() {
-                return Some(rel);
-            }
-        }
-    }
-
-    None
+fn resolve_explicit_asset_root(explicit: Option<&std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    explicit.filter(|p| p.is_dir()).cloned()
 }
 
 #[cfg(feature = "serve-web")]
@@ -1150,7 +1138,7 @@ struct DistStaticHandler {
 impl DistStaticHandler {
     fn from_config(config: &GatewayConfig) -> Self {
         Self {
-            dist_root: resolve_asset_root(config.dist_root.as_ref(), "dist"),
+            dist_root: resolve_explicit_asset_root(config.dist_root.as_ref()),
             coep_header: config.coep_header.clone(),
         }
     }
@@ -1215,6 +1203,7 @@ impl Handler for DistStaticHandler {
 #[derive(Clone)]
 struct WebStaticHandler {
     web_root: Option<std::path::PathBuf>,
+    spa_fallback: bool,
     coop_header: Option<String>,
     coep_header: Option<String>,
 }
@@ -1223,7 +1212,8 @@ struct WebStaticHandler {
 impl WebStaticHandler {
     fn from_config(config: &GatewayConfig) -> Self {
         Self {
-            web_root: resolve_asset_root(config.web_root.as_ref(), "site"),
+            web_root: resolve_explicit_asset_root(config.web_root.as_ref()),
+            spa_fallback: config.spa_fallback,
             coop_header: config.coop_header.clone(),
             coep_header: config.coep_header.clone(),
         }
@@ -1277,7 +1267,7 @@ impl Handler for WebStaticHandler {
             // 2. Strict SPA fallback: ONLY for HTML navigation requests with no file extension
             //    and outside reserved API / RPC / dist / asset prefixes.
             let has_ext = std::path::Path::new(&rel).extension().is_some();
-            if !has_ext && !is_reserved_non_spa_prefix(&rel) && accepts_html(req) {
+            if self.spa_fallback && !has_ext && !is_reserved_non_spa_prefix(&rel) && accepts_html(req) {
                 let idx = root.join("index.html");
                 if idx.is_file() {
                     (idx, true)

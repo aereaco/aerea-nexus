@@ -1,0 +1,26 @@
+# Aerea-Nexus Authoritative Node & Application Manifest (`nexus.io/v1`)
+# Every service is strictly opt-in. Start with:
+#   io/target/debug/nexus.exe start -m nexus.toml
+api_version = "nexus.io/v1"
+kind = "Application"
+
+[metadata]
+name = "aerea-nexus"
+version = "0.1.0"
+
+[gateway]
+bind = "127.0.0.1:8443"
+
+[gateway.services]
+rpc = true
+cells = true
+s3 = true
+metrics = true
+
+[gateway.web]
+enabled = true
+root = "./site"
+dist = "./dist"
+spa_fallback = true
+coop = "same-origin"
+coep = "credentialless"

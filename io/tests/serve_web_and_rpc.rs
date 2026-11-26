@@ -24,11 +24,12 @@ async fn serve_web_serves_real_site_dist_spa_fallback_404_and_isolation_headers(
     let db = Arc::new(Database::open_mem());
     let blobs = Arc::new(BlobBridge::new(db.clone()).await.unwrap());
     let config = GatewayConfig {
+        enable_web: true,
         web_root: Some(site_dir.clone()),
         dist_root: Some(dist_dir.clone()),
         coop_header: Some("same-origin".to_string()),
         coep_header: Some("credentialless".to_string()),
-        ..GatewayConfig::default()
+        ..GatewayConfig::all_core()
     };
     let gw = UxGateway::new(db.clone(), blobs.clone(), config);
     gw.reconcile_storage_on_boot().await.unwrap();
@@ -149,6 +150,7 @@ async fn serve_web_respects_disabled_coop_coep_and_reports_unavailable_bundle() 
 
     // 1. Disabled COOP/COEP headers
     let no_iso_cfg = GatewayConfig {
+        enable_web: true,
         web_root: Some(site_dir),
         dist_root: Some(dist_dir),
         coop_header: None,
@@ -167,6 +169,7 @@ async fn serve_web_respects_disabled_coop_coep_and_reports_unavailable_bundle() 
 
     // 2. Explicit missing web_root returns 503 bundle unavailable page (never silently falls back)
     let missing_cfg = GatewayConfig {
+        enable_web: true,
         web_root: Some(PathBuf::from("nonexistent_nexus_bundle_dir_12345")),
         dist_root: None,
         ..GatewayConfig::default()
@@ -247,7 +250,7 @@ async fn iam_session_cookie_auth_me_and_server_rbac_enforcement() {
         .expect("seed users and PO");
 
     let blobs = Arc::new(BlobBridge::new(db.clone()).await.unwrap());
-    let gw = UxGateway::new(db.clone(), blobs, GatewayConfig::default());
+    let gw = UxGateway::new(db.clone(), blobs, GatewayConfig::all_core());
     gw.reconcile_storage_on_boot().await.unwrap();
     let service = Service::new(gw.router());
 
@@ -387,7 +390,7 @@ async fn s3_proxy_enforces_blob_capabilities_traversal_and_etag() {
         .unwrap();
 
     let blobs = Arc::new(BlobBridge::new(db.clone()).await.unwrap());
-    let gw = UxGateway::new(db, blobs, GatewayConfig::default());
+    let gw = UxGateway::new(db, blobs, GatewayConfig::all_core());
     gw.reconcile_storage_on_boot().await.unwrap();
     let service = Service::new(gw.router());
 
@@ -491,7 +494,7 @@ async fn wasm_cell_executes_po_approval_enforces_caller_iam_and_survives_hiberna
         .unwrap();
 
     let blobs = Arc::new(BlobBridge::new(db.clone()).await.unwrap());
-    let gw = UxGateway::new(db.clone(), blobs, GatewayConfig::default());
+    let gw = UxGateway::new(db.clone(), blobs, GatewayConfig::all_core());
     gw.reconcile_storage_on_boot().await.unwrap();
     let service = Service::new(gw.router());
 
@@ -643,4 +646,54 @@ async fn wasm_cell_executes_po_approval_enforces_caller_iam_and_survives_hiberna
         .await;
     let po_body = po_check.take_string().await.unwrap();
     assert!(po_body.contains("Approved") && po_body.contains("po_088-receipt.json"));
+}
+
+#[tokio::test]
+async fn opt_in_default_mounts_zero_services_and_manifest_compiles_cleanly() {
+    use nexus_io::compute::manifest::AppManifest;
+
+    let db = Arc::new(Database::open_mem());
+    let blobs = Arc::new(BlobBridge::new(db.clone()).await.unwrap());
+
+    // 1. Default GatewayConfig mounts ONLY probes — zero RPC, S3, Cells, or Web endpoints
+    let gw = UxGateway::new(db, blobs, GatewayConfig::default());
+    gw.reconcile_storage_on_boot().await.unwrap();
+    let service = Service::new(gw.router());
+
+    assert_eq!(TestClient::get("http://127.0.0.1/health").send(&service).await.status_code, Some(StatusCode::OK));
+    assert_eq!(TestClient::get("http://127.0.0.1/ready").send(&service).await.status_code, Some(StatusCode::OK));
+    assert_eq!(TestClient::get("http://127.0.0.1/").send(&service).await.status_code, Some(StatusCode::NOT_FOUND));
+    assert_eq!(TestClient::post("http://127.0.0.1/sql").body("RETURN 1;").send(&service).await.status_code, Some(StatusCode::NOT_FOUND));
+    assert_eq!(TestClient::get("http://127.0.0.1/s3/b/k").send(&service).await.status_code, Some(StatusCode::NOT_FOUND));
+    assert_eq!(TestClient::get("http://127.0.0.1/cells/a/b").send(&service).await.status_code, Some(StatusCode::NOT_FOUND));
+
+    // 2. Authoritative repo `aerea-nexus/nexus.toml` parses, validates, and compiles cleanly
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
+    let manifest_path = repo_root.join("nexus.toml");
+    let manifest = AppManifest::from_file(&manifest_path).expect("parse nexus.toml");
+    manifest.validate().expect("validate nexus.toml");
+    let compiled = manifest.compile_gateway_config(&repo_root).expect("compile nexus.toml");
+    assert!(compiled.enable_rpc);
+    assert!(compiled.enable_cells);
+    assert!(compiled.enable_s3);
+    assert!(compiled.enable_web);
+    assert!(!compiled.enable_proxy);
+    assert_eq!(compiled.web_root.as_deref(), Some(repo_root.join("site").as_path()));
+    assert_eq!(compiled.dist_root.as_deref(), Some(repo_root.join("dist").as_path()));
+
+    // 3. Declared missing web root fails fast at compile time (zero silent fallback)
+    let bad = AppManifest::from_toml(
+        r#"
+        api_version = "nexus.io/v1"
+        kind = "Application"
+        [metadata]
+        name = "bad-web"
+        version = "0.1.0"
+        [gateway.web]
+        enabled = true
+        root = "./definitely-does-not-exist-99999"
+        "#,
+    )
+    .unwrap();
+    assert!(bad.compile_gateway_config(&repo_root).is_err());
 }
