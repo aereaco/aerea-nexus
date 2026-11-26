@@ -1042,10 +1042,102 @@ impl Handler for DeployedAppHandler {
     }
 }
 
-/// Explicitly resolve a configured asset directory — NEVER guesses CWD or `<exe_dir>`.
+/// Explicitly resolve a configured asset directory — supports both single-dir and 9-domain layouts.
 #[cfg(feature = "serve-web")]
 fn resolve_explicit_asset_root(explicit: Option<&std::path::PathBuf>) -> Option<std::path::PathBuf> {
-    explicit.filter(|p| p.is_dir()).cloned()
+    let p = explicit?;
+    if p.is_dir() {
+        return Some(p.clone());
+    }
+    if let (Some(parent), Some(name)) = (p.parent(), p.file_name().and_then(|n| n.to_str())) {
+        if name == "dist" {
+            let ux_dist = parent.join("ux").join("dist");
+            if ux_dist.is_dir() {
+                return Some(ux_dist);
+            }
+        } else if name == "site" {
+            let shell_dir = parent.join("shell");
+            if shell_dir.is_dir() {
+                return Some(shell_dir);
+            }
+        }
+    }
+    None
+}
+
+/// Resolve a relative web asset path across the configured `root` and (when `root` is `site` or `shell`
+/// inside the 9-domain monorepo) across the sibling domain folders (`shell/`, `platform/`, `site/`,
+/// `apps/`, `labs/`, `docs/`). Every path segment is strictly validated via `safe_join_within`.
+#[cfg(feature = "serve-web")]
+fn resolve_domain_web_file(
+    root: &std::path::Path,
+    rel: &str,
+) -> Result<Option<std::path::PathBuf>, StatusCode> {
+    let primary = safe_join_within(root, rel)?;
+    if primary.is_file() {
+        return Ok(Some(primary));
+    }
+
+    let Some(repo_root) = root.parent() else {
+        return Ok(None);
+    };
+    let root_name = root.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if !matches!(root_name, "site" | "shell" | "platform") {
+        return Ok(None);
+    }
+
+    // 1. Check domain roots directly (shell, site, platform, labs)
+    for domain in ["shell", "site", "platform", "labs"] {
+        let d_root = repo_root.join(domain);
+        if d_root.is_dir() {
+            let cand = safe_join_within(&d_root, rel)?;
+            if cand.is_file() {
+                return Ok(Some(cand));
+            }
+        }
+    }
+
+    // 2. Check domain-mapped `_pages/*` prefixes
+    let trimmed = rel.trim_start_matches('/');
+    if let Some(sub) = trimmed.strip_prefix("_pages/apps/") {
+        for domain in ["apps", "platform"] {
+            let d_root = repo_root.join(domain);
+            if d_root.is_dir() {
+                let cand = safe_join_within(&d_root, sub)?;
+                if cand.is_file() {
+                    return Ok(Some(cand));
+                }
+            }
+        }
+    } else if let Some(sub) = trimmed.strip_prefix("_pages/labs/") {
+        let d_root = repo_root.join("labs");
+        if d_root.is_dir() {
+            let cand = safe_join_within(&d_root, sub)?;
+            if cand.is_file() {
+                return Ok(Some(cand));
+            }
+        }
+    } else if let Some(sub) = trimmed.strip_prefix("_pages/docs/") {
+        let d_root = repo_root.join("docs");
+        if d_root.is_dir() {
+            let cand = safe_join_within(&d_root, sub)?;
+            if cand.is_file() {
+                return Ok(Some(cand));
+            }
+        }
+    } else if let Some(sub) = trimmed.strip_prefix("_pages/") {
+        for domain_pages in ["site/_pages", "shell/_pages"] {
+            let d_root = repo_root.join(domain_pages);
+            if d_root.is_dir() {
+                let cand = safe_join_within(&d_root, sub)?;
+                if cand.is_file() {
+                    return Ok(Some(cand));
+                }
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 #[cfg(feature = "serve-web")]
@@ -1282,22 +1374,29 @@ impl Handler for WebStaticHandler {
             return;
         };
 
-        let candidate = match safe_join_within(root, &rel) {
-            Ok(p) => p,
-            Err(code) => {
-                res.status_code(code);
-                return;
-            }
-        };
+        // Validate path safety first
+        if let Err(code) = safe_join_within(root, &rel) {
+            res.status_code(code);
+            return;
+        }
 
-        // 1. Direct file match (or directory index.html for root)
+        // 1. Direct file match across configured root + 9-domain overlay
         let exact_target = if rel.is_empty() {
-            let idx = root.join("index.html");
-            if idx.is_file() { Some(idx) } else { None }
-        } else if candidate.is_file() {
-            Some(candidate)
+            match resolve_domain_web_file(root, "index.html") {
+                Ok(found) => found,
+                Err(code) => {
+                    res.status_code(code);
+                    return;
+                }
+            }
         } else {
-            None
+            match resolve_domain_web_file(root, &rel) {
+                Ok(found) => found,
+                Err(code) => {
+                    res.status_code(code);
+                    return;
+                }
+            }
         };
 
         let (target, is_spa_fallback) = if let Some(file) = exact_target {
@@ -1307,8 +1406,7 @@ impl Handler for WebStaticHandler {
             //    and outside reserved API / RPC / dist / asset prefixes.
             let has_ext = std::path::Path::new(&rel).extension().is_some();
             if self.spa_fallback && !has_ext && !is_reserved_non_spa_prefix(&rel) && accepts_html(req) {
-                let idx = root.join("index.html");
-                if idx.is_file() {
+                if let Ok(Some(idx)) = resolve_domain_web_file(root, "index.html") {
                     (idx, true)
                 } else {
                     if rel.is_empty() {

@@ -9,6 +9,33 @@
     "content": "Home Nexus-UX Engine 2.0 Public Beta Ready Modern HTML-First Reactive Architecture A high-performance reactive user experience framework coordinating declarative HTML directives with web-native browser APIs. Built for Zero-Copy Zero-Serialization ZCZS execution directly across the DOM namespace. Explore Interactive Labs Visual Node Graph Specification Docs Live Runtime Engine 60 FPS Reactive Signal Binding Count 1 Count -1 Zero serialization Zero-copy live proxy heap Core Architectural Pillars Engineered from the ground up for maximum browser performance zero memory churn and pure HTML-first expressiveness. Declarative HTML-First DOM-as-State composition without imperative scripting Application logic state bindings dynamic templates and animations are expressed directly in HTML markup. No build step required to run templates parse natively in the browser s DOM parser. Implementation Features 30 Native Attribute Directives data-signal data-bind data-for data-if data-show data-on data-flow and more. Constructable CSSStyleSheets Direct CSSOM integration via document.adoptedStyleSheets and data-stylesheet . Single Observer Context Exactly one universal MutationObserver orchestrating all DOM insertions diffing and deterministic teardowns. Zero-Copy Zero-Serialization Strictly eliminates JSON serialization and memory copy overhead State is held in shared memory references and typed heaps. Web Workers and main thread communicate via SharedArrayBuffer completely avoiding expensive JS"
   },
   {
+    "id": "drag",
+    "route": "/drag",
+    "path": "/_pages/apps/drag/index.html",
+    "title": "Drag and Drop",
+    "category": "Apps",
+    "keywords": [],
+    "content": "Drag and Drop Nexus-UX Drag and Drop Complete 14-Pattern Native Drag Drop Engine Suite 01. Simple DraggableJS Parity 02. Shared Cross-Container 03. Cloning teleport-mode clone SOURCE TARGET 04. Sorting Toggle State 05. Handles data-drag-handle 06. Filter Selective Drag 07. MultiDrag Batch Select Click items to select several then drag them as one group. 08. Grid Layout Spatial Hit-Test 09. Nested Infinite Recursive Hierarchy 10. Auto-Scroll Constrained VERTICAL AUTO-SCROLL HORIZONTAL AUTO-SCROLL 11. Ghost Styling CSS Feedback R G B A Preview 12. Direction Horizontal 13. Swap Index Exchange 14. Swap Thresholds VERTICAL SWAP THRESHOLD V-Threshold HORIZONTAL SWAP THRESHOLD H-Threshold Nexus-UX Drag Engine 14/14 Verification Patterns"
+  },
+  {
+    "id": "erp",
+    "route": "/erp",
+    "path": "/_pages/apps/erp/index.html",
+    "title": "ERP Operations",
+    "category": "Apps",
+    "keywords": [],
+    "content": "ERP Operations Aerea-Nexus ERP Operations Live Nexus-DB Sign In Required Live procurement ledger S3 document storage Wasmtime cell status and IAM administration. Users IAM ERP Chat Sign in to access live ERP operations All records S3 attachments and Wasmtime workflows are enforced server-side by Nexus-IO IAM. Create Workspace Admin Sign In via Profile Purchase Orders 0 Live in Nexus-DB Pending Review 0 Awaiting approval Approved Spend 0.00 Verified receipts in S3 Wasm Cells 0 Wasmtime 51 runtime Procurement POs Audit Trail 0 Team IAM Admin Create Purchase Order Persists to Nexus-DB logs audit pushes live notification Create PO All Pending Review Approved Rejected No purchase orders match this filter yet. Attach Receipt S3 Approve Reject Read-Only Time Action Target Actor Details Workspace Users Nexus-IO IAM VIEWER EDITOR OWNER Add User Wasmtime Cells Refresh No active Wasm cells deployed yet."
+  },
+  {
+    "id": "todo",
+    "route": "/todo",
+    "path": "/_pages/apps/todo/index.html",
+    "title": "Todo List",
+    "category": "Apps",
+    "keywords": [],
+    "content": "Todo List Todo List HTML-first reactive state management List Grid Compact Add Task All Active Completed Clear Completed Ready for your focus... Diagnostic Overlay viewport x items total Due Date DD/MM/YYYY Edit Done Cancel Save No Keep it Yes"
+  },
+  {
     "id": "builder",
     "route": "/builder",
     "path": "/_pages/apps/builder/index.html",
@@ -28,24 +55,6 @@
       "tailwind"
     ],
     "content": "Visual Builder body w-full body h-full body flex body flex-1 body min-w-0 body m-0 body bg-transparent"
-  },
-  {
-    "id": "drag",
-    "route": "/drag",
-    "path": "/_pages/apps/drag/index.html",
-    "title": "Drag and Drop",
-    "category": "Apps",
-    "keywords": [],
-    "content": "Drag and Drop Nexus-UX Drag and Drop Complete 14-Pattern Native Drag Drop Engine Suite 01. Simple DraggableJS Parity 02. Shared Cross-Container 03. Cloning teleport-mode clone SOURCE TARGET 04. Sorting Toggle State 05. Handles data-drag-handle 06. Filter Selective Drag 07. MultiDrag Batch Select Click items to select several then drag them as one group. 08. Grid Layout Spatial Hit-Test 09. Nested Infinite Recursive Hierarchy 10. Auto-Scroll Constrained VERTICAL AUTO-SCROLL HORIZONTAL AUTO-SCROLL 11. Ghost Styling CSS Feedback R G B A Preview 12. Direction Horizontal 13. Swap Index Exchange 14. Swap Thresholds VERTICAL SWAP THRESHOLD V-Threshold HORIZONTAL SWAP THRESHOLD H-Threshold Nexus-UX Drag Engine 14/14 Verification Patterns"
-  },
-  {
-    "id": "erp",
-    "route": "/erp",
-    "path": "/_pages/apps/erp/index.html",
-    "title": "ERP Operations",
-    "category": "Apps",
-    "keywords": [],
-    "content": "ERP Operations Aerea-Nexus ERP Operations Live Nexus-DB Sign In Required Live procurement ledger S3 document storage Wasmtime cell status and IAM administration. Users IAM ERP Chat Sign in to access live ERP operations All records S3 attachments and Wasmtime workflows are enforced server-side by Nexus-IO IAM. Create Workspace Admin Sign In via Profile Purchase Orders 0 Live in Nexus-DB Pending Review 0 Awaiting approval Approved Spend 0.00 Verified receipts in S3 Wasm Cells 0 Wasmtime 51 runtime Procurement POs Audit Trail 0 Team IAM Admin Create Purchase Order Persists to Nexus-DB logs audit pushes live notification Create PO All Pending Review Approved Rejected No purchase orders match this filter yet. Attach Receipt S3 Approve Reject Read-Only Time Action Target Actor Details Workspace Users Nexus-IO IAM VIEWER EDITOR OWNER Add User Wasmtime Cells Refresh No active Wasm cells deployed yet."
   },
   {
     "id": "flow",
@@ -73,60 +82,6 @@
     "category": "Apps",
     "keywords": [],
     "content": "My Profile Account My Profile Account View your verified Nexus-IO identity groups capabilities and security settings. Sign in to view your profile Sign In Open IAM Admin Profile Information Display Name Email Job Title Department Save Profile Read-Only Account Server-Verified Capabilities Change Password Update Password"
-  },
-  {
-    "id": "todo",
-    "route": "/todo",
-    "path": "/_pages/apps/todo/index.html",
-    "title": "Todo List",
-    "category": "Apps",
-    "keywords": [],
-    "content": "Todo List Todo List HTML-first reactive state management List Grid Compact Add Task All Active Completed Clear Completed Ready for your focus... Diagnostic Overlay viewport x items total Due Date DD/MM/YYYY Edit Done Cancel Save No Keep it Yes"
-  },
-  {
-    "id": "doc-changelog",
-    "route": "/docs/changelog",
-    "path": "/_pages/docs/changelog.md",
-    "title": "Changelog",
-    "category": "Docs",
-    "keywords": [],
-    "content": "--- id doc-changelog title Changelog route /docs/changelog icon material-symbols-light history order 3 category Docs --- Nexus-UX Changelog Codebase Alignment Analysis Latest Alignment Date 2026-09-13 --- Recent Major Release 2026-09-13 Native API Reflect Proxy Engine Scope Resolution Unification and ZCZS Storage Compliance Native Web API Reflect Proxy Engine src/engine/reflect.ts - Authoritative Reflect Factory createReflectProxy Implemented authoritative factory wrapping native browser APIs window localStorage sessionStorage document screen navigator fetch indexedDB in Proxy/Reflect traps with zero regex scanning overhead and zero intermediate serialization. Proxies are cached via WeakMap for zero-allocation reuse. - Dual-Compatibility Web Storage Supports both standard Web API methods getItem setItem removeItem clear key length and direct property reads/writes localStorage.collapsed false with reactive track storage key and trigger storage key hooks and automatic cross-tab synchronization via native storage events. - Callable fetch Proxy Provides a transparent proxy for fetch url options returning native Promise fully supporting .then .catch etc. while ensuring fetch is never shadowed by internal engine utility objects. - Reactive indexedDB Operations Exposes structured store operations createStoreOperations getIndexedDBProxy for zero-overhead persistence without transaction boilerplate. Scope Resolution Unification src/engine/scope.ts src/engine/evaluator.ts - Single Auth"
-  },
-  {
-    "id": "doc-license",
-    "route": "/docs/license",
-    "path": "/_pages/docs/license.md",
-    "title": "License",
-    "category": "Docs",
-    "keywords": [],
-    "content": "--- id doc-license title License route /docs/license icon material-symbols-light verified-user-outline order 5 category Docs --- MIT License Copyright c 2026 Nexus-UX Authors Permission is hereby granted free of charge to any person obtaining a copy of this software and associated documentation files the Software to deal in the Software without restriction including without limitation the rights to use copy modify merge publish distribute sublicense and/or sell copies of the Software and to permit persons to whom the Software is furnished to do so subject to the following conditions The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED AS IS WITHOUT WARRANTY OF ANY KIND EXPRESS OR IMPLIED INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM DAMAGES OR OTHER LIABILITY WHETHER IN AN ACTION OF CONTRACT TORT OR OTHERWISE ARISING FROM OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE."
-  },
-  {
-    "id": "doc-readme",
-    "route": "/docs/readme",
-    "path": "/_pages/docs/readme.md",
-    "title": "README",
-    "category": "Docs",
-    "keywords": [],
-    "content": "--- id doc-readme title README route /docs/readme icon material-symbols-light info-outline order 4 category Docs --- Nexus-UX Signal-Driven Universal Reactivity. High-Fidelity Tailwind JIT. Omni-State DOM-as-State Framework. Nexus-UX is a reactive framework designed for developers who demand absolute performance granular control and a zero-build experience. It collapses the traditional frontend stack by treating the DOM as a queryable reactive state graph while achieving 100 functional parity with Tailwind v4 . --- The Five Pillars 1. Omni-State DOM-as-State We assert that the DOM _is_ the primary state graph. No phantom Virtual DOM. No reconciliation tax. The HTML attributes are the declaration source while the binary signal heap is the runtime truth. 2. Native JIT Engine Tailwind v4 Nexus-UX achieves 1 1 bit-for-bit parity with the official Tailwind v4 CDN. It compiles utility classes into a high-performance Unified Adopted StyleSheets Registry in real-time. 3. Zero-DOM Pollution Using CSSStyleSheet.replaceSync Nexus-UX eliminates all legacy and tag pollution. Styles automatically penetrate Shadow DOM boundaries without duplicative parsing. 4. ZCZS Zero-Copy Zero-Serialization A value-pooling reactive core designed for 120fps animations. Data flows from kernel to DOM via binary signal heaps bypassing JSON serialization. 5. Agentic Readiness Built for Machine Reasoning Efficiency . Built-in Resolution Beacons report missing selectors and failed expressions back to Agentic Ho"
-  },
-  {
-    "id": "doc-reference",
-    "route": "/docs/reference",
-    "path": "/_pages/docs/reference.md",
-    "title": "Technical Reference",
-    "category": "Docs",
-    "keywords": [],
-    "content": "--- id doc-reference title Technical Reference route /docs/reference icon material-symbols-light menu-book-outline order 1 category Docs --- Nexus-UX The Exhaustive Technical Reference The Practical Manual From Syntax to Practice Theory is knowing how it works. Practice is making it work. This document bridges both. This guide is the definitive practical reference for developers and AI agents building with Nexus-UX. It is the core Toolkit for rapid development focused on outcomes and practical implementation patterns. Built on the Omni-State DOM-as-State philosophy it demonstrates how to use Nexus-UX as the Functional Soul for modern web components. IMPORTANT Contributing Compliance All development on Nexus-UX by human contributors and AI agents alike must adhere to the workspace directives defined in .agent/rules/directives.md . This includes the ZCZS mandate ownership tracking patterns the engine-vs-module architectural contract MutationObserver policy DDD workflow and granular version control. See Spec 1B nexus-ux-spec.md chapter-1b-architecture-contract--development-compliance for the full contract. --- Table of Contents 1. Preface Quick Start preface-quick-start 2. Chapter 1 The Language NEG Grammar Fundamentals chapter-1-the-language-neg-grammar--fundamentals 3. Chapter 2 Essential Directives State Binding chapter-2-essential-directives-state--binding 4. Chapter 3 Control Flow Rendering chapter-3-control-flow--rendering 5. Chapter 4 Events Behavioral Pipelines chapter-4"
-  },
-  {
-    "id": "doc-spec",
-    "route": "/docs/spec",
-    "path": "/_pages/docs/spec.md",
-    "title": "Architecture Spec",
-    "category": "Docs",
-    "keywords": [],
-    "content": "--- id doc-spec title Architecture Spec route /docs/spec icon material-symbols-light architecture order 2 category Docs --- Nexus-UX The Definitive Technical Specification Signal-Driven Universal Reactivity The Unified Signal Graph The best state management is Universal Reactivity. --- Table of Contents 1. Chapter 1 Philosophy Vision chapter-1-philosophy--vision 2. Chapter 2 The Language NEG Grammar Selectors chapter-2-the-language-neg-grammar--selectors 3. Chapter 3 Unified Architecture ESSL chapter-3-unified-architecture--essl 4. Chapter 4 Systemic Coordination The Handshake Logic chapter-4-systemic-coordination-the-handshake-logic 5. Chapter 5 The Engine Mechanics The Brain chapter-5-the-engine-mechanics-the-brain 6. Chapter 6 Security Persistence chapter-6-security--persistence 7. Chapter 7 Project Anatomy Ecosystem chapter-7-project-anatomy--ecosystem 8. Chapter 8 AI Strategy Agentic Support chapter-8-ai-strategy--agentic-support 9. Chapter 9 Validation Migration Real-World Proof chapter-9-validation-migration--real-world-proof 10. Chapter 10 Community Sponsorship chapter-10-community--sponsorship --- Chapter 1 Philosophy Vision Nexus-UX is more than a library it is a strategic response to the excessive abstraction of the modern web. This chapter outlines the philosophy of the Omni-State DOM-as-State and our vision for an AI-native web development experience. 1.1. The Call of the Nexus Reclaiming the Web s Soul The web is evolving. The era of monolithic JavaScript-heavy "
   },
   {
     "id": "lab-attr-assert",
@@ -1014,5 +969,50 @@
       "state"
     ],
     "content": "sw Service Worker lifecycle coordinator sw.register sw.state sw.update sw.skipWaiting providing reactive registration caching control and update prompts. sw.register /sw.js n sw.update sw.register scriptUrl sw.state p class opacity-80 leading-relaxed Located in code src/modules/sprites/sw.ts /code the sw sprite bridges browser Service Worker APIs into reactive signals. /p ul class list-disc list-inside opacity-80 mt-3 space-y-1.5 li strong Lifecycle Tracking /strong Track registration states dynamically in UI banners /li li strong Skip Waiting Prompt /strong Declaratively invoke code sw.skipWaiting /code when updates arrive /li /ul"
+  },
+  {
+    "id": "doc-changelog",
+    "route": "/docs/changelog",
+    "path": "/_pages/docs/changelog.md",
+    "title": "Changelog",
+    "category": "Docs",
+    "keywords": [],
+    "content": "--- id doc-changelog title Changelog route /docs/changelog icon material-symbols-light history order 3 category Docs --- Nexus-UX Changelog Codebase Alignment Analysis Latest Alignment Date 2026-09-13 --- Recent Major Release 2026-09-13 Native API Reflect Proxy Engine Scope Resolution Unification and ZCZS Storage Compliance Native Web API Reflect Proxy Engine src/engine/reflect.ts - Authoritative Reflect Factory createReflectProxy Implemented authoritative factory wrapping native browser APIs window localStorage sessionStorage document screen navigator fetch indexedDB in Proxy/Reflect traps with zero regex scanning overhead and zero intermediate serialization. Proxies are cached via WeakMap for zero-allocation reuse. - Dual-Compatibility Web Storage Supports both standard Web API methods getItem setItem removeItem clear key length and direct property reads/writes localStorage.collapsed false with reactive track storage key and trigger storage key hooks and automatic cross-tab synchronization via native storage events. - Callable fetch Proxy Provides a transparent proxy for fetch url options returning native Promise fully supporting .then .catch etc. while ensuring fetch is never shadowed by internal engine utility objects. - Reactive indexedDB Operations Exposes structured store operations createStoreOperations getIndexedDBProxy for zero-overhead persistence without transaction boilerplate. Scope Resolution Unification src/engine/scope.ts src/engine/evaluator.ts - Single Auth"
+  },
+  {
+    "id": "doc-license",
+    "route": "/docs/license",
+    "path": "/_pages/docs/license.md",
+    "title": "License",
+    "category": "Docs",
+    "keywords": [],
+    "content": "--- id doc-license title License route /docs/license icon material-symbols-light verified-user-outline order 5 category Docs --- MIT License Copyright c 2026 Nexus-UX Authors Permission is hereby granted free of charge to any person obtaining a copy of this software and associated documentation files the Software to deal in the Software without restriction including without limitation the rights to use copy modify merge publish distribute sublicense and/or sell copies of the Software and to permit persons to whom the Software is furnished to do so subject to the following conditions The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED AS IS WITHOUT WARRANTY OF ANY KIND EXPRESS OR IMPLIED INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM DAMAGES OR OTHER LIABILITY WHETHER IN AN ACTION OF CONTRACT TORT OR OTHERWISE ARISING FROM OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE."
+  },
+  {
+    "id": "doc-readme",
+    "route": "/docs/readme",
+    "path": "/_pages/docs/readme.md",
+    "title": "README",
+    "category": "Docs",
+    "keywords": [],
+    "content": "--- id doc-readme title README route /docs/readme icon material-symbols-light info-outline order 4 category Docs --- Nexus-UX Signal-Driven Universal Reactivity. High-Fidelity Tailwind JIT. Omni-State DOM-as-State Framework. Nexus-UX is a reactive framework designed for developers who demand absolute performance granular control and a zero-build experience. It collapses the traditional frontend stack by treating the DOM as a queryable reactive state graph while achieving 100 functional parity with Tailwind v4 . --- The Five Pillars 1. Omni-State DOM-as-State We assert that the DOM _is_ the primary state graph. No phantom Virtual DOM. No reconciliation tax. The HTML attributes are the declaration source while the binary signal heap is the runtime truth. 2. Native JIT Engine Tailwind v4 Nexus-UX achieves 1 1 bit-for-bit parity with the official Tailwind v4 CDN. It compiles utility classes into a high-performance Unified Adopted StyleSheets Registry in real-time. 3. Zero-DOM Pollution Using CSSStyleSheet.replaceSync Nexus-UX eliminates all legacy and tag pollution. Styles automatically penetrate Shadow DOM boundaries without duplicative parsing. 4. ZCZS Zero-Copy Zero-Serialization A value-pooling reactive core designed for 120fps animations. Data flows from kernel to DOM via binary signal heaps bypassing JSON serialization. 5. Agentic Readiness Built for Machine Reasoning Efficiency . Built-in Resolution Beacons report missing selectors and failed expressions back to Agentic Ho"
+  },
+  {
+    "id": "doc-reference",
+    "route": "/docs/reference",
+    "path": "/_pages/docs/reference.md",
+    "title": "Technical Reference",
+    "category": "Docs",
+    "keywords": [],
+    "content": "--- id doc-reference title Technical Reference route /docs/reference icon material-symbols-light menu-book-outline order 1 category Docs --- Nexus-UX The Exhaustive Technical Reference The Practical Manual From Syntax to Practice Theory is knowing how it works. Practice is making it work. This document bridges both. This guide is the definitive practical reference for developers and AI agents building with Nexus-UX. It is the core Toolkit for rapid development focused on outcomes and practical implementation patterns. Built on the Omni-State DOM-as-State philosophy it demonstrates how to use Nexus-UX as the Functional Soul for modern web components. IMPORTANT Contributing Compliance All development on Nexus-UX by human contributors and AI agents alike must adhere to the workspace directives defined in .agent/rules/directives.md . This includes the ZCZS mandate ownership tracking patterns the engine-vs-module architectural contract MutationObserver policy DDD workflow and granular version control. See Spec 1B nexus-ux-spec.md chapter-1b-architecture-contract--development-compliance for the full contract. --- Table of Contents 1. Preface Quick Start preface-quick-start 2. Chapter 1 The Language NEG Grammar Fundamentals chapter-1-the-language-neg-grammar--fundamentals 3. Chapter 2 Essential Directives State Binding chapter-2-essential-directives-state--binding 4. Chapter 3 Control Flow Rendering chapter-3-control-flow--rendering 5. Chapter 4 Events Behavioral Pipelines chapter-4"
+  },
+  {
+    "id": "doc-spec",
+    "route": "/docs/spec",
+    "path": "/_pages/docs/spec.md",
+    "title": "Architecture Spec",
+    "category": "Docs",
+    "keywords": [],
+    "content": "--- id doc-spec title Architecture Spec route /docs/spec icon material-symbols-light architecture order 2 category Docs --- Nexus-UX The Definitive Technical Specification Signal-Driven Universal Reactivity The Unified Signal Graph The best state management is Universal Reactivity. --- Table of Contents 1. Chapter 1 Philosophy Vision chapter-1-philosophy--vision 2. Chapter 2 The Language NEG Grammar Selectors chapter-2-the-language-neg-grammar--selectors 3. Chapter 3 Unified Architecture ESSL chapter-3-unified-architecture--essl 4. Chapter 4 Systemic Coordination The Handshake Logic chapter-4-systemic-coordination-the-handshake-logic 5. Chapter 5 The Engine Mechanics The Brain chapter-5-the-engine-mechanics-the-brain 6. Chapter 6 Security Persistence chapter-6-security--persistence 7. Chapter 7 Project Anatomy Ecosystem chapter-7-project-anatomy--ecosystem 8. Chapter 8 AI Strategy Agentic Support chapter-8-ai-strategy--agentic-support 9. Chapter 9 Validation Migration Real-World Proof chapter-9-validation-migration--real-world-proof 10. Chapter 10 Community Sponsorship chapter-10-community--sponsorship --- Chapter 1 Philosophy Vision Nexus-UX is more than a library it is a strategic response to the excessive abstraction of the modern web. This chapter outlines the philosophy of the Omni-State DOM-as-State and our vision for an AI-native web development experience. 1.1. The Call of the Nexus Reclaiming the Web s Soul The web is evolving. The era of monolithic JavaScript-heavy "
   }
 ]

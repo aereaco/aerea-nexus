@@ -1,0 +1,13 @@
+# Aerea-Nexus Platform Core Module Manifest
+api_version = "nexus.app/v1"
+id = "flow"
+name = "Visual Workflow & Spatial Node Engine"
+version = "0.1.0"
+category = "Platform"
+route = "/flow"
+entry = "index.html"
+icon = "material-symbols-light:account-tree-outline"
+order = 3
+
+[capabilities]
+allow = ["db.read", "db.write", "cell.spawn"]

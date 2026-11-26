@@ -12,7 +12,17 @@ use std::sync::Arc;
 fn repo_site_and_dist() -> (PathBuf, PathBuf) {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let root = manifest_dir.parent().expect("io/ parent is aerea-nexus root");
-    (root.join("site"), root.join("dist"))
+    let web_dir = if root.join("shell").join("index.html").is_file() {
+        root.join("shell")
+    } else {
+        root.join("site")
+    };
+    let dist_dir = if root.join("ux").join("dist").join("nexus-ux.js").is_file() {
+        root.join("ux").join("dist")
+    } else {
+        root.join("dist")
+    };
+    (web_dir, dist_dir)
 }
 
 #[tokio::test]

@@ -1,0 +1,14 @@
+# Aerea-Nexus Fractal Application Package Manifest
+api_version = "nexus.app/v1"
+id = "todo"
+name = "Tasks & Project Tracker"
+version = "0.1.0"
+category = "Apps"
+route = "/todo"
+entry = "index.html"
+icon = "material-symbols-light:checklist"
+order = 3
+repository = "aereaco/nexus-app-todo"
+
+[capabilities]
+allow = ["db.read", "db.write"]

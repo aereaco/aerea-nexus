@@ -1,0 +1,17 @@
+# Aerea-Nexus Fractal Application Package Manifest
+api_version = "nexus.app/v1"
+id = "erp"
+name = "ERP Operations & Procurement"
+version = "0.1.0"
+category = "Apps"
+route = "/erp"
+entry = "index.html"
+icon = "material-symbols-light:precision-manufacturing-outline"
+order = 1
+repository = "aereaco/nexus-app-erp"
+
+[capabilities]
+allow = ["db.read", "db.write", "blob.read", "blob.write", "cell.spawn"]
+
+[database]
+tables = ["erp_po", "erp_audit", "erp_chat", "erp_notification"]

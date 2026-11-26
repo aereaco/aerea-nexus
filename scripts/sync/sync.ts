@@ -31,7 +31,7 @@ function globToRegExp(glob: string): RegExp {
 }
 
 const TEXT_EXTS = new Set([".rs", ".ts", ".js", ".md", ".toml", ".json", ".ps1", ".html", ".css", ".yml", ".yaml"]);
-const MOJIBAKE_RE = /ðŸ|â†|â€|âœ|âš|Ã—|Â§|â Œ/;
+const MOJIBAKE_RE = /\u00F0\u0178|\u00E2\u2020|\u00E2\u20AC|\u00E2\u0153|\u00E2\u0161|\u00C3\u2014|\u00C2\u00A7/;
 const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
 
 function assertCleanUtf8(bytes: Uint8Array, relPath: string): void {
@@ -60,6 +60,83 @@ function runGit(args: string[], cwd: string): { ok: boolean; out: string; err: s
   };
 }
 
+function mapSourceToDest(rel: string, cfg: SyncTargetConfig): string {
+  if (cfg.pathMappings) {
+    for (const m of cfg.pathMappings) {
+      const from = m.fromPrefix.replace(/\\/g, "/");
+      const to = m.toPrefix.replace(/\\/g, "/");
+      if (rel.startsWith(from)) {
+        return to + rel.slice(from.length);
+      }
+    }
+  }
+  const prefix = cfg.sourcePrefix ? cfg.sourcePrefix.replace(/\\/g, "/") : "";
+  if (prefix && rel.startsWith(prefix)) {
+    return rel.slice(prefix.length);
+  }
+  return rel;
+}
+
+function mapDestToSource(destRel: string, cfg: SyncTargetConfig): string | null {
+  if (cfg.pathMappings) {
+    for (const m of cfg.pathMappings) {
+      const from = m.fromPrefix.replace(/\\/g, "/");
+      const to = m.toPrefix.replace(/\\/g, "/");
+      if (destRel.startsWith(to)) {
+        const candidate = from + destRel.slice(to.length);
+        if (!cfg.pullPrefix || candidate.startsWith(cfg.pullPrefix)) {
+          return candidate;
+        }
+      }
+    }
+  }
+  const prefix = cfg.sourcePrefix ? cfg.sourcePrefix.replace(/\\/g, "/") : "";
+  const candidate = prefix ? prefix + destRel : destRel;
+  if (cfg.pullPrefix && !candidate.startsWith(cfg.pullPrefix)) {
+    return null;
+  }
+  return candidate;
+}
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+/**
+ * Keep `io/docs/*` and `docs/io/*` synchronized bidirectionally inside the monorepo.
+ */
+async function syncInternalDocsMirror(sourceRoot: string): Promise<void> {
+  for (const docName of ["architecture.md", "benchmarks.md"]) {
+    const ioDoc = path.join(sourceRoot, "io", "docs", docName);
+    const unifiedDoc = path.join(sourceRoot, "docs", "io", docName);
+    try {
+      const ioStat = await Deno.stat(ioDoc).catch(() => null);
+      const uniStat = await Deno.stat(unifiedDoc).catch(() => null);
+      if (ioStat && uniStat) {
+        const ioMtime = ioStat.mtime?.getTime() ?? 0;
+        const uniMtime = uniStat.mtime?.getTime() ?? 0;
+        if (ioMtime >= uniMtime) {
+          await Deno.copyFile(ioDoc, unifiedDoc);
+        } else {
+          await Deno.copyFile(unifiedDoc, ioDoc);
+        }
+      } else if (ioStat && !uniStat) {
+        await Deno.mkdir(path.dirname(unifiedDoc), { recursive: true });
+        await Deno.copyFile(ioDoc, unifiedDoc);
+      } else if (!ioStat && uniStat) {
+        await Deno.mkdir(path.dirname(ioDoc), { recursive: true });
+        await Deno.copyFile(unifiedDoc, ioDoc);
+      }
+    } catch {
+      // ignore
+    }
+  }
+}
+
 async function cleanTargetTree(targetRoot: string, allowedRelPaths: Set<string>): Promise<void> {
   try {
     const toDelete: string[] = [];
@@ -68,6 +145,7 @@ async function cleanTargetTree(targetRoot: string, allowedRelPaths: Set<string>)
       if (
         rel.startsWith(".git/") ||
         rel === ".git" ||
+        rel.startsWith(".nexus/") ||
         rel.startsWith(".wrangler/") ||
         rel.startsWith("node_modules/") ||
         rel.startsWith("target/")
@@ -90,12 +168,100 @@ async function cleanTargetTree(targetRoot: string, allowedRelPaths: Set<string>)
   }
 }
 
+/**
+ * Two-Way Pull (`--pull`): Propagate changes from a downstream domain repository back into `aerea-nexus`.
+ */
+async function pullFromTarget(
+  key: string,
+  cfg: SyncTargetConfig,
+  sourceRoot: string
+): Promise<number> {
+  const targetRoot = path.resolve(sourceRoot, cfg.targetDir);
+  try {
+    const st = await Deno.stat(targetRoot);
+    if (!st.isDirectory) return 0;
+  } catch {
+    console.log(`   ℹ️  Skipping pull for [${key}] (${targetRoot} not initialized locally)`);
+    return 0;
+  }
+
+  console.log(`\n============================================================`);
+  console.log(`⬇️  Pulling [${key}] ← ${cfg.name}`);
+  console.log(`   Downstream: ${targetRoot}`);
+  console.log(`   Upstream:   ${sourceRoot}`);
+  console.log(`============================================================`);
+
+  const includeRegexes = cfg.includes.map(globToRegExp);
+  const excludeRegexes = cfg.excludes.map(globToRegExp);
+  const transformSet = new Set((cfg.transforms || []).map((t) => t.file.replace(/\\/g, "/")));
+  const generatedSet = new Set((cfg.generatedFiles || []).map((g) => g.path.replace(/\\/g, "/")));
+
+  let updatedCount = 0;
+
+  for await (const entry of walk(targetRoot, { includeDirs: false })) {
+    const destRel = path.relative(targetRoot, entry.path).replace(/\\/g, "/");
+    if (
+      destRel.startsWith(".git/") ||
+      destRel.startsWith(".nexus/") ||
+      destRel.startsWith("node_modules/") ||
+      destRel.startsWith(".wrangler/") ||
+      destRel.startsWith("target/")
+    ) {
+      continue;
+    }
+    if (transformSet.has(destRel) || generatedSet.has(destRel)) {
+      continue;
+    }
+
+    const srcRel = mapDestToSource(destRel, cfg);
+    if (!srcRel) continue;
+    if (!includeRegexes.some((rx) => rx.test(srcRel))) continue;
+    if (excludeRegexes.some((rx) => rx.test(srcRel))) continue;
+
+    const downBytes = await Deno.readFile(entry.path);
+    assertCleanUtf8(downBytes, `${key}:${destRel}`);
+
+    const upPath = path.join(sourceRoot, srcRel);
+    let upBytes: Uint8Array | null = null;
+    try {
+      upBytes = await Deno.readFile(upPath);
+    } catch {
+      upBytes = null;
+    }
+
+    if (!upBytes || !bytesEqual(downBytes, upBytes)) {
+      // Only pull if downstream file mtime is newer than upstream (or upstream doesn't exist)
+      const downStat = await Deno.stat(entry.path);
+      const upStat = await Deno.stat(upPath).catch(() => null);
+      const downMtime = downStat.mtime?.getTime() ?? 0;
+      const upMtime = upStat?.mtime?.getTime() ?? 0;
+      if (!upStat || downMtime > upMtime) {
+        await Deno.mkdir(path.dirname(upPath), { recursive: true });
+        await Deno.writeFile(upPath, downBytes);
+        console.log(`   ⬇️  Pulled updated file: ${srcRel} (from ${key}/${destRel})`);
+        updatedCount++;
+      }
+    }
+  }
+
+  await syncInternalDocsMirror(sourceRoot);
+  console.log(`   ✓ Pull complete for [${key}]: ${updatedCount} file(s) updated in aerea-nexus`);
+  return updatedCount;
+}
+
 async function syncTarget(
   key: string,
   cfg: SyncTargetConfig,
   sourceRoot: string,
-  opts: { commit?: boolean; push?: boolean; publish?: boolean }
+  opts: { commit?: boolean; push?: boolean; publish?: boolean; pull?: boolean }
 ): Promise<void> {
+  await syncInternalDocsMirror(sourceRoot);
+
+  if (opts.pull) {
+    await pullFromTarget(key, cfg, sourceRoot);
+    return;
+  }
+
   const targetRoot = path.resolve(sourceRoot, cfg.targetDir);
   console.log(`\n============================================================`);
   console.log(`🔄 Syncing [${key}] → ${cfg.name}`);
@@ -112,12 +278,11 @@ async function syncTarget(
   const syncedRelPaths = new Set<string>();
   let copiedCount = 0;
 
-  const prefix = cfg.sourcePrefix ? cfg.sourcePrefix.replace(/\\/g, "/") : "";
-
   for await (const entry of walk(sourceRoot, { includeDirs: false })) {
     const rel = path.relative(sourceRoot, entry.path).replace(/\\/g, "/");
     if (
       rel.startsWith(".git/") ||
+      rel.startsWith(".nexus/") ||
       rel.startsWith("node_modules/") ||
       rel.startsWith(".wrangler/") ||
       rel.startsWith("target/") ||
@@ -131,7 +296,7 @@ async function syncTarget(
     const excluded = excludeRegexes.some((rx) => rx.test(rel));
     if (excluded) continue;
 
-    const destRel = prefix && rel.startsWith(prefix) ? rel.slice(prefix.length) : rel;
+    const destRel = mapSourceToDest(rel, cfg);
     const destPath = path.join(targetRoot, destRel);
     await Deno.mkdir(path.dirname(destPath), { recursive: true });
 
@@ -163,7 +328,6 @@ async function syncTarget(
     }
   }
 
-  // Preserve manifest & search index paths during cleanup if runManifest is enabled
   if (cfg.runManifest) {
     syncedRelPaths.add("site/_pages/manifest.json");
     syncedRelPaths.add("site/_pages/search-index.json");
@@ -273,6 +437,7 @@ async function syncTarget(
 if (import.meta.main) {
   const args = Deno.args;
   const targetArg = args.find((a) => a.startsWith("--target="))?.split("=")[1] || "all";
+  const pull = args.includes("--pull");
   const commit = args.includes("--commit") || args.includes("--push") || args.includes("--publish");
   const push = args.includes("--push") || args.includes("--publish");
   const publish = args.includes("--publish");
@@ -289,8 +454,8 @@ if (import.meta.main) {
       console.error(`Unknown sync target: "${t}". Available: ${Object.keys(syncConfig).join(", ")}`);
       Deno.exit(1);
     }
-    await syncTarget(t, cfg, sourceRoot, { commit, push, publish });
+    await syncTarget(t, cfg, sourceRoot, { commit, push, publish, pull });
   }
 
-  console.log(`\n✅ SSoT synchronization complete for: ${targets.join(", ")}`);
+  console.log(`\n✅ SSoT ${pull ? "two-way pull" : "synchronization"} complete for: ${targets.join(", ")}`);
 }

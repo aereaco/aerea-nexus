@@ -19,16 +19,6 @@
     "category": "Apps"
   },
   {
-    "id": "doc-reference",
-    "route": "/docs/reference",
-    "path": "/_pages/docs/reference.md",
-    "title": "Technical Reference",
-    "icon": "material-symbols-light:menu-book-outline",
-    "order": 1,
-    "parent": null,
-    "category": "Docs"
-  },
-  {
     "id": "labs-attributes",
     "route": "/labs/attributes",
     "path": "/_pages/labs/attributes/index.html",
@@ -97,21 +87,21 @@
     ]
   },
   {
+    "id": "doc-reference",
+    "route": "/docs/reference",
+    "path": "/_pages/docs/reference.md",
+    "title": "Technical Reference",
+    "icon": "material-symbols-light:menu-book-outline",
+    "order": 1,
+    "parent": null,
+    "category": "Docs"
+  },
+  {
     "id": "drag",
     "route": "/drag",
     "path": "/_pages/apps/drag/index.html",
     "title": "Drag and Drop",
     "icon": "material-symbols-light:move-selection-down-outline",
-    "order": 2,
-    "parent": null,
-    "category": "Apps"
-  },
-  {
-    "id": "iam",
-    "route": "/iam",
-    "path": "/_pages/apps/iam/index.html",
-    "title": "Users &amp; Groups (IAM)",
-    "icon": "material-symbols-light:admin-panel-settings-outline",
     "order": 2,
     "parent": null,
     "category": "Apps"
@@ -127,14 +117,14 @@
     "category": "Apps"
   },
   {
-    "id": "doc-spec",
-    "route": "/docs/spec",
-    "path": "/_pages/docs/spec.md",
-    "title": "Architecture Spec",
-    "icon": "material-symbols-light:architecture",
+    "id": "iam",
+    "route": "/iam",
+    "path": "/_pages/apps/iam/index.html",
+    "title": "Users &amp; Groups (IAM)",
+    "icon": "material-symbols-light:admin-panel-settings-outline",
     "order": 2,
     "parent": null,
-    "category": "Docs"
+    "category": "Apps"
   },
   {
     "id": "lab-attr-bind",
@@ -207,6 +197,16 @@
     ]
   },
   {
+    "id": "doc-spec",
+    "route": "/docs/spec",
+    "path": "/_pages/docs/spec.md",
+    "title": "Architecture Spec",
+    "icon": "material-symbols-light:architecture",
+    "order": 2,
+    "parent": null,
+    "category": "Docs"
+  },
+  {
     "id": "flow",
     "route": "/flow",
     "path": "/_pages/apps/flow/index.html",
@@ -225,16 +225,6 @@
     "order": 3,
     "parent": null,
     "category": "Apps"
-  },
-  {
-    "id": "doc-changelog",
-    "route": "/docs/changelog",
-    "path": "/_pages/docs/changelog.md",
-    "title": "Changelog",
-    "icon": "material-symbols-light:history",
-    "order": 3,
-    "parent": null,
-    "category": "Docs"
   },
   {
     "id": "lab-attr-for",
@@ -304,6 +294,16 @@
     ]
   },
   {
+    "id": "doc-changelog",
+    "route": "/docs/changelog",
+    "path": "/_pages/docs/changelog.md",
+    "title": "Changelog",
+    "icon": "material-symbols-light:history",
+    "order": 3,
+    "parent": null,
+    "category": "Docs"
+  },
+  {
     "id": "builder",
     "route": "/builder",
     "path": "/_pages/apps/builder/index.html",
@@ -325,16 +325,6 @@
       "daisyui",
       "tailwind"
     ]
-  },
-  {
-    "id": "doc-readme",
-    "route": "/docs/readme",
-    "path": "/_pages/docs/readme.md",
-    "title": "README",
-    "icon": "material-symbols-light:info-outline",
-    "order": 4,
-    "parent": null,
-    "category": "Docs"
   },
   {
     "id": "lab-attr-if",
@@ -402,12 +392,12 @@
     "category": "Labs"
   },
   {
-    "id": "doc-license",
-    "route": "/docs/license",
-    "path": "/_pages/docs/license.md",
-    "title": "License",
-    "icon": "material-symbols-light:verified-user-outline",
-    "order": 5,
+    "id": "doc-readme",
+    "route": "/docs/readme",
+    "path": "/_pages/docs/readme.md",
+    "title": "README",
+    "icon": "material-symbols-light:info-outline",
+    "order": 4,
     "parent": null,
     "category": "Docs"
   },
@@ -464,6 +454,16 @@
       "mutate",
       "mutation"
     ]
+  },
+  {
+    "id": "doc-license",
+    "route": "/docs/license",
+    "path": "/_pages/docs/license.md",
+    "title": "License",
+    "icon": "material-symbols-light:verified-user-outline",
+    "order": 5,
+    "parent": null,
+    "category": "Docs"
   },
   {
     "id": "lab-attr-on",

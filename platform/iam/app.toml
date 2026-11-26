@@ -1,0 +1,14 @@
+# Aerea-Nexus Platform Core Module Manifest
+api_version = "nexus.app/v1"
+id = "iam"
+name = "Users, Groups, Roles & Permissions (IAM)"
+version = "0.1.0"
+category = "Platform"
+route = "/iam"
+entry = "index.html"
+state_module = "iam-state.js"
+icon = "material-symbols-light:admin-panel-settings-outline"
+order = 2
+
+[capabilities]
+allow = ["db.read", "db.write", "db.admin", "blob.read", "blob.write"]

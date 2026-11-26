@@ -365,10 +365,49 @@ function resolveLineage(item: RawManifestEntry, rawMap: Map<string, RawManifestE
   };
 }
 
+function dirExists(p: string): boolean {
+  try {
+    return Deno.statSync(p).isDirectory;
+  } catch {
+    return false;
+  }
+}
+
 export function generateManifest(): RouteManifestEntry[] {
-  const publicRaw = scanDirectory(PAGES_DIR, "/_pages", false);
-  const internalRaw = scanDirectory(INTERNAL_DIR, "/_internal", true);
-  const allRaw = [...publicRaw, ...internalRaw];
+  const isNineDomainWorkspace = dirExists("shell") && dirExists("ux");
+  const allRaw: RawManifestEntry[] = [];
+
+  if (isNineDomainWorkspace) {
+    if (dirExists("site/_pages")) {
+      allRaw.push(...scanDirectory("site/_pages", "/_pages", false));
+    }
+    if (dirExists("shell/_pages")) {
+      allRaw.push(...scanDirectory("shell/_pages", "/_pages", false));
+    }
+    if (dirExists("apps")) {
+      allRaw.push(...scanDirectory("apps", "/_pages/apps", false, undefined, "Apps"));
+    }
+    if (dirExists("platform")) {
+      allRaw.push(...scanDirectory("platform", "/_pages/apps", false, undefined, "Apps"));
+    }
+    if (dirExists("labs")) {
+      allRaw.push(...scanDirectory("labs", "/_pages/labs", false, undefined, "Labs"));
+    }
+    if (dirExists("docs")) {
+      // Scan top-level published docs pages (changelog.md, license.md, readme.md, reference.md, spec.md)
+      const docEntries = scanDirectory("docs", "/_pages/docs", false, undefined, "Docs").filter(
+        (e) => !e.path.startsWith("/_pages/docs/io/") && !e.path.startsWith("/_pages/docs/ux/") && e.id !== "io-menu" && e.id !== "ux-menu"
+      );
+      allRaw.push(...docEntries);
+    }
+    if (dirExists("platform/_internal")) {
+      allRaw.push(...scanDirectory("platform/_internal", "/_internal", true));
+    }
+  } else {
+    const publicRaw = scanDirectory(PAGES_DIR, "/_pages", false);
+    const internalRaw = dirExists(INTERNAL_DIR) ? scanDirectory(INTERNAL_DIR, "/_internal", true) : [];
+    allRaw.push(...publicRaw, ...internalRaw);
+  }
 
   const rawMap = new Map<string, RawManifestEntry>();
   allRaw.forEach((r) => {
@@ -416,7 +455,12 @@ export function generateManifest(): RouteManifestEntry[] {
     return a.id.localeCompare(b.id);
   });
 
-  Deno.writeTextFileSync(MANIFEST_PATH, JSON.stringify(routes, null, 2) + "\n");
+  const manifestJson = JSON.stringify(routes, null, 2) + "\n";
+  Deno.mkdirSync("site/_pages", { recursive: true });
+  Deno.writeTextFileSync(MANIFEST_PATH, manifestJson);
+  if (dirExists("shell/_pages")) {
+    Deno.writeTextFileSync("shell/_pages/manifest.json", manifestJson);
+  }
   console.log(`[manifest] Generated ${MANIFEST_PATH} with ${routes.length} route(s):`);
   routes.forEach((r) => {
     console.log(`  - [${r.order ?? "-"}] ${r.id} -> route: "${r.route}" (${r.path})${r.internal ? " [internal]" : ""}${r.parent ? ` (parent: ${r.parent})` : ""}`);
@@ -438,7 +482,11 @@ export function generateManifest(): RouteManifestEntry[] {
       };
     });
 
-  Deno.writeTextFileSync(SEARCH_INDEX_PATH, JSON.stringify(searchIndex, null, 2) + "\n");
+  const searchIndexJson = JSON.stringify(searchIndex, null, 2) + "\n";
+  Deno.writeTextFileSync(SEARCH_INDEX_PATH, searchIndexJson);
+  if (dirExists("shell/_pages")) {
+    Deno.writeTextFileSync("shell/_pages/search-index.json", searchIndexJson);
+  }
   console.log(`[search-index] Generated ${SEARCH_INDEX_PATH} with ${searchIndex.length} entry(ies)`);
 
   return routes;

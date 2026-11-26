@@ -75,12 +75,56 @@ if (!validModes.includes(config.mode)) {
   Deno.exit(1);
 }
 
-// 3. Strict Path Resolution — All contents served strictly from /site and /dist
+// 3. Strict Path Resolution — Supports both 9-domain monorepo and standalone single-root repos
 const REPO_ROOT = Deno.cwd();
-const SITE_DIR = resolve(REPO_ROOT, "site");
-const DIST_DIR = resolve(REPO_ROOT, "dist");
-const SRC_DIR = resolve(REPO_ROOT, "src");
+function dirExists(p: string): boolean {
+  try {
+    return Deno.statSync(p).isDirectory;
+  } catch {
+    return false;
+  }
+}
+function fileExists(p: string): boolean {
+  try {
+    return Deno.statSync(p).isFile;
+  } catch {
+    return false;
+  }
+}
+const HAS_NINE_DOMAINS = dirExists(resolve(REPO_ROOT, "shell")) && dirExists(resolve(REPO_ROOT, "ux"));
+const SITE_DIR = HAS_NINE_DOMAINS ? resolve(REPO_ROOT, "shell") : resolve(REPO_ROOT, "site");
+const DIST_DIR = HAS_NINE_DOMAINS ? resolve(REPO_ROOT, "ux", "dist") : resolve(REPO_ROOT, "dist");
+const SRC_DIR = HAS_NINE_DOMAINS ? resolve(REPO_ROOT, "ux", "src") : resolve(REPO_ROOT, "src");
 const DEBOUNCE_MS = 750;
+
+function resolveDomainStaticPath(urlPath: string): string | null {
+  const rel = urlPath.replace(/^\/+/, "");
+  if (!rel || rel.includes("..")) return null;
+  const candidates: string[] = [
+    join(SITE_DIR, rel),
+    join(REPO_ROOT, "site", rel),
+    join(REPO_ROOT, "shell", rel),
+    join(REPO_ROOT, "platform", rel),
+    join(REPO_ROOT, "labs", rel),
+  ];
+  if (rel.startsWith("_pages/apps/")) {
+    const sub = rel.slice("_pages/apps/".length);
+    candidates.unshift(join(REPO_ROOT, "apps", sub), join(REPO_ROOT, "platform", sub));
+  } else if (rel.startsWith("_pages/labs/")) {
+    const sub = rel.slice("_pages/labs/".length);
+    candidates.unshift(join(REPO_ROOT, "labs", sub));
+  } else if (rel.startsWith("_pages/docs/")) {
+    const sub = rel.slice("_pages/docs/".length);
+    candidates.unshift(join(REPO_ROOT, "docs", sub));
+  } else if (rel.startsWith("_pages/")) {
+    const sub = rel.slice("_pages/".length);
+    candidates.unshift(join(REPO_ROOT, "site", "_pages", sub), join(REPO_ROOT, "shell", "_pages", sub));
+  }
+  for (const c of candidates) {
+    if (fileExists(c)) return c;
+  }
+  return null;
+}
 
 const IGNORE_PATTERNS = [
   "/.git/",
@@ -315,8 +359,20 @@ async function handler(req: Request): Promise<Response> {
     return await handleServerSearch(url);
   }
 
-  // D. Physical Static File Check (SITE_DIR)
-  // Let serveDir check if this exact file physically exists on disk in /site
+  // D. Physical Static File Check (Multi-Domain Overlay + SITE_DIR)
+  const domainMatch = resolveDomainStaticPath(url.pathname);
+  if (domainMatch) {
+    const parentRoot = resolve(domainMatch, "..");
+    const fileName = domainMatch.replace(/\\/g, "/").split("/").pop()!;
+    const fileReq = new Request(new URL("/" + fileName, url.origin), req);
+    const domainRes = await serveDir(fileReq, { fsRoot: parentRoot, quiet: true });
+    if (domainRes.status !== 404) {
+      domainRes.headers.set("Cache-Control", config.isDev ? "no-cache, must-revalidate" : "public, max-age=0, must-revalidate");
+      domainRes.headers.set("Cross-Origin-Opener-Policy", "same-origin");
+      domainRes.headers.set("Cross-Origin-Embedder-Policy", "require-corp");
+      return domainRes;
+    }
+  }
   const staticRes = await serveDir(req, { fsRoot: SITE_DIR, quiet: true });
   if (staticRes.status !== 404) {
     staticRes.headers.set("Cache-Control", config.isDev ? "no-cache, must-revalidate" : "public, max-age=0, must-revalidate");

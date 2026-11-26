@@ -1,0 +1,14 @@
+# Aerea-Nexus Fractal Application Package Manifest
+api_version = "nexus.app/v1"
+id = "drag"
+name = "Kanban & Spatial Drag Board"
+version = "0.1.0"
+category = "Apps"
+route = "/drag"
+entry = "index.html"
+icon = "material-symbols-light:drag-pan"
+order = 2
+repository = "aereaco/nexus-app-drag"
+
+[capabilities]
+allow = ["db.read", "db.write"]

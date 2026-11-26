@@ -9,10 +9,10 @@
       __defProp(target, name, { get: all[name], enumerable: true });
   };
 
-  // src/engine/consts.ts
+  // ux/src/engine/consts.ts
   var ROOT_SELECTOR, STATE, ATTRIBUTE_PREFIX, CUSTOM_EVENT_PREFIX, DATA_PRESERVE_ATTR, NEG_TOKENS, MODIFIER_DELIMITER, DATA_STACK_KEY, LOCAL_SCOPES_KEY, COMPONENT_CONTEXT_KEY, CLEANUP_FUNCTIONS_KEY, EFFECT_RUNNERS_KEY, RUN_EFFECT_RUNNERS_KEY, MARKER_KEY, IS_TEMPLATE_KEY, TIMER_MAP_KEY, DEFAULT_DEBOUNCE_TIME, DEFAULT_THROTTLE_TIME;
   var init_consts = __esm({
-    "src/engine/consts.ts"() {
+    "ux/src/engine/consts.ts"() {
       ROOT_SELECTOR = "[data-init], [data-ux-init], [data-signal], [data-router], [data-import], [data-stylesheet], [data-ux-theme], body";
       STATE = "nexus";
       ATTRIBUTE_PREFIX = "data-";
@@ -45,14 +45,14 @@
     }
   });
 
-  // src/engine/mcp.ts
+  // ux/src/engine/mcp.ts
   var mcp_exports = {};
   __export(mcp_exports, {
     MCPClient: () => MCPClient
   });
   var MCPClient;
   var init_mcp = __esm({
-    "src/engine/mcp.ts"() {
+    "ux/src/engine/mcp.ts"() {
       init_debug();
       MCPClient = class {
         url;
@@ -151,7 +151,7 @@
     }
   });
 
-  // src/engine/debug.ts
+  // ux/src/engine/debug.ts
   function reportError(error, element, expression) {
     const errorMessage = `[UX Error] ${error.message}`;
     console.error(errorMessage, { element, expression, originalError: error });
@@ -249,7 +249,7 @@ ${suggestion}`);
   }
   var errMsg, toError, UXError, logger;
   var init_debug = __esm({
-    "src/engine/debug.ts"() {
+    "ux/src/engine/debug.ts"() {
       init_consts();
       errMsg = (e) => e instanceof Error ? e.message : String(e);
       toError = (e) => e instanceof Error ? e : new Error(String(e));
@@ -286,14 +286,14 @@ ${suggestion}`);
     }
   });
 
-  // src/engine/modules.ts
+  // ux/src/engine/modules.ts
   init_consts();
 
-  // src/engine/reactivity.ts
+  // ux/src/engine/reactivity.ts
   init_consts();
   init_debug();
 
-  // src/engine/scheduler.ts
+  // ux/src/engine/scheduler.ts
   var currentEvalFrame = 0;
   function getEvalFrame() {
     return currentEvalFrame;
@@ -406,7 +406,7 @@ ${suggestion}`);
   };
   var scheduler = new Scheduler();
 
-  // src/engine/reactivity.ts
+  // ux/src/engine/reactivity.ts
   var ZCZS_SUPPORTED = typeof SharedArrayBuffer !== "undefined";
   var SignalHeap = class {
     _floatHeap;
@@ -1239,10 +1239,10 @@ ${suggestion}`);
     });
   }
 
-  // src/engine/reconciler.ts
+  // ux/src/engine/reconciler.ts
   init_consts();
 
-  // src/modules/attributes/stylesheet.ts
+  // ux/src/modules/attributes/stylesheet.ts
   var stylesheet_exports = {};
   __export(stylesheet_exports, {
     NexusStyleSheet: () => NexusStyleSheet,
@@ -1257,7 +1257,7 @@ ${suggestion}`);
     stylesheet: () => stylesheet
   });
 
-  // src/engine/cache.ts
+  // ux/src/engine/cache.ts
   var DB_NAME = "nexus-media-cache";
   var DB_VERSION = 1;
   var STORE_NAME = "media_blobs";
@@ -1467,7 +1467,7 @@ ${suggestion}`);
   };
   var cacheEngine = new UniversalCacheEngine();
 
-  // src/modules/attributes/assert.ts
+  // ux/src/modules/attributes/assert.ts
   var assert_exports = {};
   __export(assert_exports, {
     default: () => assert_default
@@ -1491,7 +1491,7 @@ ${suggestion}`);
   };
   var assert_default = assertModule;
 
-  // src/modules/attributes/bind.ts
+  // ux/src/modules/attributes/bind.ts
   var bind_exports = {};
   __export(bind_exports, {
     default: () => bind_default
@@ -1702,17 +1702,17 @@ ${suggestion}`);
   };
   var bind_default = bindModule;
 
-  // src/modules/attributes/build.ts
+  // ux/src/modules/attributes/build.ts
   var build_exports = {};
   __export(build_exports, {
     default: () => build_default
   });
   init_debug();
 
-  // src/engine/scope.ts
+  // ux/src/engine/scope.ts
   init_consts();
 
-  // src/engine/reflect.ts
+  // ux/src/engine/reflect.ts
   function createStorageProxy(storage) {
     const ITERATE_KEY2 = Symbol.for("iterate");
     return new Proxy(storage, {
@@ -2102,7 +2102,7 @@ ${suggestion}`);
     return proxy;
   }
 
-  // src/engine/scope.ts
+  // ux/src/engine/scope.ts
   var frameDataStackCache = /* @__PURE__ */ new WeakMap();
   function getDataStack(element) {
     const currentFrame = getEvalFrame();
@@ -2459,7 +2459,7 @@ ${suggestion}`);
     return proxy;
   }
 
-  // src/modules/attributes/build.ts
+  // ux/src/modules/attributes/build.ts
   var BUILD_STORE = "builds";
   async function writeToIDB(key, data, meta) {
     await getIndexedDBProxy()[BUILD_STORE].put({ id: key, data, meta, updatedAt: Date.now() }, key);
@@ -2593,7 +2593,7 @@ ${scripts}
   };
   var build_default = buildModule;
 
-  // src/modules/attributes/class.ts
+  // ux/src/modules/attributes/class.ts
   var class_exports = {};
   __export(class_exports, {
     default: () => class_default
@@ -2621,7 +2621,7 @@ ${scripts}
   };
   var class_default = classModule;
 
-  // src/modules/attributes/component.ts
+  // ux/src/modules/attributes/component.ts
   var component_exports = {};
   __export(component_exports, {
     BaseComponent: () => BaseComponent,
@@ -3068,7 +3068,7 @@ ${scripts}
   };
   var component_default = componentModule;
 
-  // src/modules/attributes/computed.ts
+  // ux/src/modules/attributes/computed.ts
   var computed_exports = {};
   __export(computed_exports, {
     default: () => computed_default
@@ -3178,7 +3178,7 @@ ${scripts}
   };
   var computed_default = computedModule;
 
-  // src/modules/attributes/debug.ts
+  // ux/src/modules/attributes/debug.ts
   var debug_exports = {};
   __export(debug_exports, {
     default: () => debug_default
@@ -3205,7 +3205,7 @@ ${scripts}
   };
   var debug_default = debugModule;
 
-  // src/modules/attributes/drag.ts
+  // ux/src/modules/attributes/drag.ts
   var drag_exports2 = {};
   __export(drag_exports2, {
     CONTAINER_SELECTOR: () => CONTAINER_SELECTOR,
@@ -3223,7 +3223,7 @@ ${scripts}
   });
   init_debug();
 
-  // src/engine/animation.ts
+  // ux/src/engine/animation.ts
   async function flip(targets, changeCallback, options = {}) {
     const { duration = 300, easing = "ease-out" } = options;
     let targetArray = [];
@@ -3278,10 +3278,10 @@ ${scripts}
     });
   }
 
-  // src/modules/attributes/drag.ts
+  // ux/src/modules/attributes/drag.ts
   init_consts();
 
-  // src/modules/sprites/drag.ts
+  // ux/src/modules/sprites/drag.ts
   var drag_exports = {};
   __export(drag_exports, {
     $drag: () => $drag,
@@ -3352,7 +3352,7 @@ ${scripts}
   };
   var drag_default = dragSprite;
 
-  // src/engine/utils/styles.ts
+  // ux/src/engine/utils/styles.ts
   function minifyCSS2(css) {
     return css.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\s+/g, " ").replace(/\s*([{:;,>+~])\s*/g, "$1").replace(/;}/g, "}").trim();
   }
@@ -3378,7 +3378,7 @@ ${scripts}
     return sheet;
   }
 
-  // src/modules/attributes/drag.ts
+  // ux/src/modules/attributes/drag.ts
   var DRAG_CSS = `[data-drag-item],[data-drag]:not([data-drag*="{"]):not([data-drag*="="]):not([data-drag-container]){user-select:none;-webkit-user-select:none;touch-action:none}[data-drag-item]:not([data-drag-handle]),[data-drag]:not([data-drag-handle]):not([data-drag*="{"]):not([data-drag*="="]):not([data-drag-container]){cursor:grab}[data-drag-item]:not([data-drag-handle]):active,[data-drag]:not([data-drag-handle]):not([data-drag*="{"]):not([data-drag*="="]):not([data-drag-container]):active{cursor:grabbing}[data-drag-handle],.handle{cursor:grab;touch-action:none}[data-drag-handle]:active,.handle:active{cursor:grabbing}[data-drag-nodrag]{cursor:default !important;touch-action:auto !important;pointer-events:auto !important}.draggable-drag,.drag-active{opacity:1 !important;box-shadow:0 25px 50px -12px rgba(0,0,0,0.35) !important;transform:scale(1.03) !important;cursor:grabbing !important;z-index:9999 !important;pointer-events:none !important}.draggable-ghost,.drag-ghost{opacity:0.4 !important;pointer-events:none !important;border:2px dashed color-mix(in srgb,currentColor 25%,transparent) !important;background-color:color-mix(in srgb,currentColor 10%,transparent) !important}.draggable-chosen,.drag-chosen{cursor:grabbing !important;opacity:0.85}.draggable-selected,[data-drag-item].selected{outline:2px solid var(--color-primary,#3b82f6) !important;outline-offset:2px !important}.draggable-swap-highlight{outline:2px dashed var(--color-warning,#f59e0b) !important;outline-offset:2px !important;transition:outline 0.15s ease !important}`;
   var dragSheetRef = { sheet: null };
   function ensureDragStyles(root) {
@@ -4610,7 +4610,7 @@ ${scripts}
   };
   var drag_default2 = dragAttribute;
 
-  // src/modules/attributes/effect.ts
+  // ux/src/modules/attributes/effect.ts
   var effect_exports = {};
   __export(effect_exports, {
     default: () => effect_default
@@ -4634,7 +4634,7 @@ ${scripts}
   };
   var effect_default = effectModule;
 
-  // src/modules/attributes/flow.ts
+  // ux/src/modules/attributes/flow.ts
   var flow_exports = {};
   __export(flow_exports, {
     default: () => flow_default,
@@ -4657,7 +4657,7 @@ ${scripts}
     toFlowCoords: () => toFlowCoords
   });
 
-  // src/engine/utils/pointer.ts
+  // ux/src/engine/utils/pointer.ts
   function trackPointerDrag(element, callbacks) {
     let isTracking = false;
     let startX = 0;
@@ -4723,7 +4723,7 @@ ${scripts}
     };
   }
 
-  // src/modules/attributes/flow.ts
+  // ux/src/modules/attributes/flow.ts
   var SVG_NS = "http://www.w3.org/2000/svg";
   var MIN_ZOOM = 0.2;
   var MAX_ZOOM = 4;
@@ -5971,7 +5971,7 @@ ${scripts}
   };
   var flow_default = flowAttribute;
 
-  // src/modules/attributes/for.ts
+  // ux/src/modules/attributes/for.ts
   var for_exports = {};
   __export(for_exports, {
     default: () => for_default
@@ -6174,7 +6174,7 @@ ${scripts}
   };
   var for_default = forModule;
 
-  // src/modules/attributes/html.ts
+  // ux/src/modules/attributes/html.ts
   var html_exports = {};
   __export(html_exports, {
     default: () => html_default
@@ -6201,7 +6201,7 @@ ${scripts}
   };
   var html_default = htmlModule;
 
-  // src/modules/attributes/if.ts
+  // ux/src/modules/attributes/if.ts
   var if_exports = {};
   __export(if_exports, {
     default: () => if_default
@@ -6274,7 +6274,7 @@ ${scripts}
   };
   var if_default = ifModule;
 
-  // src/modules/attributes/import.ts
+  // ux/src/modules/attributes/import.ts
   var import_exports = {};
   __export(import_exports, {
     default: () => import_default
@@ -6700,7 +6700,7 @@ ${scripts}
   };
   var import_default = importModule;
 
-  // src/modules/attributes/markdown.ts
+  // ux/src/modules/attributes/markdown.ts
   var markdown_exports = {};
   __export(markdown_exports, {
     default: () => markdown_default,
@@ -6883,14 +6883,14 @@ ${match}</ul>
   };
   var markdown_default = markdownModule;
 
-  // src/modules/attributes/mask.ts
+  // ux/src/modules/attributes/mask.ts
   var mask_exports2 = {};
   __export(mask_exports2, {
     default: () => mask_default2,
     maskModule: () => maskModule
   });
 
-  // src/modules/sprites/mask.ts
+  // ux/src/modules/sprites/mask.ts
   var mask_exports = {};
   __export(mask_exports, {
     default: () => mask_default,
@@ -6958,7 +6958,7 @@ ${match}</ul>
   };
   var mask_default = maskSpriteModule;
 
-  // src/modules/attributes/mask.ts
+  // ux/src/modules/attributes/mask.ts
   var maskModule = {
     name: "mask",
     handle(el, value, runtime) {
@@ -6997,7 +6997,7 @@ ${match}</ul>
   };
   var mask_default2 = maskModule;
 
-  // src/modules/attributes/on.ts
+  // ux/src/modules/attributes/on.ts
   var on_exports = {};
   __export(on_exports, {
     default: () => on_default
@@ -7078,7 +7078,7 @@ ${match}</ul>
   };
   var on_default = onModule;
 
-  // src/modules/attributes/preserve.ts
+  // ux/src/modules/attributes/preserve.ts
   var preserve_exports = {};
   __export(preserve_exports, {
     default: () => preserve_default
@@ -7095,7 +7095,7 @@ ${match}</ul>
   };
   var preserve_default = preserveModule;
 
-  // src/modules/attributes/pwa.ts
+  // ux/src/modules/attributes/pwa.ts
   var pwa_exports = {};
   __export(pwa_exports, {
     default: () => pwa_default
@@ -7224,7 +7224,7 @@ ${match}</ul>
   };
   var pwa_default = pwaModule;
 
-  // src/modules/attributes/raf.ts
+  // ux/src/modules/attributes/raf.ts
   var raf_exports = {};
   __export(raf_exports, {
     default: () => raf_default
@@ -7256,7 +7256,7 @@ ${match}</ul>
   };
   var raf_default = rafModule;
 
-  // src/modules/attributes/route.ts
+  // ux/src/modules/attributes/route.ts
   var route_exports = {};
   __export(route_exports, {
     default: () => route_default,
@@ -7385,7 +7385,7 @@ ${match}</ul>
   };
   var route_default = routeAttributeModule;
 
-  // src/modules/attributes/router.ts
+  // ux/src/modules/attributes/router.ts
   var router_exports = {};
   __export(router_exports, {
     default: () => router_default,
@@ -8708,7 +8708,7 @@ ${match}</ul>
   };
   var router_default = routerAttributeModule;
 
-  // src/modules/attributes/scrollbar.ts
+  // ux/src/modules/attributes/scrollbar.ts
   var scrollbar_exports = {};
   __export(scrollbar_exports, {
     OverlayScrollbarInstance: () => OverlayScrollbarInstance,
@@ -9194,7 +9194,7 @@ ${match}</ul>
   };
   var scrollbar_default = scrollbarModule;
 
-  // src/modules/attributes/show.ts
+  // ux/src/modules/attributes/show.ts
   var show_exports = {};
   __export(show_exports, {
     default: () => show_default
@@ -9233,7 +9233,7 @@ ${match}</ul>
   };
   var show_default = showModule;
 
-  // src/modules/attributes/signal.ts
+  // ux/src/modules/attributes/signal.ts
   var signal_exports = {};
   __export(signal_exports, {
     default: () => signal_default
@@ -9358,7 +9358,7 @@ ${match}</ul>
   };
   var signal_default = signalModule;
 
-  // src/modules/attributes/style.ts
+  // ux/src/modules/attributes/style.ts
   var style_exports = {};
   __export(style_exports, {
     default: () => style_default
@@ -9375,7 +9375,7 @@ ${match}</ul>
   };
   var style_default = styleModule;
 
-  // src/modules/attributes/switcher.ts
+  // ux/src/modules/attributes/switcher.ts
   var switcher_exports = {};
   __export(switcher_exports, {
     default: () => switcher_default
@@ -9455,7 +9455,7 @@ ${match}</ul>
   };
   var switcher_default = switcherModule;
 
-  // src/modules/attributes/teleport.ts
+  // ux/src/modules/attributes/teleport.ts
   var teleport_exports = {};
   __export(teleport_exports, {
     default: () => teleport_default,
@@ -9684,7 +9684,7 @@ ${match}</ul>
   };
   var teleport_default = teleportAttribute;
 
-  // src/modules/attributes/theme.ts
+  // ux/src/modules/attributes/theme.ts
   var theme_exports = {};
   __export(theme_exports, {
     default: () => theme_default
@@ -9903,7 +9903,7 @@ ${match}</ul>
   };
   var theme_default = themeModule;
 
-  // src/modules/sprites/animate.ts
+  // ux/src/modules/sprites/animate.ts
   var animate_exports = {};
   __export(animate_exports, {
     animate: () => animate,
@@ -9980,7 +9980,7 @@ ${match}</ul>
   };
   var animate_default = animateSpriteModule;
 
-  // src/modules/sprites/bgFetch.ts
+  // ux/src/modules/sprites/bgFetch.ts
   var bgFetch_exports = {};
   __export(bgFetch_exports, {
     bgFetchSpriteModule: () => bgFetchSpriteModule,
@@ -9988,7 +9988,7 @@ ${match}</ul>
     default: () => bgFetch_default
   });
 
-  // src/engine/utils/pwa.ts
+  // ux/src/engine/utils/pwa.ts
   init_debug();
   function hasServiceWorker() {
     return typeof navigator !== "undefined" && "serviceWorker" in navigator;
@@ -10042,7 +10042,7 @@ ${match}</ul>
     );
   }
 
-  // src/modules/sprites/bgFetch.ts
+  // ux/src/modules/sprites/bgFetch.ts
   function createBgFetchApi(runtime) {
     return {
       /**
@@ -10105,7 +10105,7 @@ ${match}</ul>
   };
   var bgFetch_default = bgFetchSpriteModule;
 
-  // src/modules/sprites/bgSync.ts
+  // ux/src/modules/sprites/bgSync.ts
   var bgSync_exports = {};
   __export(bgSync_exports, {
     bgSyncSpriteModule: () => bgSyncSpriteModule,
@@ -10151,7 +10151,7 @@ ${match}</ul>
   };
   var bgSync_default = bgSyncSpriteModule;
 
-  // src/modules/sprites/flow.ts
+  // ux/src/modules/sprites/flow.ts
   var flow_exports2 = {};
   __export(flow_exports2, {
     default: () => flow_default2,
@@ -10504,7 +10504,7 @@ ${match}</ul>
   };
   var flow_default2 = flowModule;
 
-  // src/modules/sprites/gql.ts
+  // ux/src/modules/sprites/gql.ts
   var gql_exports = {};
   __export(gql_exports, {
     configureGqlClient: () => configureGqlClient,
@@ -10601,7 +10601,7 @@ ${match}</ul>
   };
   var gql_default = gqlSpriteModule;
 
-  // src/modules/sprites/mcp.ts
+  // ux/src/modules/sprites/mcp.ts
   var mcp_exports2 = {};
   __export(mcp_exports2, {
     default: () => mcp_default,
@@ -10680,7 +10680,7 @@ ${match}</ul>
   };
   var mcp_default = mcpModule;
 
-  // src/modules/sprites/periodicSync.ts
+  // ux/src/modules/sprites/periodicSync.ts
   var periodicSync_exports = {};
   __export(periodicSync_exports, {
     createPeriodicSyncApi: () => createPeriodicSyncApi,
@@ -10738,7 +10738,7 @@ ${match}</ul>
   };
   var periodicSync_default = periodicSyncSpriteModule;
 
-  // src/modules/sprites/predictive.ts
+  // ux/src/modules/sprites/predictive.ts
   var predictive_exports = {};
   __export(predictive_exports, {
     default: () => predictive_default,
@@ -10746,7 +10746,7 @@ ${match}</ul>
     predictiveModule: () => predictiveModule
   });
 
-  // src/engine/topology.ts
+  // ux/src/engine/topology.ts
   var TIER_CONFIGS = {
     0: {
       level: 0,
@@ -11137,7 +11137,7 @@ ${match}</ul>
     });
   }
 
-  // src/engine/predictive.ts
+  // ux/src/engine/predictive.ts
   var Quadtree = class _Quadtree {
     bounds;
     capacity;
@@ -11721,7 +11721,7 @@ ${match}</ul>
   };
   var corePredictiveEngine = new CorePredictiveEngine();
 
-  // src/modules/sprites/predictive.ts
+  // ux/src/modules/sprites/predictive.ts
   var predictive = corePredictiveEngine;
   var predictiveModule = {
     name: "predictive",
@@ -11733,7 +11733,7 @@ ${match}</ul>
   };
   var predictive_default = predictiveModule;
 
-  // src/modules/sprites/push.ts
+  // ux/src/modules/sprites/push.ts
   var push_exports = {};
   __export(push_exports, {
     createPushApi: () => createPushApi,
@@ -11832,7 +11832,7 @@ ${match}</ul>
   };
   var push_default = pushSpriteModule;
 
-  // src/modules/sprites/selector.ts
+  // ux/src/modules/sprites/selector.ts
   var selector_exports = {};
   __export(selector_exports, {
     default: () => selector_default,
@@ -11840,7 +11840,7 @@ ${match}</ul>
     resolveTargetElements: () => resolveTargetElements
   });
 
-  // src/engine/agent.ts
+  // ux/src/engine/agent.ts
   init_debug();
   init_consts();
   var DEFAULT_CONFIG = {
@@ -12210,7 +12210,7 @@ ${match}</ul>
     return getSelfHealAgent().getBeaconHistory();
   }
 
-  // src/modules/sprites/selector.ts
+  // ux/src/modules/sprites/selector.ts
   function resolveSelector(contextEl, selector) {
     if (!selector)
       return null;
@@ -12389,7 +12389,7 @@ ${match}</ul>
   };
   var selector_default = selectorSpriteModule;
 
-  // src/modules/sprites/sql.ts
+  // ux/src/modules/sprites/sql.ts
   var sql_exports = {};
   __export(sql_exports, {
     configureSqlClient: () => configureSqlClient,
@@ -12925,7 +12925,7 @@ ${match}</ul>
   };
   var sql_default = sqlSpriteModule;
 
-  // src/modules/sprites/svg.ts
+  // ux/src/modules/sprites/svg.ts
   var svg_exports = {};
   __export(svg_exports, {
     default: () => svg_default,
@@ -13049,7 +13049,7 @@ ${match}</ul>
   };
   var svg_default = svgModule;
 
-  // src/modules/sprites/sw.ts
+  // ux/src/modules/sprites/sw.ts
   var sw_exports = {};
   __export(sw_exports, {
     createSwApi: () => createSwApi,
@@ -13195,7 +13195,7 @@ ${match}</ul>
   };
   var sw_default = swSpriteModule;
 
-  // src/modules/scopes/auth.ts
+  // ux/src/modules/scopes/auth.ts
   var auth_exports = {};
   __export(auth_exports, {
     authScope: () => authScope,
@@ -13486,7 +13486,7 @@ ${match}</ul>
   };
   var auth_default = authScopeModule;
 
-  // src/modules/scopes/container.ts
+  // ux/src/modules/scopes/container.ts
   var container_exports = {};
   __export(container_exports, {
     containerScopeModule: () => containerScopeModule,
@@ -13530,7 +13530,7 @@ ${match}</ul>
   };
   var container_default = containerScopeModule;
 
-  // src/modules/scopes/media.ts
+  // ux/src/modules/scopes/media.ts
   var media_exports = {};
   __export(media_exports, {
     default: () => media_default,
@@ -13570,7 +13570,7 @@ ${match}</ul>
   };
   var media_default = mediaScopeModule;
 
-  // src/modules/scopes/native.ts
+  // ux/src/modules/scopes/native.ts
   var native_exports = {};
   __export(native_exports, {
     default: () => native_default,
@@ -13601,7 +13601,7 @@ ${match}</ul>
   };
   var native_default = nativeScopeModule;
 
-  // src/modules/scopes/os.ts
+  // ux/src/modules/scopes/os.ts
   var os_exports = {};
   __export(os_exports, {
     default: () => os_default,
@@ -13670,7 +13670,7 @@ ${match}</ul>
   };
   var os_default = osScopeModule;
 
-  // src/modules/scopes/view.ts
+  // ux/src/modules/scopes/view.ts
   var view_exports = {};
   __export(view_exports, {
     default: () => view_default,
@@ -13751,7 +13751,7 @@ ${match}</ul>
   };
   var view_default = viewScopeModule;
 
-  // src/modules/modifiers/debounce.ts
+  // ux/src/modules/modifiers/debounce.ts
   var debounce_exports = {};
   __export(debounce_exports, {
     debounceModifier: () => debounceModifier,
@@ -13759,7 +13759,7 @@ ${match}</ul>
   });
   init_consts();
 
-  // src/engine/utils/timer.ts
+  // ux/src/engine/utils/timer.ts
   init_consts();
   function getTimerMap(el) {
     let map = el[TIMER_MAP_KEY];
@@ -13889,7 +13889,7 @@ ${match}</ul>
     };
   }
 
-  // src/modules/modifiers/debounce.ts
+  // ux/src/modules/modifiers/debounce.ts
   var debounceModifier = createTimerModifier(
     "debounce",
     DEFAULT_DEBOUNCE_TIME,
@@ -13907,7 +13907,7 @@ ${match}</ul>
   );
   var debounce_default = debounceModifier;
 
-  // src/modules/modifiers/delay.ts
+  // ux/src/modules/modifiers/delay.ts
   var delay_exports = {};
   __export(delay_exports, {
     default: () => delay_default,
@@ -13930,14 +13930,14 @@ ${match}</ul>
   );
   var delay_default = delayModifier;
 
-  // src/modules/modifiers/document.ts
+  // ux/src/modules/modifiers/document.ts
   var document_exports = {};
   __export(document_exports, {
     default: () => document_default,
     documentModifier: () => documentModifier
   });
 
-  // src/engine/utils/modifier.ts
+  // ux/src/engine/utils/modifier.ts
   function createModifier(name, handle) {
     return { name, handle };
   }
@@ -13953,11 +13953,11 @@ ${match}</ul>
     };
   }
 
-  // src/modules/modifiers/document.ts
+  // ux/src/modules/modifiers/document.ts
   var documentModifier = createModifier("document", (payload) => payload);
   var document_default = documentModifier;
 
-  // src/modules/modifiers/drag.ts
+  // ux/src/modules/modifiers/drag.ts
   var drag_exports3 = {};
   __export(drag_exports3, {
     default: () => drag_default3,
@@ -14003,7 +14003,7 @@ ${match}</ul>
   };
   var drag_default3 = dragModifier;
 
-  // src/modules/modifiers/hold.ts
+  // ux/src/modules/modifiers/hold.ts
   var hold_exports = {};
   __export(hold_exports, {
     default: () => hold_default,
@@ -14050,7 +14050,7 @@ ${match}</ul>
   );
   var hold_default = holdModifier;
 
-  // src/modules/modifiers/keys.ts
+  // ux/src/modules/modifiers/keys.ts
   var keys_exports = {};
   __export(keys_exports, {
     KEY_MODIFIERS: () => KEY_MODIFIERS,
@@ -14122,7 +14122,7 @@ ${match}</ul>
   };
   var keys_default = keysModifier;
 
-  // src/modules/modifiers/morph.ts
+  // ux/src/modules/modifiers/morph.ts
   var morph_exports = {};
   __export(morph_exports, {
     default: () => morph_default,
@@ -14157,7 +14157,7 @@ ${match}</ul>
   };
   var morph_default = morphModifier;
 
-  // src/modules/modifiers/once.ts
+  // ux/src/modules/modifiers/once.ts
   var once_exports = {};
   __export(once_exports, {
     default: () => once_default,
@@ -14182,7 +14182,7 @@ ${match}</ul>
   });
   var once_default = onceModifier;
 
-  // src/modules/modifiers/outside.ts
+  // ux/src/modules/modifiers/outside.ts
   var outside_exports = {};
   __export(outside_exports, {
     default: () => outside_default,
@@ -14195,7 +14195,7 @@ ${match}</ul>
   });
   var outside_default = outsideModifier;
 
-  // src/modules/modifiers/prevent.ts
+  // ux/src/modules/modifiers/prevent.ts
   var prevent_exports = {};
   __export(prevent_exports, {
     default: () => prevent_default,
@@ -14207,7 +14207,7 @@ ${match}</ul>
   });
   var prevent_default = preventModifier;
 
-  // src/modules/modifiers/self.ts
+  // ux/src/modules/modifiers/self.ts
   var self_exports = {};
   __export(self_exports, {
     default: () => self_default,
@@ -14219,7 +14219,7 @@ ${match}</ul>
   });
   var self_default = selfModifier;
 
-  // src/modules/modifiers/stop.ts
+  // ux/src/modules/modifiers/stop.ts
   var stop_exports = {};
   __export(stop_exports, {
     default: () => stop_default,
@@ -14231,7 +14231,7 @@ ${match}</ul>
   });
   var stop_default = stopModifier;
 
-  // src/modules/modifiers/throttle.ts
+  // ux/src/modules/modifiers/throttle.ts
   var throttle_exports = {};
   __export(throttle_exports, {
     default: () => throttle_default,
@@ -14259,7 +14259,7 @@ ${match}</ul>
   );
   var throttle_default = throttleModifier;
 
-  // src/modules/modifiers/window.ts
+  // ux/src/modules/modifiers/window.ts
   var window_exports = {};
   __export(window_exports, {
     default: () => window_default,
@@ -14268,7 +14268,7 @@ ${match}</ul>
   var windowModifier = createModifier("window", (payload) => payload);
   var window_default = windowModifier;
 
-  // src/modules/modifiers/zoom.ts
+  // ux/src/modules/modifiers/zoom.ts
   var zoom_exports = {};
   __export(zoom_exports, {
     default: () => zoom_default,
@@ -14300,7 +14300,7 @@ ${match}</ul>
   };
   var zoom_default = zoomModifier;
 
-  // src/modules/listeners/bfcache.ts
+  // ux/src/modules/listeners/bfcache.ts
   var bfcache_exports = {};
   __export(bfcache_exports, {
     default: () => bfcache_default
@@ -14373,7 +14373,7 @@ ${match}</ul>
   };
   var bfcache_default = bfcacheListener;
 
-  // src/modules/listeners/executeScript.ts
+  // ux/src/modules/listeners/executeScript.ts
   var executeScript_exports = {};
   __export(executeScript_exports, {
     default: () => executeScript_default
@@ -14398,7 +14398,7 @@ ${match}</ul>
   };
   var executeScript_default = executeScriptModule;
 
-  // src/modules/listeners/history.ts
+  // ux/src/modules/listeners/history.ts
   var history_exports = {};
   __export(history_exports, {
     default: () => history_default
@@ -14436,7 +14436,7 @@ ${match}</ul>
   };
   var history_default = historyModule;
 
-  // src/modules/listeners/linkRewriter.ts
+  // ux/src/modules/listeners/linkRewriter.ts
   var linkRewriter_exports = {};
   __export(linkRewriter_exports, {
     default: () => linkRewriter_default
@@ -14509,7 +14509,7 @@ ${match}</ul>
   };
   var linkRewriter_default = linkRewriterModule;
 
-  // src/engine/mutation.ts
+  // ux/src/engine/mutation.ts
   var mutation_exports = {};
   __export(mutation_exports, {
     default: () => mutation_default
@@ -14642,11 +14642,11 @@ ${match}</ul>
   };
   var mutation_default = mutationObserverModule;
 
-  // src/engine/styleConstants.ts
+  // ux/src/engine/styleConstants.ts
   var PACKED_COMPONENTS = ".draggable-chosen{background-color:var(--color-base-300,#d4d4d8);box-shadow:inset 0 0 0 2px var(--color-primary,#3b82f6)}.draggable-drag{opacity:1;background-color:var(--color-base-300,#d4d4d8);box-shadow:0 25px 50px -12px rgba(0,0,0,.25);transform:scale(1.05);cursor:grabbing;z-index:9999}.draggable-ghost{opacity:1;background-color:var(--color-base-300,#d4d4d8);border:2px solid var(--color-primary,#3b82f6);box-shadow:0 25px 50px -12px rgba(0,0,0,.25)}.draggable-selected{box-shadow:inset 0 0 0 2px var(--color-accent,var(--color-secondary,#ec4899))}.draggable-swap-highlight{background-color:color-mix(in srgb,var(--color-warning,#eab308) 20%,transparent);box-shadow:inset 0 0 0 2px var(--color-warning,#eab308)}.drop-target-before{background:linear-gradient(to bottom,color-mix(in srgb,var(--color-primary,#3b82f6) 30%,transparent) 0%,transparent 20%);box-shadow:inset 0 2px 0 0 var(--color-primary,#3b82f6)}.drop-target-after{background:linear-gradient(to top,color-mix(in srgb,var(--color-primary,#3b82f6) 30%,transparent) 0%,transparent 20%);box-shadow:inset 0 -2px 0 0 var(--color-primary,#3b82f6)}";
   var PACKED_KEYFRAMES = "@keyframes spin{to{transform:rotate(360deg)}}@keyframes ping{75%,100%{transform:scale(2);opacity:0}}@keyframes pulse{50%{opacity:.5}}@keyframes bounce{0%,100%{transform:translateY(-25%);animation-timing-function:cubic-bezier(.8,0,1,1)}50%{transform:none;animation-timing-function:cubic-bezier(0,0,.2,1)}}";
 
-  // src/manifest.ts
+  // ux/src/manifest.ts
   var autoAttributes = [
     { name: "assert", module: assert_exports },
     { name: "bind", module: bind_exports },
@@ -14729,7 +14729,7 @@ ${match}</ul>
   ];
   var autoObservers = [{ name: "mutation", module: mutation_exports }];
 
-  // src/modules/attributes/stylesheet.ts
+  // ux/src/modules/attributes/stylesheet.ts
   var PREFLIGHT_CSS = PACKED_COMPONENTS;
   async function resolveImports(cssText, baseUrl, onUpdate) {
     const defaultBase = typeof window !== "undefined" ? window.location.href : "http://localhost";
@@ -15243,7 +15243,7 @@ ${bridge}`, {
   };
   var stylesheet_default = stylesheetModule;
 
-  // src/engine/utils/hash.ts
+  // ux/src/engine/utils/hash.ts
   init_consts();
   var Hash = class {
     #value = 0;
@@ -15319,7 +15319,7 @@ ${bridge}`, {
     return String(hash);
   }
 
-  // src/engine/reconciler.ts
+  // ux/src/engine/reconciler.ts
   function teardownSubtree(root, includeRoot = true) {
     if (!(root instanceof Element))
       return;
@@ -15822,7 +15822,7 @@ ${bridge}`, {
     return true;
   }
 
-  // src/engine/fetch.ts
+  // ux/src/engine/fetch.ts
   init_debug();
   init_consts();
   var fetchCache = /* @__PURE__ */ new Map();
@@ -15974,7 +15974,7 @@ ${bridge}`, {
     }
   };
 
-  // src/engine/evaluator.ts
+  // ux/src/engine/evaluator.ts
   init_debug();
   registerScopeProvider("__global", (_, runtime) => runtime.globalSignals());
   var currentEvalDepth = 0;
@@ -16345,7 +16345,7 @@ ${bridge}`, {
     };
   }
 
-  // src/engine/attributeParser.ts
+  // ux/src/engine/attributeParser.ts
   init_consts();
   var parsedAttributeStructureCache = /* @__PURE__ */ new Map();
   function parseAttribute(name, _runtime, element) {
@@ -16432,12 +16432,12 @@ ${bridge}`, {
     };
   }
 
-  // src/engine/modules.ts
+  // ux/src/engine/modules.ts
   init_debug();
   init_debug();
   init_consts();
 
-  // src/engine/observers.ts
+  // ux/src/engine/observers.ts
   var registry = /* @__PURE__ */ new Map();
   function registerObserver(name, module) {
     registry.set(name, {
@@ -16469,7 +16469,7 @@ ${bridge}`, {
     registry.clear();
   }
 
-  // src/engine/modules.ts
+  // ux/src/engine/modules.ts
   init_debug();
   var globalReactiveState = reactive({});
   var ModuleCoordinator = class {
@@ -16919,7 +16919,7 @@ ${bridge}`, {
     return actions;
   }
 
-  // src/index.ts
+  // ux/src/index.ts
   init_consts();
   var _idCounters = {};
   function $id(groupName = "default") {

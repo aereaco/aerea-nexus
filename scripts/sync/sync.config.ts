@@ -10,31 +10,87 @@ export interface GeneratedFile {
   content: string;
 }
 
+export interface PathMapping {
+  fromPrefix: string;
+  toPrefix: string;
+}
+
 export interface SyncTargetConfig {
   name: string;
   targetDir: string;
   githubRepo: string;
   branch?: string;
   sourcePrefix?: string;
+  pathMappings?: PathMapping[];
+  pullPrefix?: string;
   cloudflareProject?: string;
   includes: string[];
   excludes: string[];
   transforms?: SyncTransform[];
   generatedFiles?: GeneratedFile[];
   runManifest?: boolean;
+  appRepos?: Record<string, string>;
 }
 
-const stripShellOnlyBlocks = (content: string): string =>
-  content.replace(/\s*<!--\s*\[SYNC:SHELL-ONLY:START\]\s*-->[\s\S]*?<!--\s*\[SYNC:SHELL-ONLY:END\]\s*-->/g, "");
+const configurePublicSiteShellFlags = (content: string): string =>
+  content
+    .replace(/mode:\s*'platform'/g, "mode: 'site'")
+    .replace(/showMegamenu:\s*true/g, "showMegamenu: false")
+    .replace(/showTerminal:\s*true/g, "showTerminal: false")
+    .replace(/showChatbar:\s*true/g, "showChatbar: false")
+    .replace(/showDropdowns:\s*true/g, "showDropdowns: false")
+    .replace(/showMail:\s*true/g, "showMail: false")
+    .replace(/showCart:\s*true/g, "showCart: false")
+    .replace(/showNotifications:\s*true/g, "showNotifications: false")
+    .replace(/showProfile:\s*true/g, "showProfile: false");
 
 export const syncConfig: Record<string, SyncTargetConfig> = {
+  "nexus-io": {
+    name: "Nexus-IO Sovereign Microkernel & nexus-db Engine",
+    targetDir: "../nexus-io",
+    githubRepo: "aereaco/nexus-io",
+    branch: "main",
+    sourcePrefix: "io/",
+    pullPrefix: "io/",
+    includes: [
+      "io/Cargo.toml",
+      "io/Cargo.lock",
+      "io/.cargo/**",
+      "io/src/**",
+      "io/crates/**",
+      "io/docs/**",
+      "io/scripts/**",
+      "io/tests/**",
+      "io/LICENSE",
+      "io/README.md",
+      "io/.gitignore",
+    ],
+    excludes: [
+      "io/target/**",
+      "io/.nexus/**",
+      "io/nexus-blobs/**",
+      "io/nexus.db/**",
+      "io/**/*.redb",
+      "io/**/*.bin",
+    ],
+    runManifest: false,
+  },
+
   "nexus-ux": {
-    name: "Nexus-UX Core Runtime Engine",
+    name: "Nexus-UX Core Reactive Runtime Engine",
     targetDir: "../nexus-ux",
     githubRepo: "aereaco/nexus-ux",
+    sourcePrefix: "ux/",
+    pullPrefix: "ux/src/",
+    pathMappings: [
+      { fromPrefix: "ux/src/", toPrefix: "src/" },
+      { fromPrefix: "ux/dist/", toPrefix: "dist/" },
+      { fromPrefix: "docs/ux/", toPrefix: "docs/" },
+    ],
     includes: [
-      "src/**",
-      "dist/**",
+      "ux/src/**",
+      "ux/dist/**",
+      "docs/ux/**",
       "scripts/build.ts",
       "deno.json",
       "deno.lock",
@@ -44,17 +100,11 @@ export const syncConfig: Record<string, SyncTargetConfig> = {
       ".gitignore",
       ".gitattributes",
     ],
-    excludes: [
-      "site/**",
-      "scripts/serve.ts",
-      "scripts/generate_labs.ts",
-      "scripts/git/**",
-      "scripts/sync/**",
-    ],
+    excludes: [],
     transforms: [
       {
         file: "deno.json",
-        description: "Prune site/sync tasks for pure engine repository",
+        description: "Configure tasks for standalone nexus-ux repository",
         transform: (content: string) => {
           try {
             const parsed = JSON.parse(content);
@@ -73,21 +123,99 @@ export const syncConfig: Record<string, SyncTargetConfig> = {
     runManifest: false,
   },
 
+  "nexus-shell": {
+    name: "Nexus-Shell Universal Responsive Application Workbench",
+    targetDir: "../nexus-shell",
+    githubRepo: "aereaco/nexus-shell",
+    cloudflareProject: "nexus-shell",
+    pullPrefix: "shell/",
+    pathMappings: [
+      { fromPrefix: "shell/", toPrefix: "site/" },
+      { fromPrefix: "platform/_components/", toPrefix: "site/_components/" },
+      { fromPrefix: "ux/dist/", toPrefix: "dist/" },
+    ],
+    includes: [
+      "shell/**",
+      "platform/_components/**",
+      "ux/dist/**",
+      "scripts/serve.ts",
+      "scripts/git/manifest.ts",
+      "deno.json",
+      "README.md",
+      "LICENSE",
+      ".gitignore",
+      ".gitattributes",
+    ],
+    excludes: [],
+    generatedFiles: [
+      {
+        path: "site/_pages/home.html",
+        description: "Clean Workbench Shell Starter landing page",
+        content: `<head>
+  <title>Home</title>
+  <meta name="route" content="/">
+  <meta name="icon" content="material-symbols-light:home-outline">
+  <meta name="order" content="1">
+</head>
+
+<div class="max-w-5xl mx-auto w-full space-y-8 py-6" data-signal="{ counter: 1 }">
+  <div class="rounded-3xl bg-gradient-to-br from-base-200/90 via-base-100 to-base-200/50 p-8 md:p-10 border border-base-content/10 shadow-xl space-y-5">
+    <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-primary/10 border border-primary/25 text-primary text-xs font-semibold uppercase tracking-wider">
+      <span class="inline-block size-2 rounded-full bg-primary animate-pulse"></span>
+      Nexus-Shell Starter Workspace
+    </div>
+    <h1 class="text-3xl sm:text-4xl font-black tracking-tight">
+      Desktop-Class &amp; Mobile-First Application Shell
+    </h1>
+    <p class="text-base text-base-content/75 max-w-2xl leading-relaxed">
+      Welcome to <strong>Nexus-Shell</strong> — the universal multi-tab application workbench powered by <strong>Nexus-UX</strong> and controlled declaratively via <code>shellConfig</code>.
+    </p>
+  </div>
+</div>
+`,
+      },
+    ],
+    transforms: [
+      {
+        file: "deno.json",
+        description: "Configure dev server & manifest tasks for nexus-shell",
+        transform: (content: string) => {
+          try {
+            const parsed = JSON.parse(content);
+            parsed.tasks = {
+              serve: "deno run -A scripts/serve.ts",
+              "serve:progressive": "deno run -A scripts/serve.ts --mode progressive",
+              manifest: "deno run -A scripts/git/manifest.ts",
+            };
+            return JSON.stringify(parsed, null, 2) + "\n";
+          } catch {
+            return content;
+          }
+        },
+      },
+    ],
+    runManifest: true,
+  },
+
   "nexus-site": {
-    name: "Nexus-UX Public Documentation & Labs Portal",
+    name: "Nexus-Site Public Documentation & Labs Portal",
     targetDir: "../nexus-site",
     githubRepo: "aereaco/nexus-site",
     cloudflareProject: "nexus-site",
+    pullPrefix: "site/",
+    pathMappings: [
+      { fromPrefix: "shell/", toPrefix: "site/" },
+      { fromPrefix: "labs/_components/", toPrefix: "site/_components/" },
+      { fromPrefix: "labs/", toPrefix: "site/_pages/labs/" },
+      { fromPrefix: "docs/", toPrefix: "site/_pages/docs/" },
+      { fromPrefix: "ux/dist/", toPrefix: "dist/" },
+    ],
     includes: [
-      "site/_pages/docs/**",
-      "site/_pages/labs/**",
+      "shell/**",
       "site/_pages/home.html",
-      "site/_pages/error.html",
-      "site/_components/**",
-      "site/_assets/**",
-      "site/index.html",
-      "site/sw.js",
-      "dist/**",
+      "labs/**",
+      "docs/*.md",
+      "ux/dist/**",
       "scripts/serve.ts",
       "scripts/git/manifest.ts",
       "deno.json",
@@ -97,27 +225,14 @@ export const syncConfig: Record<string, SyncTargetConfig> = {
       ".gitattributes",
     ],
     excludes: [
-      "site/_pages/apps/**",
-      "site/_pages/_internal/**",
-      "site/_components/layout-terminal.html",
-      "site/_components/layout-chatbar.html",
-      "site/_components/layout-chat-fab.html",
-      "site/_components/layout-dropdowns.html",
-      "site/_components/layout-notifications.html",
-      "site/_components/layout-mail.html",
-      "site/_components/layout-cart.html",
-      "site/_components/layout-profile.html",
+      "docs/io/**",
+      "docs/ux/**",
     ],
     transforms: [
       {
         file: "site/_components/layout.html",
-        description: "Strip shell-only component mounts (Terminal HUD, Chatbar, Chat FAB, Dropdowns)",
-        transform: stripShellOnlyBlocks,
-      },
-      {
-        file: "site/_components/layout-header.html",
-        description: "Strip shell-only navbar controls (Megamenu, Terminal HUD, Mail, Cart, Notifications, Profile)",
-        transform: stripShellOnlyBlocks,
+        description: "Configure declarative shellConfig flags for public documentation portal",
+        transform: configurePublicSiteShellFlags,
       },
       {
         file: "site/_pages/home.html",
@@ -149,125 +264,81 @@ export const syncConfig: Record<string, SyncTargetConfig> = {
     runManifest: true,
   },
 
-  "nexus-shell": {
-    name: "Nexus-UX Workbench Application Shell Starter",
-    targetDir: "../nexus-shell",
-    githubRepo: "aereaco/nexus-shell",
-    cloudflareProject: "nexus-shell",
+  "nexus-labs": {
+    name: "Nexus-Labs 65 Interactive NEG Directive Sandboxes",
+    targetDir: "../nexus-labs",
+    githubRepo: "aereaco/nexus-labs",
+    sourcePrefix: "labs/",
+    pullPrefix: "labs/",
     includes: [
-      "site/_components/**",
-      "site/_assets/**",
-      "site/index.html",
-      "site/sw.js",
-      "site/_pages/error.html",
-      "dist/**",
-      "scripts/serve.ts",
-      "scripts/git/manifest.ts",
-      "deno.json",
-      "README.md",
+      "labs/**",
+      "scripts/generate_labs.ts",
       "LICENSE",
-      ".gitignore",
-      ".gitattributes",
     ],
-    excludes: [
-      "site/_pages/docs/**",
-      "site/_pages/labs/**",
-      "site/_pages/apps/**",
-      "site/_pages/_internal/**",
-      "site/_components/lab-viewer.html",
-    ],
-    generatedFiles: [
-      {
-        path: "site/_pages/home.html",
-        description: "Clean Workbench Shell Starter landing page",
-        content: `<head>
-  <title>Home</title>
-  <meta name="route" content="/">
-  <meta name="icon" content="material-symbols-light:home-outline">
-  <meta name="order" content="1">
-</head>
-
-<div class="max-w-5xl mx-auto w-full space-y-8 py-6" data-signal="{ counter: 1 }">
-  <div class="rounded-3xl bg-gradient-to-br from-base-200/90 via-base-100 to-base-200/50 p-8 md:p-10 border border-base-content/10 shadow-xl space-y-5">
-    <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-primary/10 border border-primary/25 text-primary text-xs font-semibold uppercase tracking-wider">
-      <span class="inline-block size-2 rounded-full bg-primary animate-pulse"></span>
-      Nexus-Shell Starter Workspace
-    </div>
-    <h1 class="text-3xl sm:text-4xl font-black tracking-tight">
-      Desktop-Class Web Application Shell
-    </h1>
-    <p class="text-base text-base-content/75 max-w-2xl leading-relaxed">
-      Welcome to <strong>Nexus-Shell</strong> — the standalone multi-tab application workbench powered by <strong>Nexus-UX</strong>. Drop HTML pages into <code>site/_pages/</code> to automatically register routes, sidebar navigation, search indexing, and multi-tab workspaces.
-    </p>
-    <div class="flex flex-wrap items-center gap-3 pt-2">
-      <button type="button" class="btn btn-primary btn-sm gap-2" data-on-click="if (typeof toggleTerminalHud === 'function') toggleTerminalHud()">
-        <iconify-icon icon="material-symbols-light:terminal" class="text-lg"></iconify-icon>
-        Toggle Terminal HUD
-      </button>
-      <button type="button" class="btn btn-secondary btn-sm gap-2" data-on-click="chatbarOpen = !chatbarOpen">
-        <iconify-icon icon="material-symbols-light:smart-toy-outline" class="text-lg"></iconify-icon>
-        Toggle AI Chatbar
-      </button>
-      <button type="button" class="btn btn-accent btn-sm gap-2" data-on-click="notify('Workbench Ready', 'Declarative notification dispatched #' + (counter++), 'success')">
-        <iconify-icon icon="material-symbols-light:notifications-active-outline" class="text-lg"></iconify-icon>
-        Test Notification
-      </button>
-      <button type="button" class="btn btn-outline btn-sm gap-2" data-on-click="router.createPageTab('_components/tab-new.html')">
-        <iconify-icon icon="material-symbols-light:tab-group-outline" class="text-lg"></iconify-icon>
-        Open New Tab
-      </button>
-    </div>
-  </div>
-</div>
-`,
-      },
-    ],
-    transforms: [
-      {
-        file: "deno.json",
-        description: "Configure dev server & manifest tasks for nexus-shell",
-        transform: (content: string) => {
-          try {
-            const parsed = JSON.parse(content);
-            parsed.tasks = {
-              serve: "deno run -A scripts/serve.ts",
-              "serve:progressive": "deno run -A scripts/serve.ts --mode progressive",
-              manifest: "deno run -A scripts/git/manifest.ts",
-            };
-            return JSON.stringify(parsed, null, 2) + "\n";
-          } catch {
-            return content;
-          }
-        },
-      },
-    ],
-    runManifest: true,
+    excludes: [],
+    runManifest: false,
   },
 
-  "nexus-io": {
-    name: "Nexus-IO Sovereign Binary & nexus-db Engine",
-    targetDir: "../nexus-io",
-    githubRepo: "aereaco/nexus-io",
-    branch: "main",
-    sourcePrefix: "io/",
+  "nexus-platform": {
+    name: "Nexus-Platform Turnkey OS Control Plane, IAM & Studio",
+    targetDir: "../nexus-platform",
+    githubRepo: "aereaco/nexus-platform",
+    sourcePrefix: "platform/",
+    pullPrefix: "platform/",
     includes: [
-      "io/Cargo.toml",
-      "io/Cargo.lock",
-      "io/.cargo/**",
-      "io/src/**",
-      "io/crates/**",
-      "io/docs/**",
-      "io/tests/**",
-      "io/LICENSE",
-      "io/README.md",
-      "io/.gitignore",
+      "platform/**",
+      "nexus.toml",
+      "LICENSE",
     ],
-    excludes: [
-      "io/target/**",
-      "io/nexus-blobs/**",
-      "io/nexus.db/**",
-      "io/**/*.bin",
+    excludes: [],
+    runManifest: false,
+  },
+
+  "nexus-apps": {
+    name: "Nexus-Apps Turnkey ERP & Collaboration Fractal Monorepo",
+    targetDir: "../nexus-apps",
+    githubRepo: "aereaco/nexus-apps",
+    sourcePrefix: "apps/",
+    pullPrefix: "apps/",
+    includes: [
+      "apps/**",
+      "LICENSE",
     ],
+    excludes: [],
+    appRepos: {
+      erp: "aereaco/nexus-app-erp",
+      drag: "aereaco/nexus-app-drag",
+      todo: "aereaco/nexus-app-todo",
+    },
+    runManifest: false,
+  },
+
+  "nexus-docs": {
+    name: "Nexus-Docs Unified Specifications, Architecture & Guides",
+    targetDir: "../nexus-docs",
+    githubRepo: "aereaco/nexus-docs",
+    sourcePrefix: "docs/",
+    pullPrefix: "docs/",
+    includes: [
+      "docs/**",
+      "LICENSE",
+    ],
+    excludes: [],
+    runManifest: false,
+  },
+
+  "nexus-scripts": {
+    name: "Nexus-Scripts Build, Manifest, CI & SSoT Sync Tooling",
+    targetDir: "../nexus-scripts",
+    githubRepo: "aereaco/nexus-scripts",
+    sourcePrefix: "scripts/",
+    pullPrefix: "scripts/",
+    includes: [
+      "scripts/**",
+      "deno.json",
+      "LICENSE",
+    ],
+    excludes: [],
     runManifest: false,
   },
 };

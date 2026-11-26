@@ -19,8 +19,8 @@ metrics = true
 
 [gateway.web]
 enabled = true
-root = "./site"
-dist = "./dist"
+root = "./shell"
+dist = "./ux/dist"
 spa_fallback = true
 coop = "same-origin"
 coep = "credentialless"
