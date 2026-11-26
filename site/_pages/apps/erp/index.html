@@ -104,12 +104,14 @@
       }
       const ts = window.Date.now();
       const poCode = 'PO-' + new window.Date().getFullYear() + '-' + String(ts).slice(-4);
+      const poRecId = 'erp_po:po_' + ts;
+      const notifRecId = 'erp_notification:n_' + ts;
       const amountFmt = formatCurrency(amountNum);
       const itemDesc = (newPoItemDesc || '').trim() || title;
       const itemQty = Math.max(1, Number(newPoItemQty) || 1);
       try {
-        await sqlFn(
-          'CREATE erp_po SET po_code = $code, vendor = $vendor, title = $title, amount = $amt, amount_num = $amtNum, status = $status, created_by = $actor, created_ts = $ts, attachments = [], items = $items;',
+        const cr = await sqlFn(
+          'CREATE ' + poRecId + ' SET po_code = $code, vendor = $vendor, title = $title, amount = $amt, amount_num = $amtNum, status = $status, created_by = $actor, created_ts = $ts, attachments = [], items = $items;',
           {
             code: poCode,
             vendor: vendor,
@@ -122,8 +124,9 @@
             items: [{ sku: poCode, desc: itemDesc, qty: itemQty, cost: amountFmt }]
           }
         );
+        if (cr && cr.status === 'error') throw new Error(cr.error || 'Create PO failed');
         await sqlFn(
-          'CREATE erp_audit SET action = $act, target = $target, actor = $actor, details = $details, ts = $ts, time = $time;',
+          'CREATE erp_audit:a_' + ts + ' SET action = $act, target = $target, actor = $actor, details = $details, ts = $ts, time = $time;',
           {
             act: 'PO_CREATED',
             target: poCode,
@@ -134,7 +137,7 @@
           }
         );
         await sqlFn(
-          'CREATE erp_notification SET title = $title, message = $msg, type = $type, priority = $prio, read = false, ts = $ts, time = $time;',
+          'CREATE ' + notifRecId + ' SET title = $title, message = $msg, type = $type, priority = $prio, read = false, ts = $ts, time = $time;',
           {
             title: 'New Purchase Order',
             msg: (actor || 'User') + ' created ' + poCode + ' (' + vendor + ', ' + amountFmt + ')',
@@ -179,12 +182,13 @@
           });
           if (putRes.ok) receiptPath = rPath;
         }
-        await sqlFn(
+        const upd = await sqlFn(
           'UPDATE ' + po.id + ' SET status = $status, approved_by = $actor, approved_at = $at, receipt_path = $rpath;',
           { status: newStatus, actor: actor || 'unknown', at: new window.Date().toISOString(), rpath: receiptPath }
         );
+        if (upd && upd.status === 'error') throw new Error(upd.error || 'Update PO failed');
         await sqlFn(
-          'CREATE erp_audit SET action = $act, target = $target, actor = $actor, details = $details, ts = $ts, time = $time;',
+          'CREATE erp_audit:a_' + ts + ' SET action = $act, target = $target, actor = $actor, details = $details, ts = $ts, time = $time;',
           {
             act: newStatus === 'Approved' ? 'PO_APPROVED' : 'PO_REJECTED',
             target: po.po_code || po.id,
@@ -195,7 +199,7 @@
           }
         );
         await sqlFn(
-          'CREATE erp_notification SET title = $title, message = $msg, type = $type, priority = $prio, read = false, ts = $ts, time = $time;',
+          'CREATE erp_notification:n_' + ts + ' SET title = $title, message = $msg, type = $type, priority = $prio, read = false, ts = $ts, time = $time;',
           {
             title: 'PO ' + newStatus,
             msg: (po.title || po.id) + ' was ' + newStatus.toLowerCase() + ' by ' + (actor || 'unknown'),
