@@ -1,0 +1,176 @@
+<head>
+  <title>My Profile &amp; Account</title>
+  <meta name="id" content="profile">
+  <meta name="route" content="/profile">
+  <meta name="icon" content="material-symbols-light:account-circle-outline">
+  <meta name="order" content="3">
+  <meta name="category" content="Apps">
+</head>
+
+<div id="self-profile-page" class="max-w-3xl mx-auto w-full space-y-6"
+  data-signal="{
+    syncedActor: null,
+    displayName: '',
+    email: '',
+    title: '',
+    department: '',
+    avatarPath: '',
+    myGroups: [],
+    currentPass: '',
+    newPass: '',
+    loadMyProfile: async (sqlFn, actor) => {
+      if (!sqlFn || !actor || syncedActor === actor) return;
+      syncedActor = actor;
+      const pid = 'iam_profile:u_' + String(actor).replace(/[^a-zA-Z0-9_]/g, '_');
+      try {
+        const res = await sqlFn('SELECT * FROM ' + pid + ';');
+        const row = Array.isArray(res?.data) && res.data[0] ? res.data[0] : null;
+        displayName = row?.display_name || actor;
+        email = row?.email || '';
+        title = row?.title || '';
+        department = row?.department || '';
+        avatarPath = row?.avatar_path || '';
+        const gRes = await sqlFn('SELECT * FROM iam_group;');
+        const allG = Array.isArray(gRes?.data) ? gRes.data : [];
+        myGroups = allG.filter(g => Array.isArray(g.members) && g.members.includes(actor));
+      } catch (_) {
+        displayName = actor;
+      }
+    },
+    saveMyProfile: async (sqlFn, actor) => {
+      if (!sqlFn || !actor) return;
+      const pid = 'iam_profile:u_' + String(actor).replace(/[^a-zA-Z0-9_]/g, '_');
+      const check = await sqlFn('SELECT * FROM ' + pid + ';');
+      const exists = Array.isArray(check?.data) && check.data.length > 0;
+      const q = exists
+        ? ('UPDATE ' + pid + ' SET username = $u, display_name = $dn, email = $em, title = $ti, department = $dept, avatar_path = $av;')
+        : ('CREATE ' + pid + ' SET username = $u, display_name = $dn, email = $em, title = $ti, department = $dept, avatar_path = $av, status = $st;');
+      const r = await sqlFn(q, {
+        u: actor,
+        dn: (displayName || '').trim() || actor,
+        em: (email || '').trim(),
+        ti: (title || '').trim(),
+        dept: (department || '').trim(),
+        av: avatarPath || '',
+        st: 'active'
+      });
+      if (r && r.status === 'error') {
+        if (typeof notify === 'function') notify('Save Rejected', r.error, 'error');
+        return;
+      }
+      if (typeof notify === 'function') notify('Profile Saved', 'Your account profile has been updated', 'success');
+    },
+    changeMyPassword: async () => {
+      if (!currentPass || (newPass || '').length < 4) {
+        if (typeof notify === 'function') notify('Validation', 'Enter current password and new password (min 4 chars)', 'warning');
+        return;
+      }
+      const res = await window.fetch('/_nexus/auth/password', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ current_pass: currentPass, new_pass: newPass })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (typeof notify === 'function') notify('Password Change Failed', data.details || ('HTTP ' + res.status), 'error');
+        return;
+      }
+      currentPass = '';
+      newPass = '';
+      if (typeof notify === 'function') notify('Password Updated', 'Your password has been changed securely', 'success');
+    }
+  }"
+  data-effect="if ($auth.isAuthenticated && $auth.actor) { if (syncedActor !== $auth.actor) { loadMyProfile($sql, $auth.actor); } } else { syncedActor = null; }">
+
+  <div class="border-b border-base-300 pb-4">
+    <h1 class="text-2xl font-bold tracking-tight">My Profile &amp; Account</h1>
+    <p class="text-sm opacity-70 mt-0.5">View your verified Nexus-IO identity, groups, capabilities, and security settings.</p>
+  </div>
+
+  <div data-show="!$auth.isAuthenticated" class="card bg-base-200 border border-base-300 p-8 text-center">
+    <h2 class="text-lg font-bold">Sign in to view your profile</h2>
+    <button type="button" class="btn btn-primary btn-sm mx-auto mt-3"
+      data-on-click="headerDropdownTab = 'profile'; headerDropdownOpen = true">Sign In</button>
+  </div>
+
+  <div data-show="$auth.isAuthenticated" class="space-y-6">
+    <!-- Identity Banner -->
+    <div class="card bg-base-200/60 border border-base-300 p-5 flex flex-wrap items-center justify-between gap-4">
+      <div class="flex items-center gap-4">
+        <div class="avatar placeholder">
+          <div class="w-14 rounded-full bg-primary/15 text-primary ring ring-primary/30 flex items-center justify-center overflow-hidden">
+            <img data-show="avatarPath" data-bind-src="avatarPath" class="w-full h-full object-cover" alt="" />
+            <span data-show="!avatarPath" class="text-lg font-bold uppercase" data-bind="String($auth.actor || '?').slice(0, 2)"></span>
+          </div>
+        </div>
+        <div>
+          <div class="font-bold text-lg" id="self-prof-heading" data-bind="displayName || $auth.actor"></div>
+          <div class="text-xs opacity-60 font-mono" data-bind="'@' + ($auth.actor || '') + ' · Scope: ' + ($auth.level || 'database')"></div>
+          <div class="flex flex-wrap gap-1 mt-1.5">
+            <template data-for="r in ($auth.roles || [])">
+              <span class="badge badge-primary badge-xs" data-bind="r"></span>
+            </template>
+            <template data-for="g in (myGroups || [])">
+              <span class="badge badge-secondary badge-outline badge-xs" data-bind="g.name"></span>
+            </template>
+          </div>
+        </div>
+      </div>
+      <button type="button" data-show="$auth.hasRole('OWNER')" class="btn btn-outline btn-sm"
+        data-on-click="router.navigate('/iam')">Open IAM Admin</button>
+    </div>
+
+    <!-- Edit Profile Details -->
+    <form class="card bg-base-100 border border-base-300 p-5 space-y-4"
+      data-on-submit_prevent="saveMyProfile($sql, $auth.actor)">
+      <h2 class="font-semibold text-sm">Profile Information</h2>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <label class="form-control">
+          <span class="label-text text-xs opacity-70 mb-1">Display Name</span>
+          <input id="self-prof-name" type="text" class="input input-bordered input-sm" data-bind-value="displayName" />
+        </label>
+        <label class="form-control">
+          <span class="label-text text-xs opacity-70 mb-1">Email</span>
+          <input id="self-prof-email" type="email" class="input input-bordered input-sm" data-bind-value="email" />
+        </label>
+        <label class="form-control">
+          <span class="label-text text-xs opacity-70 mb-1">Job Title</span>
+          <input id="self-prof-title" type="text" class="input input-bordered input-sm" data-bind-value="title" />
+        </label>
+        <label class="form-control">
+          <span class="label-text text-xs opacity-70 mb-1">Department</span>
+          <input id="self-prof-dept" type="text" class="input input-bordered input-sm" data-bind-value="department" />
+        </label>
+      </div>
+      <div class="flex justify-end">
+        <button id="self-prof-save-btn" type="submit" class="btn btn-primary btn-sm"
+          data-show="$auth.can('db.write')">Save Profile</button>
+        <span data-show="!$auth.can('db.write')" class="badge badge-ghost badge-sm">Read-Only Account</span>
+      </div>
+    </form>
+
+    <!-- Effective Capabilities -->
+    <div class="card bg-base-100 border border-base-300 p-5 space-y-2">
+      <h2 class="font-semibold text-sm">Server-Verified Capabilities</h2>
+      <div class="flex flex-wrap gap-1.5">
+        <template data-for="c in ($auth.capabilities || [])">
+          <span class="badge badge-primary badge-outline badge-sm font-mono text-xs" data-bind="c"></span>
+        </template>
+      </div>
+    </div>
+
+    <!-- Change Password -->
+    <form class="card bg-base-100 border border-base-300 p-5 space-y-3"
+      data-on-submit_prevent="changeMyPassword()">
+      <h2 class="font-semibold text-sm">Change Password</h2>
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+        <input id="self-pass-current" type="password" class="input input-bordered input-sm"
+          placeholder="Current password" data-bind-value="currentPass" />
+        <input id="self-pass-new" type="password" class="input input-bordered input-sm"
+          placeholder="New password (min 4 chars)" data-bind-value="newPass" />
+        <button id="self-pass-save-btn" type="submit" class="btn btn-primary btn-sm">Update Password</button>
+      </div>
+    </form>
+  </div>
+</div>

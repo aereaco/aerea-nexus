@@ -798,6 +798,76 @@ impl Handler for IamPolicyApplyHandler {
     }
 }
 
+/// `POST /_nexus/auth/password` — Allows any authenticated user to change their OWN password
+/// after verifying their current password (never allows role escalation).
+#[derive(Clone)]
+pub struct ChangeOwnPasswordHandler {
+    pub db: Arc<Database>,
+}
+
+#[async_trait]
+impl Handler for ChangeOwnPasswordHandler {
+    async fn handle(&self, req: &mut Request, depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
+        res.headers_mut().insert(
+            salvo::http::header::CACHE_CONTROL,
+            salvo::http::header::HeaderValue::from_static("no-store"),
+        );
+        let Some(auth) = crate::ux::iam::depot_auth_context(depot) else {
+            res.status_code(StatusCode::UNAUTHORIZED);
+            res.render(Json(json!({ "code": 401, "details": "Authentication required" })));
+            return;
+        };
+        let Some(actor) = auth.actor.clone() else {
+            res.status_code(StatusCode::UNAUTHORIZED);
+            res.render(Json(json!({ "code": 401, "details": "Authenticated actor identity missing" })));
+            return;
+        };
+        let (ns, database) = extract_ns_db(req);
+        let body: JsonValue = match req.parse_json().await {
+            Ok(v) => v,
+            Err(e) => {
+                res.status_code(StatusCode::BAD_REQUEST);
+                res.render(Json(json!({ "code": 400, "details": e.to_string() })));
+                return;
+            }
+        };
+        let current_pass = body.get("current_pass").and_then(|v| v.as_str()).unwrap_or("");
+        let new_pass = body.get("new_pass").and_then(|v| v.as_str()).unwrap_or("");
+        if new_pass.len() < 4 {
+            res.status_code(StatusCode::BAD_REQUEST);
+            res.render(Json(json!({ "code": 400, "details": "New password must be at least 4 characters" })));
+            return;
+        }
+        // Verify current password first
+        if self.db.inner.signin_user(&ns, &database, &actor, current_pass).is_err() {
+            res.status_code(StatusCode::FORBIDDEN);
+            res.render(Json(json!({ "code": 403, "details": "Current password is incorrect" })));
+            return;
+        }
+        let existing_roles: Vec<String> = self
+            .db
+            .inner
+            .list_users(&ns, &database)
+            .ok()
+            .and_then(|list| list.into_iter().find(|u| u.name == actor))
+            .map(|u| u.roles)
+            .unwrap_or_else(|| vec!["VIEWER".to_string()]);
+        match self.db.inner.update_user(&ns, &database, &actor, existing_roles, Some(new_pass)) {
+            Ok(Some(_)) => {
+                res.render(Json(json!({ "ok": true, "details": "Password updated" })));
+            }
+            Ok(None) => {
+                res.status_code(StatusCode::NOT_FOUND);
+                res.render(Json(json!({ "code": 404, "details": "User account not found" })));
+            }
+            Err(e) => {
+                res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+                res.render(Json(json!({ "code": 500, "details": e.to_string() })));
+            }
+        }
+    }
+}
+
 /// `GET /_nexus/cells` — Lists running/hibernated cells for UI & operations dashboards.
 #[derive(Clone)]
 pub struct CellsListHandler {

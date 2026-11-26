@@ -9279,7 +9279,7 @@ ${match}</ul>
         const resolvedUrl = typeof window !== "undefined" ? new URL(rawPath, window.location.href).href : rawPath;
         import(resolvedUrl).then((mod) => {
           const exported = mod?.default ?? mod;
-          const nextState = typeof exported === "function" ? exported(runtime, el) : exported;
+          const nextState = typeof exported === "function" ? exported(scopeProxy2, runtime, el) : exported;
           if (nextState && typeof nextState === "object") {
             if (isGlobal) {
               const globals = runtime.globalSignals();
@@ -9291,7 +9291,7 @@ ${match}</ul>
               });
               stateRef2.value = globals;
             } else {
-              stateRef2.value = { ...stateRef2.value || {}, ...nextState };
+              Object.assign(stateRef2.value, nextState);
             }
             runtime.triggerRef(stateRef2);
           }

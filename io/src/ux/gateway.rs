@@ -648,6 +648,12 @@ impl UxGateway {
                 .push(Router::with_path("/signup").post(crate::ux::surreal_http::SurrealAuthHandler { db: self.db.clone(), is_signup: true }))
                 .push(Router::with_path("/signout").post(crate::ux::surreal_http::SurrealSignoutHandler))
                 .push(Router::with_path("/_nexus/auth/me").get(crate::ux::surreal_http::AuthMeHandler { db: self.db.clone() }))
+                .push(
+                    Router::with_path("/_nexus/auth/password")
+                        .hoop(gate.clone())
+                        .hoop(crate::ux::iam::IamMiddleware::authenticated(self.db.clone()))
+                        .post(crate::ux::surreal_http::ChangeOwnPasswordHandler { db: self.db.clone() }),
+                )
                 .push(Router::with_path("/_nexus/setup/status").get(crate::ux::surreal_http::SetupStatusHandler { db: self.db.clone() }))
                 .push(Router::with_path("/_nexus/setup/bootstrap").post(crate::ux::surreal_http::SetupBootstrapHandler { db: self.db.clone() }))
                 .push(

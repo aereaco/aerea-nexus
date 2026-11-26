@@ -8,370 +8,27 @@
 </head>
 
 <div id="iam-workbench" class="max-w-6xl mx-auto w-full space-y-6"
-  data-signal="{
-    iamTab: 'users',
-    iamSyncedActor: null,
-    iamSyncing: false,
-    users: [],
-    groupsLive: null,
-    rolesLive: null,
-    policiesLive: null,
-    allCaps: ['db.read','db.write','db.admin','blob.read','blob.write','cell.spawn','cell.manage','runtime.install','secrets.read','metrics.read'],
-    systemRoles: [
-      { name: 'OWNER', desc: 'Full database, storage, cell, and IAM administration', caps: ['db.read','db.write','db.admin','blob.read','blob.write','cell.spawn','cell.manage','runtime.install','secrets.read','metrics.read'] },
-      { name: 'EDITOR', desc: 'Read/write data, S3 blobs, and spawn Wasm cells', caps: ['db.read','db.write','blob.read','blob.write','cell.spawn','metrics.read'] },
-      { name: 'VIEWER', desc: 'Read-only access to permitted tables and S3 blobs', caps: ['db.read','blob.read'] }
-    ],
-
-    // User form state (add + edit)
-    uName: '',
-    uPass: '',
-    uRole: 'VIEWER',
-    editingUser: null,
-    editUserRole: 'VIEWER',
-    editUserPass: '',
-
-    // Group form state (add + edit)
-    editingGroupId: null,
-    gName: '',
-    gDesc: '',
-    gRole: 'VIEWER',
-    gMembers: [],
-
-    // Custom Role form state (add + edit)
-    editingRoleId: null,
-    rName: '',
-    rDesc: '',
-    rBase: 'VIEWER',
-    rCaps: ['db.read','blob.read'],
-
-    // Record / Field Policy form state (add + edit)
-    editingPolicyId: null,
-    pTable: 'erp_po',
-    pScope: 'table',
-    pField: '',
-    pMode: 'where',
-    pOps: 'select, create, update, delete',
-    pExpr: 'owner == $auth',
-
-    getGroups: () => {
-      const list = (groupsLive && Array.isArray(groupsLive.data)) ? groupsLive.data : [];
-      return [...list].sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
-    },
-    getCustomRoles: () => {
-      const list = (rolesLive && Array.isArray(rolesLive.data)) ? rolesLive.data : [];
-      return [...list].sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
-    },
-    getPolicies: () => {
-      const list = (policiesLive && Array.isArray(policiesLive.data)) ? policiesLive.data : [];
-      return [...list].sort((a, b) => String(a.table || '').localeCompare(String(b.table || '')));
-    },
-    getUserGroups: (username) => {
-      return getGroups().filter(g => Array.isArray(g.members) && g.members.includes(username));
-    },
-    getRoleCaps: (roleName) => {
-      const sys = systemRoles.find(r => r.name === roleName);
-      if (sys) return sys.caps;
-      const custom = getCustomRoles().find(r => r.name === roleName);
-      return custom && Array.isArray(custom.caps) ? custom.caps : ['db.read'];
-    },
-    refreshUsers: async () => {
-      try {
-        const res = await window.fetch('/_nexus/iam/users', { credentials: 'same-origin' });
-        if (res.ok) {
-          const data = await res.json();
-          users = Array.isArray(data.users) ? data.users : [];
-        }
-      } catch (_) {}
-    },
-    disconnectIam: async () => {
-      const handles = [groupsLive, rolesLive, policiesLive].filter(Boolean);
-      groupsLive = null;
-      rolesLive = null;
-      policiesLive = null;
-      users = [];
-      iamSyncedActor = null;
-      for (const h of handles) {
-        try { if (typeof h.unsubscribe === 'function') await h.unsubscribe(); } catch (_) {}
-      }
-    },
-    connectIam: async (sqlFn, actor) => {
-      if (!sqlFn || !actor || iamSyncing || iamSyncedActor === actor) return;
-      iamSyncing = true;
-      try {
-        await disconnectIam();
-        await refreshUsers();
-        groupsLive = await sqlFn('LIVE SELECT * FROM iam_group');
-        rolesLive = await sqlFn('LIVE SELECT * FROM iam_role');
-        policiesLive = await sqlFn('LIVE SELECT * FROM iam_policy');
-        iamSyncedActor = actor;
-      } catch (_) {
-        iamSyncedActor = null;
-      } finally {
-        iamSyncing = false;
-      }
-    },
-
-    // --- USERS CRUD ---
-    addUser: async () => {
-      const name = (uName || '').trim();
-      const pass = uPass || '';
-      if (!name || pass.length < 4) {
-        if (typeof notify === 'function') notify('Validation', 'Username and password (min 4 chars) required', 'warning');
-        return;
-      }
-      const res = await window.fetch('/_nexus/iam/users', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user: name, pass: pass, roles: [uRole || 'VIEWER'] })
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        if (typeof notify === 'function') notify('Create User Failed', data.details || ('HTTP ' + res.status), 'error');
-        return;
-      }
-      uName = '';
-      uPass = '';
-      uRole = 'VIEWER';
-      await refreshUsers();
-      if (typeof notify === 'function') notify('User Created', name + ' added to Nexus-IO IAM', 'success');
-    },
-    startEditUser: (u) => {
-      editingUser = u.name;
-      editUserRole = (Array.isArray(u.roles) && u.roles[0]) ? u.roles[0] : 'VIEWER';
-      editUserPass = '';
-    },
-    saveEditUser: async () => {
-      if (!editingUser) return;
-      const body = { roles: [editUserRole || 'VIEWER'] };
-      if (editUserPass && editUserPass.length > 0) body.pass = editUserPass;
-      const res = await window.fetch('/_nexus/iam/users/' + encodeURIComponent(editingUser), {
-        method: 'PUT',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        if (typeof notify === 'function') notify('Update Rejected', data.details || ('HTTP ' + res.status), 'error');
-        return;
-      }
-      const savedName = editingUser;
-      editingUser = null;
-      editUserPass = '';
-      await refreshUsers();
-      if (typeof notify === 'function') notify('User Updated', savedName + ' updated', 'success');
-    },
-    deleteUser: async (name) => {
-      const res = await window.fetch('/_nexus/iam/users/' + encodeURIComponent(name), {
-        method: 'DELETE',
-        credentials: 'same-origin'
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        if (typeof notify === 'function') notify('Delete Blocked', data.details || ('HTTP ' + res.status), 'error');
-        return;
-      }
-      if (editingUser === name) editingUser = null;
-      await refreshUsers();
-      if (typeof notify === 'function') notify('User Deleted', name + ' removed from IAM', 'info');
-    },
-
-    // --- GROUPS CRUD ---
-    toggleGroupMember: (username) => {
-      const cur = Array.isArray(gMembers) ? gMembers : [];
-      gMembers = cur.includes(username) ? cur.filter(m => m !== username) : [...cur, username];
-    },
-    startEditGroup: (grp) => {
-      editingGroupId = grp.id;
-      gName = grp.name || '';
-      gDesc = grp.description || '';
-      gRole = grp.role || 'VIEWER';
-      gMembers = Array.isArray(grp.members) ? [...grp.members] : [];
-    },
-    cancelEditGroup: () => {
-      editingGroupId = null;
-      gName = '';
-      gDesc = '';
-      gRole = 'VIEWER';
-      gMembers = [];
-    },
-    saveGroup: async (sqlFn) => {
-      const name = (gName || '').trim();
-      if (!name || !sqlFn) {
-        if (typeof notify === 'function') notify('Validation', 'Group name is required', 'warning');
-        return;
-      }
-      const ts = window.Date.now();
-      const targetId = editingGroupId || ('iam_group:grp_' + ts);
-      const q = editingGroupId
-        ? ('UPDATE ' + targetId + ' SET name = $name, description = $desc, role = $role, members = $members;')
-        : ('CREATE ' + targetId + ' SET name = $name, description = $desc, role = $role, members = $members, ts = $ts;');
-      const r = await sqlFn(q, { name: name, desc: (gDesc || '').trim(), role: gRole || 'VIEWER', members: [...(gMembers || [])], ts: ts });
-      if (r && r.status === 'error') {
-        if (typeof notify === 'function') notify('Group Error', r.error, 'error');
-        return;
-      }
-      const wasEdit = Boolean(editingGroupId);
-      cancelEditGroup();
-      if (typeof notify === 'function') notify(wasEdit ? 'Group Updated' : 'Group Created', name + ' saved in Nexus-DB', 'success');
-    },
-    deleteGroup: async (grp, sqlFn) => {
-      if (!grp || !grp.id || !sqlFn) return;
-      const r = await sqlFn('DELETE ' + grp.id + ';');
-      if (r && r.status === 'error') {
-        if (typeof notify === 'function') notify('Delete Error', r.error, 'error');
-        return;
-      }
-      if (editingGroupId === grp.id) cancelEditGroup();
-      if (typeof notify === 'function') notify('Group Deleted', grp.name + ' removed', 'info');
-    },
-
-    // --- CUSTOM ROLES CRUD ---
-    toggleRoleCap: (cap) => {
-      const cur = Array.isArray(rCaps) ? rCaps : [];
-      rCaps = cur.includes(cap) ? cur.filter(c => c !== cap) : [...cur, cap];
-    },
-    startEditRole: (role) => {
-      editingRoleId = role.id;
-      rName = role.name || '';
-      rDesc = role.description || '';
-      rBase = role.base_role || 'VIEWER';
-      rCaps = Array.isArray(role.caps) ? [...role.caps] : ['db.read'];
-    },
-    cancelEditRole: () => {
-      editingRoleId = null;
-      rName = '';
-      rDesc = '';
-      rBase = 'VIEWER';
-      rCaps = ['db.read','blob.read'];
-    },
-    saveRole: async (sqlFn) => {
-      const name = (rName || '').trim();
-      if (!name || !sqlFn) {
-        if (typeof notify === 'function') notify('Validation', 'Role name is required', 'warning');
-        return;
-      }
-      const ts = window.Date.now();
-      const targetId = editingRoleId || ('iam_role:role_' + ts);
-      const q = editingRoleId
-        ? ('UPDATE ' + targetId + ' SET name = $name, description = $desc, base_role = $base, caps = $caps;')
-        : ('CREATE ' + targetId + ' SET name = $name, description = $desc, base_role = $base, caps = $caps, ts = $ts;');
-      const r = await sqlFn(q, { name: name, desc: (rDesc || '').trim(), base: rBase || 'VIEWER', caps: [...(rCaps || [])], ts: ts });
-      if (r && r.status === 'error') {
-        if (typeof notify === 'function') notify('Role Error', r.error, 'error');
-        return;
-      }
-      const wasEdit = Boolean(editingRoleId);
-      cancelEditRole();
-      if (typeof notify === 'function') notify(wasEdit ? 'Role Updated' : 'Role Created', name + ' saved', 'success');
-    },
-    deleteRole: async (role, sqlFn) => {
-      if (!role || !role.id || !sqlFn) return;
-      const r = await sqlFn('DELETE ' + role.id + ';');
-      if (r && r.status === 'error') {
-        if (typeof notify === 'function') notify('Delete Error', r.error, 'error');
-        return;
-      }
-      if (editingRoleId === role.id) cancelEditRole();
-      if (typeof notify === 'function') notify('Role Deleted', role.name + ' removed', 'info');
-    },
-
-    // --- RECORD & FIELD PERMISSIONS CRUD ---
-    startEditPolicy: (pol) => {
-      editingPolicyId = pol.id;
-      pTable = pol.table || 'erp_po';
-      pScope = pol.scope || 'table';
-      pField = pol.field || '';
-      pMode = pol.mode || 'where';
-      pOps = pol.ops || 'select, create, update, delete';
-      pExpr = pol.where_expr || 'owner == $auth';
-    },
-    cancelEditPolicy: () => {
-      editingPolicyId = null;
-      pTable = 'erp_po';
-      pScope = 'table';
-      pField = '';
-      pMode = 'where';
-      pOps = 'select, create, update, delete';
-      pExpr = 'owner == $auth';
-    },
-    savePolicy: async (sqlFn, actor) => {
-      const table = (pTable || '').trim();
-      if (!table || !sqlFn) {
-        if (typeof notify === 'function') notify('Validation', 'Table name is required', 'warning');
-        return;
-      }
-      // 1. Apply live to Nexus-DB engine (DEFINE TABLE / DEFINE FIELD ... PERMISSIONS)
-      const applyRes = await window.fetch('/_nexus/iam/policies/apply', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          table: table,
-          scope: pScope || 'table',
-          field: (pField || '').trim(),
-          mode: pMode || 'where',
-          ops: (pOps || 'select, create, update, delete').trim(),
-          where_expr: (pExpr || '').trim()
-        })
-      });
-      const applyData = await applyRes.json().catch(() => ({}));
-      if (!applyRes.ok) {
-        if (typeof notify === 'function') notify('Policy Rejected', applyData.details || ('HTTP ' + applyRes.status), 'error');
-        return;
-      }
-      // 2. Persist policy record in iam_policy for UI CRUD
-      const ts = window.Date.now();
-      const targetId = editingPolicyId || ('iam_policy:pol_' + ts);
-      const q = editingPolicyId
-        ? ('UPDATE ' + targetId + ' SET table = $table, scope = $scope, field = $field, mode = $mode, ops = $ops, where_expr = $expr, surql = $surql, updated_by = $actor;')
-        : ('CREATE ' + targetId + ' SET table = $table, scope = $scope, field = $field, mode = $mode, ops = $ops, where_expr = $expr, surql = $surql, updated_by = $actor, ts = $ts;');
-      await sqlFn(q, {
-        table: table,
-        scope: pScope || 'table',
-        field: (pField || '').trim(),
-        mode: pMode || 'where',
-        ops: (pOps || '').trim(),
-        expr: (pExpr || '').trim(),
-        surql: applyData.surql || '',
-        actor: actor || 'unknown',
-        ts: ts
-      });
-      const wasEdit = Boolean(editingPolicyId);
-      cancelEditPolicy();
-      if (typeof notify === 'function') notify(wasEdit ? 'Policy Updated' : 'Policy Applied Live', applyData.surql || table, 'success');
-    },
-    deletePolicy: async (pol, sqlFn) => {
-      if (!pol || !pol.id || !sqlFn) return;
-      // Reset table/field back to PERMISSIONS FULL in Nexus-DB
-      await window.fetch('/_nexus/iam/policies/apply', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          table: pol.table,
-          scope: pol.scope || 'table',
-          field: pol.field || '',
-          mode: 'remove'
-        })
-      });
-      await sqlFn('DELETE ' + pol.id + ';');
-      if (editingPolicyId === pol.id) cancelEditPolicy();
-      if (typeof notify === 'function') notify('Policy Removed', (pol.table || '') + ' reset to PERMISSIONS FULL', 'info');
-    }
-  }"
-  data-effect="if ($auth.isAuthenticated && $auth.hasRole('OWNER') && $auth.actor) { if (iamSyncedActor !== $auth.actor) { connectIam($sql, $auth.actor); } } else if (iamSyncedActor) { disconnectIam(); }">
+  data-signal-src="/_pages/apps/iam/iam-state.js"
+  data-effect="if (typeof iamReady !== 'undefined' && iamReady) { if ($auth.isAuthenticated && $auth.hasRole('OWNER') && $auth.actor) { if (iamSyncedActor !== $auth.actor) { connectIam($sql, $auth.actor); } } else if (iamSyncedActor) { disconnectIam(); } }">
 
   <!-- Header -->
   <div class="flex flex-wrap items-center justify-between gap-4 border-b border-base-300 pb-4">
     <div>
       <div class="flex items-center gap-2">
         <h1 class="text-2xl font-bold tracking-tight">Users, Groups, Roles &amp; Permissions</h1>
-        <span data-show="iamSyncedActor" class="badge badge-success badge-sm">Server-Enforced IAM</span>
+        <span data-show="typeof iamSyncedActor !== 'undefined' && iamSyncedActor" class="badge badge-success badge-sm">Server-Enforced IAM</span>
       </div>
-      <p class="text-sm opacity-70 mt-0.5">Manage Nexus-IO identities, group memberships, capability roles, and live Nexus-DB / SurrealQL record-level permissions.</p>
+      <p class="text-sm opacity-70 mt-0.5">Full account profiles, group membership management, custom capability roles, and live Nexus-DB / SurrealQL record-level permissions.</p>
+    </div>
+    <div class="flex items-center gap-2" data-show="$auth.isAuthenticated && $auth.hasRole('OWNER') && typeof iamReady !== 'undefined' && iamReady">
+      <button type="button" class="btn btn-sm btn-ghost gap-1.5" data-on-click="openGroupModal(null)">
+        <iconify-icon icon="material-symbols-light:group-add-outline" class="text-lg"></iconify-icon>
+        <span>New Group</span>
+      </button>
+      <button type="button" class="btn btn-sm btn-ghost gap-1.5" data-on-click="openRoleModal(null)">
+        <iconify-icon icon="material-symbols-light:add-moderator-outline" class="text-lg"></iconify-icon>
+        <span>New Role</span>
+      </button>
     </div>
   </div>
 
@@ -388,7 +45,7 @@
   </div>
 
   <!-- Authenticated OWNER Console -->
-  <div data-show="$auth.isAuthenticated && $auth.hasRole('OWNER')" class="space-y-6">
+  <div data-show="$auth.isAuthenticated && $auth.hasRole('OWNER') && typeof iamReady !== 'undefined' && iamReady" class="space-y-6">
     <!-- Summary KPIs -->
     <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
       <div class="stat bg-base-200/70 rounded-xl border border-base-300 p-4">
@@ -397,15 +54,15 @@
       </div>
       <div class="stat bg-base-200/70 rounded-xl border border-base-300 p-4">
         <div class="stat-title text-xs">Groups</div>
-        <div class="stat-value text-2xl" id="iam-kpi-groups" data-bind="getGroups().length">0</div>
+        <div class="stat-value text-2xl" id="iam-kpi-groups" data-bind="typeof getGroups === 'function' ? getGroups().length : 0">0</div>
       </div>
       <div class="stat bg-base-200/70 rounded-xl border border-base-300 p-4">
         <div class="stat-title text-xs">Roles</div>
-        <div class="stat-value text-2xl" id="iam-kpi-roles" data-bind="systemRoles.length + getCustomRoles().length">3</div>
+        <div class="stat-value text-2xl" id="iam-kpi-roles" data-bind="(systemRoles || []).length + (typeof getCustomRoles === 'function' ? getCustomRoles().length : 0)">3</div>
       </div>
       <div class="stat bg-base-200/70 rounded-xl border border-base-300 p-4">
         <div class="stat-title text-xs">Record / Field Policies</div>
-        <div class="stat-value text-2xl text-primary" id="iam-kpi-policies" data-bind="getPolicies().length">0</div>
+        <div class="stat-value text-2xl text-primary" id="iam-kpi-policies" data-bind="typeof getPolicies === 'function' ? getPolicies().length : 0">0</div>
       </div>
     </div>
 
@@ -421,7 +78,7 @@
         data-class="{ 'tab-active font-semibold': iamTab === 'groups' }"
         data-on-click="iamTab = 'groups'">
         <iconify-icon icon="material-symbols-light:groups-outline" class="text-base"></iconify-icon>
-        <span>Groups</span>
+        <span>Groups &amp; Members</span>
       </button>
       <button type="button" role="tab" id="iam-tab-roles" class="tab gap-1.5"
         data-class="{ 'tab-active font-semibold': iamTab === 'roles' }"
@@ -439,7 +96,6 @@
 
     <!-- ==================== TAB 1: USERS ==================== -->
     <div data-show="iamTab === 'users'" class="space-y-4">
-      <!-- Add User Form -->
       <form class="card bg-base-200/60 border border-base-300 p-4 space-y-3"
         data-on-submit_prevent="addUser()">
         <h2 class="font-semibold text-sm">Add User</h2>
@@ -457,32 +113,11 @@
         </div>
       </form>
 
-      <!-- Inline Edit User Panel -->
-      <form data-show="editingUser" id="iam-edit-user-panel"
-        class="card bg-primary/5 border border-primary/30 p-4 space-y-3"
-        data-on-submit_prevent="saveEditUser()">
-        <div class="flex items-center justify-between">
-          <h2 class="font-semibold text-sm">Edit User: <span class="text-primary font-mono" data-bind="editingUser"></span></h2>
-          <button type="button" class="btn btn-ghost btn-xs" data-on-click="editingUser = null">Cancel</button>
-        </div>
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-2.5">
-          <select id="iam-edit-role" class="select select-bordered select-sm" data-bind-value="editUserRole">
-            <option value="VIEWER">VIEWER</option>
-            <option value="EDITOR">EDITOR</option>
-            <option value="OWNER">OWNER</option>
-          </select>
-          <input id="iam-edit-pass" type="password" class="input input-bordered input-sm"
-            placeholder="New password (leave blank to keep)" data-bind-value="editUserPass" />
-          <button id="iam-edit-save-btn" type="submit" class="btn btn-primary btn-sm">Save Changes</button>
-        </div>
-      </form>
-
-      <!-- Users Table -->
       <div class="overflow-x-auto rounded-xl border border-base-300">
         <table class="table table-sm w-full">
           <thead>
             <tr class="bg-base-200/70">
-              <th>User</th>
+              <th>Account</th>
               <th>Roles</th>
               <th>Groups</th>
               <th>Effective Capabilities</th>
@@ -491,12 +126,31 @@
           </thead>
           <tbody id="iam-users-table">
             <template data-for="u in (users || [])">
-              <tr>
-                <td class="font-semibold text-sm" data-bind="u.name"></td>
+              <tr class="hover">
+                <td>
+                  <div class="flex items-center gap-2.5">
+                    <div class="avatar placeholder">
+                      <div class="w-8 rounded-full bg-primary/15 text-primary flex items-center justify-center overflow-hidden">
+                        <img data-show="getProfile(u.name).avatar_path" data-bind-src="getProfile(u.name).avatar_path" class="w-full h-full object-cover" alt="" />
+                        <span data-show="!getProfile(u.name).avatar_path" class="text-xs font-bold uppercase" data-bind="String(u.name || '?').slice(0, 2)"></span>
+                      </div>
+                    </div>
+                    <div>
+                      <div class="font-semibold text-sm flex items-center gap-1.5">
+                        <span data-bind="getProfile(u.name).display_name || u.name"></span>
+                        <span data-show="getProfile(u.name).status === 'suspended'" class="badge badge-error badge-xs">Suspended</span>
+                      </div>
+                      <div class="text-[11px] opacity-60 font-mono" data-bind="'@' + u.name + (getProfile(u.name).department ? ' · ' + getProfile(u.name).department : '')"></div>
+                    </div>
+                  </div>
+                </td>
                 <td>
                   <div class="flex gap-1 flex-wrap">
                     <template data-for="r in (u.roles || [])">
                       <span class="badge badge-primary badge-xs" data-bind="r"></span>
+                    </template>
+                    <template data-for="cr in (getProfile(u.name).custom_roles || [])">
+                      <span class="badge badge-accent badge-outline badge-xs" data-bind="cr"></span>
                     </template>
                   </div>
                 </td>
@@ -508,15 +162,11 @@
                   </div>
                 </td>
                 <td>
-                  <div class="flex gap-1 flex-wrap max-w-xs">
-                    <template data-for="c in getRoleCaps((u.roles || [])[0] || 'VIEWER')">
-                      <span class="badge badge-ghost badge-xs font-mono text-[10px]" data-bind="c"></span>
-                    </template>
-                  </div>
+                  <span class="badge badge-ghost badge-xs font-mono" data-bind="getEffectiveCaps(u).length + ' capabilities'"></span>
                 </td>
                 <td class="text-end space-x-1 whitespace-nowrap">
-                  <button type="button" class="btn btn-ghost btn-xs"
-                    data-on-click="startEditUser(u)">Edit</button>
+                  <button type="button" class="btn btn-primary btn-outline btn-xs"
+                    data-on-click="openUserModal(u, 'profile')">View / Edit Profile</button>
                   <button type="button" class="btn btn-ghost btn-xs text-error"
                     data-on-click="deleteUser(u.name)">Delete</button>
                 </td>
@@ -527,61 +177,45 @@
       </div>
     </div>
 
-    <!-- ==================== TAB 2: GROUPS ==================== -->
+    <!-- ==================== TAB 2: GROUPS & MEMBERS ==================== -->
     <div data-show="iamTab === 'groups'" class="space-y-4">
-      <form class="card bg-base-200/60 border border-base-300 p-4 space-y-3"
-        data-on-submit_prevent="saveGroup($sql)">
-        <div class="flex items-center justify-between">
-          <h2 class="font-semibold text-sm" data-bind="editingGroupId ? 'Edit Group' : 'Create Group'">Create Group</h2>
-          <button type="button" data-show="editingGroupId" class="btn btn-ghost btn-xs" data-on-click="cancelEditGroup()">Cancel</button>
-        </div>
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-2.5">
-          <input id="grp-name" type="text" class="input input-bordered input-sm"
-            placeholder="Group Name (e.g. Finance Approvers)" data-bind-value="gName" />
-          <input id="grp-desc" type="text" class="input input-bordered input-sm"
-            placeholder="Description" data-bind-value="gDesc" />
-          <select id="grp-role" class="select select-bordered select-sm" data-bind-value="gRole">
-            <option value="VIEWER">Inherited Role: VIEWER</option>
-            <option value="EDITOR">Inherited Role: EDITOR</option>
-            <option value="OWNER">Inherited Role: OWNER</option>
-          </select>
-        </div>
-        <div class="flex flex-wrap items-center gap-2">
-          <span class="text-xs opacity-70 font-medium">Members:</span>
-          <template data-for="u in (users || [])">
-            <label class="badge badge-sm gap-1.5 cursor-pointer py-2.5"
-              data-class="{ 'badge-primary': (gMembers || []).includes(u.name), 'badge-ghost': !(gMembers || []).includes(u.name) }"
-              data-on-click="toggleGroupMember(u.name)">
-              <span data-bind="u.name"></span>
-            </label>
-          </template>
-        </div>
-        <div>
-          <button id="grp-save-btn" type="submit" class="btn btn-primary btn-sm"
-            data-bind="editingGroupId ? 'Update Group' : 'Create Group'">Create Group</button>
-        </div>
-      </form>
+      <div class="flex items-center justify-between">
+        <p class="text-xs opacity-70">Groups grant inherited roles and capabilities to all assigned members.</p>
+        <button id="iam-new-group-btn" type="button" class="btn btn-primary btn-sm gap-1.5"
+          data-on-click="openGroupModal(null)">
+          <iconify-icon icon="material-symbols-light:group-add-outline" class="text-base"></iconify-icon>
+          <span>Create Group</span>
+        </button>
+      </div>
+
+      <div data-show="typeof getGroups === 'function' && getGroups().length === 0"
+        class="p-8 text-center rounded-xl border border-dashed border-base-300 opacity-60 text-sm">
+        No groups created yet. Click "Create Group" to organize members and inherited permissions.
+      </div>
 
       <div class="grid grid-cols-1 md:grid-cols-2 gap-3" id="iam-groups-list">
-        <template data-for="grp in getGroups()">
-          <div class="card bg-base-100 border border-base-300 p-4 space-y-2">
+        <template data-for="grp in (typeof getGroups === 'function' ? getGroups() : [])">
+          <div class="card bg-base-100 border border-base-300 p-4 space-y-2.5 shadow-sm">
             <div class="flex items-start justify-between gap-2">
               <div>
-                <div class="font-semibold text-sm flex items-center gap-2">
+                <div class="font-semibold text-sm flex items-center gap-2 flex-wrap">
                   <span data-bind="grp.name"></span>
-                  <span class="badge badge-primary badge-xs" data-bind="grp.role"></span>
+                  <span class="badge badge-primary badge-xs" data-bind="grp.role || 'VIEWER'"></span>
+                  <span class="badge badge-ghost badge-xs" data-bind="(grp.members || []).length + ' member(s)'"></span>
                 </div>
-                <div class="text-xs opacity-60" data-bind="grp.description || 'No description'"></div>
+                <div class="text-xs opacity-60 mt-0.5" data-bind="grp.description || 'No description'"></div>
               </div>
               <div class="flex gap-1">
-                <button type="button" class="btn btn-ghost btn-xs" data-on-click="startEditGroup(grp)">Edit</button>
+                <button type="button" class="btn btn-primary btn-outline btn-xs" data-on-click="openGroupModal(grp)">Manage</button>
                 <button type="button" class="btn btn-ghost btn-xs text-error" data-on-click="deleteGroup(grp, $sql)">Delete</button>
               </div>
             </div>
-            <div class="flex flex-wrap gap-1 pt-1">
+            <div class="flex flex-wrap gap-1 pt-1 border-t border-base-200">
+              <span class="text-[10px] uppercase opacity-50 me-1 self-center">Members:</span>
               <template data-for="m in (grp.members || [])">
-                <span class="badge badge-ghost badge-xs" data-bind="m"></span>
+                <span class="badge badge-secondary badge-outline badge-xs" data-bind="m"></span>
               </template>
+              <span data-show="!(grp.members && grp.members.length)" class="text-xs opacity-40">None</span>
             </div>
           </div>
         </template>
@@ -590,40 +224,17 @@
 
     <!-- ==================== TAB 3: ROLES & PERMISSIONS ==================== -->
     <div data-show="iamTab === 'roles'" class="space-y-4">
-      <form class="card bg-base-200/60 border border-base-300 p-4 space-y-3"
-        data-on-submit_prevent="saveRole($sql)">
-        <div class="flex items-center justify-between">
-          <h2 class="font-semibold text-sm" data-bind="editingRoleId ? 'Edit Custom Role' : 'Create Custom Role'">Create Custom Role</h2>
-          <button type="button" data-show="editingRoleId" class="btn btn-ghost btn-xs" data-on-click="cancelEditRole()">Cancel</button>
-        </div>
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-2.5">
-          <input id="role-name" type="text" class="input input-bordered input-sm"
-            placeholder="Role Name (e.g. Finance Auditor)" data-bind-value="rName" />
-          <input id="role-desc" type="text" class="input input-bordered input-sm"
-            placeholder="Description" data-bind-value="rDesc" />
-          <select id="role-base" class="select select-bordered select-sm" data-bind-value="rBase">
-            <option value="VIEWER">Base Kernel Level: VIEWER</option>
-            <option value="EDITOR">Base Kernel Level: EDITOR</option>
-            <option value="OWNER">Base Kernel Level: OWNER</option>
-          </select>
-        </div>
-        <div class="flex flex-wrap items-center gap-1.5">
-          <span class="text-xs opacity-70 font-medium me-1">Capabilities:</span>
-          <template data-for="cap in allCaps">
-            <button type="button" class="badge badge-sm font-mono cursor-pointer py-2.5"
-              data-class="{ 'badge-primary': (rCaps || []).includes(cap), 'badge-ghost': !(rCaps || []).includes(cap) }"
-              data-on-click="toggleRoleCap(cap)" data-bind="cap"></button>
-          </template>
-        </div>
-        <div>
-          <button id="role-save-btn" type="submit" class="btn btn-primary btn-sm"
-            data-bind="editingRoleId ? 'Update Role' : 'Create Role'">Create Role</button>
-        </div>
-      </form>
+      <div class="flex items-center justify-between">
+        <p class="text-xs opacity-70">Built-in kernel roles plus custom capability bundles assignable to users and groups.</p>
+        <button id="iam-new-role-btn" type="button" class="btn btn-primary btn-sm gap-1.5"
+          data-on-click="openRoleModal(null)">
+          <iconify-icon icon="material-symbols-light:add-moderator-outline" class="text-base"></iconify-icon>
+          <span>Create Custom Role</span>
+        </button>
+      </div>
 
-      <!-- Built-in + Custom Roles -->
       <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-        <template data-for="sr in systemRoles">
+        <template data-for="sr in (systemRoles || [])">
           <div class="card bg-base-200/40 border border-base-300 p-4 space-y-2">
             <div class="flex items-center justify-between">
               <span class="font-semibold text-sm" data-bind="sr.name"></span>
@@ -640,18 +251,18 @@
       </div>
 
       <div class="grid grid-cols-1 md:grid-cols-2 gap-3" id="iam-custom-roles-list">
-        <template data-for="cr in getCustomRoles()">
-          <div class="card bg-base-100 border border-base-300 p-4 space-y-2">
+        <template data-for="cr in (typeof getCustomRoles === 'function' ? getCustomRoles() : [])">
+          <div class="card bg-base-100 border border-base-300 p-4 space-y-2 shadow-sm">
             <div class="flex items-start justify-between gap-2">
               <div>
                 <div class="font-semibold text-sm flex items-center gap-2">
                   <span data-bind="cr.name"></span>
                   <span class="badge badge-secondary badge-xs" data-bind="'Base: ' + (cr.base_role || 'VIEWER')"></span>
                 </div>
-                <p class="text-xs opacity-60" data-bind="cr.description || 'Custom role'"></p>
+                <p class="text-xs opacity-60" data-bind="cr.description || 'Custom capability role'"></p>
               </div>
               <div class="flex gap-1">
-                <button type="button" class="btn btn-ghost btn-xs" data-on-click="startEditRole(cr)">Edit</button>
+                <button type="button" class="btn btn-primary btn-outline btn-xs" data-on-click="openRoleModal(cr)">Manage</button>
                 <button type="button" class="btn btn-ghost btn-xs text-error" data-on-click="deleteRole(cr, $sql)">Delete</button>
               </div>
             </div>
@@ -673,7 +284,6 @@
           <h2 class="font-semibold text-sm" data-bind="editingPolicyId ? 'Edit Record/Field Policy' : 'Define Record-Level or Field-Level Policy (Nexus-DB / SurrealQL)'">Define Record-Level Policy</h2>
           <button type="button" data-show="editingPolicyId" class="btn btn-ghost btn-xs" data-on-click="cancelEditPolicy()">Cancel</button>
         </div>
-
         <div class="grid grid-cols-1 md:grid-cols-4 gap-2.5">
           <input id="pol-table" type="text" class="input input-bordered input-sm font-mono"
             placeholder="Table (e.g. erp_po)" data-bind-value="pTable" />
@@ -690,24 +300,19 @@
             <option value="none">PERMISSIONS NONE</option>
           </select>
         </div>
-
         <div data-show="pMode === 'where'" class="grid grid-cols-1 md:grid-cols-3 gap-2.5">
           <input id="pol-ops" type="text" class="input input-bordered input-sm font-mono"
             placeholder="Operations (e.g. select, update)" data-bind-value="pOps" />
           <input id="pol-expr" type="text" class="input input-bordered input-sm font-mono md:col-span-2"
             placeholder="WHERE expression (e.g. owner == $auth)" data-bind-value="pExpr" />
         </div>
-
         <div data-show="pMode === 'where'" class="flex flex-wrap items-center gap-1.5 text-xs">
           <span class="opacity-60">Presets:</span>
           <button type="button" class="badge badge-ghost badge-sm font-mono cursor-pointer hover:badge-primary"
             data-on-click="pExpr = 'owner == $auth'">owner == $auth</button>
           <button type="button" class="badge badge-ghost badge-sm font-mono cursor-pointer hover:badge-primary"
             data-on-click="pExpr = 'created_by == $auth'">created_by == $auth</button>
-          <button type="button" class="badge badge-ghost badge-sm font-mono cursor-pointer hover:badge-primary"
-            data-on-click="pExpr = 'status != \'Approved\' || owner == $auth'">editable until approved</button>
         </div>
-
         <div>
           <button id="pol-save-btn" type="submit" class="btn btn-primary btn-sm"
             data-bind="editingPolicyId ? 'Update &amp; Apply Policy' : 'Apply Policy Live'">Apply Policy Live</button>
@@ -715,7 +320,7 @@
       </form>
 
       <div class="space-y-2.5" id="iam-policies-list">
-        <template data-for="pol in getPolicies()">
+        <template data-for="pol in (typeof getPolicies === 'function' ? getPolicies() : [])">
           <div class="card bg-base-100 border border-base-300 p-4 space-y-1.5">
             <div class="flex items-center justify-between gap-2">
               <div class="flex items-center gap-2 flex-wrap">
@@ -732,5 +337,257 @@
         </template>
       </div>
     </div>
+  </div>
+
+  <!-- ==================== FULL ACCOUNT PROFILE MODAL ==================== -->
+  <div id="iam-user-modal" class="modal" role="dialog" data-class="{ 'modal-open': typeof userModalOpen !== 'undefined' && userModalOpen }">
+    <div class="modal-box max-w-2xl bg-base-100 border border-base-300 p-0 overflow-hidden">
+      <!-- Modal Header -->
+      <div class="p-4 bg-base-200/60 border-b border-base-300 flex items-center justify-between gap-3">
+        <div class="flex items-center gap-3 min-w-0">
+          <div class="avatar placeholder">
+            <div class="w-12 rounded-full bg-primary/15 text-primary ring ring-primary/30 flex items-center justify-center overflow-hidden">
+              <img data-show="profAvatarPath" data-bind-src="profAvatarPath" class="w-full h-full object-cover" alt="" />
+              <span data-show="!profAvatarPath" class="text-base font-bold uppercase" data-bind="String(activeUserName || '?').slice(0, 2)"></span>
+            </div>
+          </div>
+          <div class="min-w-0">
+            <h3 class="font-bold text-base truncate" id="iam-modal-user-title" data-bind="profDisplayName || activeUserName || 'Account Profile'"></h3>
+            <div class="text-xs opacity-60 font-mono truncate" data-bind="'@' + (activeUserName || '') + ' · ' + (profBaseRole || 'VIEWER')"></div>
+          </div>
+        </div>
+        <button type="button" class="btn btn-ghost btn-xs btn-circle" data-on-click="closeUserModal()">
+          <iconify-icon icon="material-symbols-light:close" class="text-lg"></iconify-icon>
+        </button>
+      </div>
+
+      <!-- Modal Sub-tabs -->
+      <div role="tablist" class="tabs tabs-bordered px-4 bg-base-200/30">
+        <button type="button" role="tab" class="tab tab-sm"
+          data-class="{ 'tab-active font-semibold': userModalTab === 'profile' }"
+          data-on-click="userModalTab = 'profile'">Profile</button>
+        <button type="button" role="tab" id="iam-modal-tab-groups" class="tab tab-sm"
+          data-class="{ 'tab-active font-semibold': userModalTab === 'groups' }"
+          data-on-click="userModalTab = 'groups'">Groups &amp; Memberships</button>
+        <button type="button" role="tab" id="iam-modal-tab-roles" class="tab tab-sm"
+          data-class="{ 'tab-active font-semibold': userModalTab === 'roles' }"
+          data-on-click="userModalTab = 'roles'">Roles &amp; Permissions</button>
+        <button type="button" role="tab" id="iam-modal-tab-security" class="tab tab-sm"
+          data-class="{ 'tab-active font-semibold': userModalTab === 'security' }"
+          data-on-click="userModalTab = 'security'">Security</button>
+      </div>
+
+      <!-- Modal Body -->
+      <div class="p-5 max-h-[65vh] overflow-y-auto space-y-4">
+        <!-- Sub-tab 1: Profile Info -->
+        <form data-show="userModalTab === 'profile'" class="space-y-3" data-on-submit_prevent="saveUserProfile($sql)">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label class="form-control">
+              <span class="label-text text-xs opacity-70 mb-1">Display Name</span>
+              <input id="prof-display-name" type="text" class="input input-bordered input-sm" data-bind-value="profDisplayName" />
+            </label>
+            <label class="form-control">
+              <span class="label-text text-xs opacity-70 mb-1">Email</span>
+              <input id="prof-email" type="email" class="input input-bordered input-sm" placeholder="name@company.com" data-bind-value="profEmail" />
+            </label>
+            <label class="form-control">
+              <span class="label-text text-xs opacity-70 mb-1">Job Title</span>
+              <input id="prof-title" type="text" class="input input-bordered input-sm" placeholder="e.g. VP Operations" data-bind-value="profTitle" />
+            </label>
+            <label class="form-control">
+              <span class="label-text text-xs opacity-70 mb-1">Department</span>
+              <input id="prof-dept" type="text" class="input input-bordered input-sm" placeholder="e.g. Procurement" data-bind-value="profDepartment" />
+            </label>
+          </div>
+          <div class="flex flex-wrap items-center justify-between gap-3 pt-1">
+            <label class="flex items-center gap-2 text-xs">
+              <span class="opacity-70">Status:</span>
+              <select class="select select-bordered select-xs" data-bind-value="profStatus">
+                <option value="active">Active</option>
+                <option value="suspended">Suspended</option>
+              </select>
+            </label>
+            <label class="btn btn-xs btn-outline cursor-pointer gap-1">
+              <iconify-icon icon="material-symbols-light:upload" class="text-sm"></iconify-icon>
+              <span>Upload Avatar (S3)</span>
+              <input type="file" accept="image/*" class="hidden" data-on-change="uploadUserAvatar($el, $sql)" />
+            </label>
+          </div>
+          <div class="pt-2 flex justify-end">
+            <button id="prof-save-btn" type="submit" class="btn btn-primary btn-sm">Save Profile</button>
+          </div>
+        </form>
+
+        <!-- Sub-tab 2: Group Memberships -->
+        <div data-show="userModalTab === 'groups'" class="space-y-3">
+          <p class="text-xs opacity-70">Toggle which groups <strong data-bind="activeUserName"></strong> belongs to (changes persist live in Nexus-DB):</p>
+          <div class="space-y-2" id="iam-modal-groups-list">
+            <template data-for="grp in (typeof getGroups === 'function' ? getGroups() : [])">
+              <div class="flex items-center justify-between p-3 rounded-xl border border-base-300 bg-base-200/40">
+                <div>
+                  <div class="font-semibold text-sm flex items-center gap-2">
+                    <span data-bind="grp.name"></span>
+                    <span class="badge badge-primary badge-xs" data-bind="grp.role || 'VIEWER'"></span>
+                  </div>
+                  <div class="text-xs opacity-60" data-bind="grp.description || 'No description'"></div>
+                </div>
+                <button type="button" class="btn btn-xs"
+                  data-class="{
+                    'btn-error btn-outline': Array.isArray(grp.members) && grp.members.includes(activeUserName),
+                    'btn-primary': !(Array.isArray(grp.members) && grp.members.includes(activeUserName))
+                  }"
+                  data-on-click="toggleUserInGroup(activeUserName, grp, $sql)"
+                  data-bind="(Array.isArray(grp.members) && grp.members.includes(activeUserName)) ? 'Remove' : 'Add to Group'"></button>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <!-- Sub-tab 3: Roles & Effective Permissions -->
+        <form data-show="userModalTab === 'roles'" class="space-y-4" data-on-submit_prevent="saveUserRolesAndSecurity($sql)">
+          <label class="form-control">
+            <span class="label-text text-xs font-semibold mb-1">Base Kernel Role (Server-Enforced)</span>
+            <select id="prof-base-role" class="select select-bordered select-sm" data-bind-value="profBaseRole">
+              <option value="VIEWER">VIEWER (Read-Only)</option>
+              <option value="EDITOR">EDITOR (Read/Write + Wasm Cells)</option>
+              <option value="OWNER">OWNER (Full Admin)</option>
+            </select>
+          </label>
+          <div class="space-y-1.5">
+            <div class="text-xs font-semibold">Custom Roles</div>
+            <div class="flex flex-wrap gap-1.5">
+              <template data-for="cr in (typeof getCustomRoles === 'function' ? getCustomRoles() : [])">
+                <button type="button" class="badge badge-sm cursor-pointer py-2.5"
+                  data-class="{ 'badge-accent': (profCustomRoles || []).includes(cr.name), 'badge-ghost': !(profCustomRoles || []).includes(cr.name) }"
+                  data-on-click="toggleUserCustomRole(cr.name)" data-bind="cr.name"></button>
+              </template>
+            </div>
+          </div>
+          <div class="p-3 rounded-xl bg-base-200/50 border border-base-300 space-y-1.5">
+            <div class="text-[11px] font-semibold uppercase tracking-wider opacity-60">Computed Effective Capabilities (Direct + Custom + Groups)</div>
+            <div class="flex flex-wrap gap-1" id="prof-effective-caps">
+              <template data-for="c in (typeof getEffectiveCaps === 'function' ? getEffectiveCaps(getActiveUserObj()) : [])">
+                <span class="badge badge-primary badge-outline badge-xs font-mono text-[10px]" data-bind="c"></span>
+              </template>
+            </div>
+          </div>
+          <div class="flex justify-end">
+            <button id="prof-roles-save-btn" type="submit" class="btn btn-primary btn-sm">Save Roles</button>
+          </div>
+        </form>
+
+        <!-- Sub-tab 4: Security -->
+        <div data-show="userModalTab === 'security'" class="space-y-4">
+          <form class="space-y-2.5 p-3 rounded-xl bg-base-200/40 border border-base-300"
+            data-on-submit_prevent="saveUserRolesAndSecurity($sql)">
+            <div class="font-semibold text-xs">Admin Password Reset</div>
+            <div class="flex gap-2">
+              <input id="prof-new-pass" type="password" class="input input-bordered input-sm flex-1"
+                placeholder="New password (min 4 chars)" data-bind-value="profNewPass" />
+              <button type="submit" class="btn btn-primary btn-sm">Reset Password</button>
+            </div>
+          </form>
+          <div class="p-3 rounded-xl bg-error/5 border border-error/30 flex items-center justify-between gap-3">
+            <div>
+              <div class="font-semibold text-xs text-error">Delete Account</div>
+              <div class="text-[11px] opacity-70">Removes user from Nexus-IO IAM (protected if last OWNER).</div>
+            </div>
+            <button type="button" class="btn btn-error btn-xs" data-on-click="deleteUser(activeUserName)">Delete User</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-backdrop bg-black/40" data-on-click="closeUserModal()"></div>
+  </div>
+
+  <!-- ==================== GROUP MANAGEMENT MODAL ==================== -->
+  <div id="iam-group-modal" class="modal" role="dialog" data-class="{ 'modal-open': typeof groupModalOpen !== 'undefined' && groupModalOpen }">
+    <div class="modal-box max-w-xl bg-base-100 border border-base-300 space-y-4">
+      <div class="flex items-center justify-between border-b border-base-200 pb-3">
+        <h3 class="font-bold text-base" data-bind="editingGroupId ? 'Manage Group' : 'Create Group'">Manage Group</h3>
+        <button type="button" class="btn btn-ghost btn-xs btn-circle" data-on-click="closeGroupModal()">
+          <iconify-icon icon="material-symbols-light:close" class="text-lg"></iconify-icon>
+        </button>
+      </div>
+      <form class="space-y-3" data-on-submit_prevent="saveGroup($sql)">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+          <input id="grp-name" type="text" class="input input-bordered input-sm" placeholder="Group Name" data-bind-value="gName" />
+          <select id="grp-role" class="select select-bordered select-sm" data-bind-value="gRole">
+            <option value="VIEWER">Inherited Role: VIEWER</option>
+            <option value="EDITOR">Inherited Role: EDITOR</option>
+            <option value="OWNER">Inherited Role: OWNER</option>
+          </select>
+        </div>
+        <input id="grp-desc" type="text" class="input input-bordered input-sm w-full" placeholder="Description" data-bind-value="gDesc" />
+
+        <div class="space-y-1.5">
+          <div class="text-xs font-semibold">Members (<span data-bind="(gMembers || []).length">0</span>)</div>
+          <div class="flex flex-wrap gap-1.5" id="grp-modal-members">
+            <template data-for="u in (users || [])">
+              <button type="button" class="badge badge-sm cursor-pointer py-2.5"
+                data-class="{ 'badge-primary': (gMembers || []).includes(u.name), 'badge-ghost': !(gMembers || []).includes(u.name) }"
+                data-on-click="toggleGroupMember(u.name)" data-bind="u.name"></button>
+            </template>
+          </div>
+        </div>
+
+        <div class="space-y-1.5">
+          <div class="text-xs font-semibold">Additional Group Capabilities</div>
+          <div class="flex flex-wrap gap-1">
+            <template data-for="cap in (allCaps || [])">
+              <button type="button" class="badge badge-xs font-mono cursor-pointer py-2"
+                data-class="{ 'badge-secondary': (gCaps || []).includes(cap), 'badge-ghost': !(gCaps || []).includes(cap) }"
+                data-on-click="toggleGroupCap(cap)" data-bind="cap"></button>
+            </template>
+          </div>
+        </div>
+
+        <div class="flex justify-end gap-2 pt-2">
+          <button type="button" class="btn btn-ghost btn-sm" data-on-click="closeGroupModal()">Cancel</button>
+          <button id="grp-save-btn" type="submit" class="btn btn-primary btn-sm"
+            data-bind="editingGroupId ? 'Save Group' : 'Create Group'">Save Group</button>
+        </div>
+      </form>
+    </div>
+    <div class="modal-backdrop bg-black/40" data-on-click="closeGroupModal()"></div>
+  </div>
+
+  <!-- ==================== ROLE & PERMISSION MANAGEMENT MODAL ==================== -->
+  <div id="iam-role-modal" class="modal" role="dialog" data-class="{ 'modal-open': typeof roleModalOpen !== 'undefined' && roleModalOpen }">
+    <div class="modal-box max-w-xl bg-base-100 border border-base-300 space-y-4">
+      <div class="flex items-center justify-between border-b border-base-200 pb-3">
+        <h3 class="font-bold text-base" data-bind="editingRoleId ? 'Manage Role &amp; Permissions' : 'Create Custom Role'">Manage Role</h3>
+        <button type="button" class="btn btn-ghost btn-xs btn-circle" data-on-click="closeRoleModal()">
+          <iconify-icon icon="material-symbols-light:close" class="text-lg"></iconify-icon>
+        </button>
+      </div>
+      <form class="space-y-3" data-on-submit_prevent="saveRole($sql)">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+          <input id="role-name" type="text" class="input input-bordered input-sm" placeholder="Role Name" data-bind-value="rName" />
+          <select id="role-base" class="select select-bordered select-sm" data-bind-value="rBase">
+            <option value="VIEWER">Base Kernel Level: VIEWER</option>
+            <option value="EDITOR">Base Kernel Level: EDITOR</option>
+            <option value="OWNER">Base Kernel Level: OWNER</option>
+          </select>
+        </div>
+        <input id="role-desc" type="text" class="input input-bordered input-sm w-full" placeholder="Description" data-bind-value="rDesc" />
+        <div class="space-y-1.5">
+          <div class="text-xs font-semibold">Granted Capabilities</div>
+          <div class="flex flex-wrap gap-1.5">
+            <template data-for="cap in (allCaps || [])">
+              <button type="button" class="badge badge-sm font-mono cursor-pointer py-2.5"
+                data-class="{ 'badge-primary': (rCaps || []).includes(cap), 'badge-ghost': !(rCaps || []).includes(cap) }"
+                data-on-click="toggleRoleCap(cap)" data-bind="cap"></button>
+            </template>
+          </div>
+        </div>
+        <div class="flex justify-end gap-2 pt-2">
+          <button type="button" class="btn btn-ghost btn-sm" data-on-click="closeRoleModal()">Cancel</button>
+          <button id="role-save-btn" type="submit" class="btn btn-primary btn-sm"
+            data-bind="editingRoleId ? 'Save Role' : 'Create Role'">Save Role</button>
+        </div>
+      </form>
+    </div>
+    <div class="modal-backdrop bg-black/40" data-on-click="closeRoleModal()"></div>
   </div>
 </div>

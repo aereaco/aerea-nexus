@@ -87,7 +87,7 @@ const signalModule: AttributeModule = {
       import(resolvedUrl)
         .then((mod) => {
           const exported = mod?.default ?? mod;
-          const nextState = typeof exported === 'function' ? exported(runtime, el) : exported;
+          const nextState = typeof exported === 'function' ? exported(scopeProxy, runtime, el) : exported;
           if (nextState && typeof nextState === 'object') {
             if (isGlobal) {
               const globals = runtime.globalSignals() as Record<string, unknown>;
@@ -99,7 +99,7 @@ const signalModule: AttributeModule = {
               });
               stateRef.value = globals;
             } else {
-              stateRef.value = { ...(stateRef.value || {}), ...(nextState as Record<string, unknown>) };
+              Object.assign(stateRef.value as Record<string, unknown>, nextState);
             }
             runtime.triggerRef(stateRef);
           }

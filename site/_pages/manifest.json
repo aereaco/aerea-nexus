@@ -217,6 +217,16 @@
     "category": "Apps"
   },
   {
+    "id": "profile",
+    "route": "/profile",
+    "path": "/_pages/apps/profile/index.html",
+    "title": "My Profile &amp; Account",
+    "icon": "material-symbols-light:account-circle-outline",
+    "order": 3,
+    "parent": null,
+    "category": "Apps"
+  },
+  {
     "id": "doc-changelog",
     "route": "/docs/changelog",
     "path": "/_pages/docs/changelog.md",
