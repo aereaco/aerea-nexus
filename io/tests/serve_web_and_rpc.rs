@@ -829,3 +829,101 @@ async fn first_run_bootstrap_iam_admin_and_persisted_wasm_cell_auto_restore() {
         assert!(cells_body.contains("echo"));
     }
 }
+
+#[tokio::test]
+async fn iam_full_user_crud_last_owner_guard_and_record_level_permissions() {
+    std::env::remove_var("NEXUS_ALLOW_UNAUTH_LOCAL");
+
+    let db = Arc::new(Database::open_mem());
+    let blobs = Arc::new(BlobBridge::new(db.clone()).await.unwrap());
+    let gw = UxGateway::new(db, blobs, GatewayConfig::all_core());
+    gw.reconcile_storage_on_boot().await.unwrap();
+    let service = Service::new(gw.router());
+
+    // 1. Bootstrap sole OWNER
+    let owner_cookie = TestClient::post("http://127.0.0.1/_nexus/setup/bootstrap")
+        .json(&serde_json::json!({ "user": "rootadmin", "pass": "root-pass" }))
+        .send(&service)
+        .await
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+
+    // 2. Last-OWNER protection: cannot delete or demote sole OWNER
+    let del_sole = TestClient::delete("http://127.0.0.1/_nexus/iam/users/rootadmin")
+        .add_header("cookie", &owner_cookie, true)
+        .send(&service)
+        .await;
+    assert_eq!(del_sole.status_code, Some(StatusCode::BAD_REQUEST));
+
+    let demote_sole = TestClient::put("http://127.0.0.1/_nexus/iam/users/rootadmin")
+        .add_header("cookie", &owner_cookie, true)
+        .json(&serde_json::json!({ "roles": ["VIEWER"] }))
+        .send(&service)
+        .await;
+    assert_eq!(demote_sole.status_code, Some(StatusCode::BAD_REQUEST));
+
+    // 3. Create user `alice` (VIEWER) -> Edit to EDITOR (preserving password) -> Verify signin -> Delete
+    let create_alice = TestClient::post("http://127.0.0.1/_nexus/iam/users")
+        .add_header("cookie", &owner_cookie, true)
+        .json(&serde_json::json!({ "user": "alice", "pass": "alice-pass", "roles": ["VIEWER"] }))
+        .send(&service)
+        .await;
+    assert_eq!(create_alice.status_code, Some(StatusCode::CREATED));
+
+    let mut edit_alice = TestClient::put("http://127.0.0.1/_nexus/iam/users/alice")
+        .add_header("cookie", &owner_cookie, true)
+        .json(&serde_json::json!({ "roles": ["EDITOR"] }))
+        .send(&service)
+        .await;
+    assert_eq!(edit_alice.status_code, Some(StatusCode::OK));
+    assert!(edit_alice.take_string().await.unwrap().contains("EDITOR"));
+
+    // Sign in as alice with original password -> verify EDITOR role in /_nexus/auth/me
+    let alice_cookie = TestClient::post("http://127.0.0.1/signin")
+        .json(&serde_json::json!({ "user": "alice", "pass": "alice-pass" }))
+        .send(&service)
+        .await
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let mut alice_me = TestClient::get("http://127.0.0.1/_nexus/auth/me")
+        .add_header("cookie", &alice_cookie, true)
+        .send(&service)
+        .await;
+    assert!(alice_me.take_string().await.unwrap().contains("EDITOR"));
+
+    let del_alice = TestClient::delete("http://127.0.0.1/_nexus/iam/users/alice")
+        .add_header("cookie", &owner_cookie, true)
+        .send(&service)
+        .await;
+    assert_eq!(del_alice.status_code, Some(StatusCode::OK));
+
+    // 4. Apply live record-level PERMISSIONS policy via POST /_nexus/iam/policies/apply
+    let mut apply_policy = TestClient::post("http://127.0.0.1/_nexus/iam/policies/apply")
+        .add_header("cookie", &owner_cookie, true)
+        .json(&serde_json::json!({
+            "table": "secret_doc",
+            "scope": "table",
+            "mode": "where",
+            "ops": "select",
+            "where_expr": "owner == $auth"
+        }))
+        .send(&service)
+        .await;
+    assert_eq!(apply_policy.status_code, Some(StatusCode::OK));
+    let policy_body = apply_policy.take_string().await.unwrap();
+    assert!(policy_body.contains("DEFINE TABLE secret_doc SCHEMALESS PERMISSIONS FOR select WHERE owner == $auth;"));
+}

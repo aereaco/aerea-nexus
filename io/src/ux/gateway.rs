@@ -658,6 +658,20 @@ impl UxGateway {
                         .post(crate::ux::surreal_http::IamUsersHandler { db: self.db.clone() }),
                 )
                 .push(
+                    Router::with_path("/_nexus/iam/users/{name}")
+                        .hoop(gate.clone())
+                        .hoop(crate::ux::iam::IamMiddleware::admin(self.db.clone()))
+                        .put(crate::ux::surreal_http::IamUserItemHandler { db: self.db.clone() })
+                        .patch(crate::ux::surreal_http::IamUserItemHandler { db: self.db.clone() })
+                        .delete(crate::ux::surreal_http::IamUserItemHandler { db: self.db.clone() }),
+                )
+                .push(
+                    Router::with_path("/_nexus/iam/policies/apply")
+                        .hoop(gate.clone())
+                        .hoop(crate::ux::iam::IamMiddleware::admin(self.db.clone()))
+                        .post(crate::ux::surreal_http::IamPolicyApplyHandler { db: self.db.clone() }),
+                )
+                .push(
                     Router::with_path("/export")
                         .hoop(gate.clone())
                         .hoop(crate::ux::iam::IamMiddleware::authenticated(self.db.clone()))

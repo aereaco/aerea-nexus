@@ -564,28 +564,23 @@ impl Handler for IamUsersHandler {
             };
             let user = body.get("user").and_then(|v| v.as_str()).unwrap_or("").trim();
             let pass = body.get("pass").and_then(|v| v.as_str()).unwrap_or("");
-            let role = body
-                .get("role")
-                .and_then(|v| v.as_str())
-                .unwrap_or("VIEWER")
-                .trim()
-                .to_ascii_uppercase();
+            let roles = parse_iam_roles(&body);
             if user.is_empty() || pass.len() < 4 {
                 res.status_code(StatusCode::BAD_REQUEST);
                 res.render(Json(json!({ "code": 400, "details": "Valid username and password (min 4 chars) required" })));
                 return;
             }
-            if !matches!(role.as_str(), "OWNER" | "EDITOR" | "VIEWER") {
+            let Some(roles) = roles else {
                 res.status_code(StatusCode::BAD_REQUEST);
-                res.render(Json(json!({ "code": 400, "details": "Role must be OWNER, EDITOR, or VIEWER" })));
+                res.render(Json(json!({ "code": 400, "details": "Roles must be OWNER, EDITOR, or VIEWER" })));
                 return;
-            }
-            match self.db.inner.create_user(&ns, &database, user, "DATABASE", pass, vec![role.clone()]) {
+            };
+            match self.db.inner.create_user(&ns, &database, user, "DATABASE", pass, roles.clone()) {
                 Ok(()) => {
                     res.status_code(StatusCode::CREATED);
                     res.render(Json(json!({
                         "ok": true,
-                        "user": { "name": user, "level": "DATABASE", "roles": [role] }
+                        "user": { "name": user, "level": "DATABASE", "roles": roles }
                     })));
                 }
                 Err(e) => {
@@ -596,6 +591,210 @@ impl Handler for IamUsersHandler {
             return;
         }
         res.status_code(StatusCode::METHOD_NOT_ALLOWED);
+    }
+}
+
+fn parse_iam_roles(body: &JsonValue) -> Option<Vec<String>> {
+    let mut out = Vec::new();
+    if let Some(arr) = body.get("roles").and_then(|v| v.as_array()) {
+        for item in arr {
+            let r = item.as_str()?.trim().to_ascii_uppercase();
+            if !matches!(r.as_str(), "OWNER" | "EDITOR" | "VIEWER") {
+                return None;
+            }
+            if !out.contains(&r) {
+                out.push(r);
+            }
+        }
+    } else {
+        let r = body
+            .get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or("VIEWER")
+            .trim()
+            .to_ascii_uppercase();
+        if !matches!(r.as_str(), "OWNER" | "EDITOR" | "VIEWER") {
+            return None;
+        }
+        out.push(r);
+    }
+    if out.is_empty() {
+        return None;
+    }
+    Some(out)
+}
+
+/// `PUT/PATCH/DELETE /_nexus/iam/users/{name}` — Edit or delete an IAM user (`OWNER` only).
+#[derive(Clone)]
+pub struct IamUserItemHandler {
+    pub db: Arc<Database>,
+}
+
+#[async_trait]
+impl Handler for IamUserItemHandler {
+    async fn handle(&self, req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
+        res.headers_mut().insert(
+            salvo::http::header::CACHE_CONTROL,
+            salvo::http::header::HeaderValue::from_static("no-store"),
+        );
+        let (ns, database) = extract_ns_db(req);
+        let name = req.param::<String>("name").unwrap_or_default();
+        if name.trim().is_empty() {
+            res.status_code(StatusCode::BAD_REQUEST);
+            res.render(Json(json!({ "code": 400, "details": "Missing user name" })));
+            return;
+        }
+
+        if req.method() == &salvo::http::Method::DELETE {
+            match self.db.inner.delete_user(&ns, &database, &name) {
+                Ok(true) => {
+                    res.render(Json(json!({ "ok": true, "deleted": name })));
+                }
+                Ok(false) => {
+                    res.status_code(StatusCode::NOT_FOUND);
+                    res.render(Json(json!({ "code": 404, "details": format!("User '{}' not found", name) })));
+                }
+                Err(e) => {
+                    res.status_code(StatusCode::BAD_REQUEST);
+                    res.render(Json(json!({ "code": 400, "details": e.to_string() })));
+                }
+            }
+            return;
+        }
+
+        if req.method() == &salvo::http::Method::PUT || req.method() == &salvo::http::Method::PATCH {
+            let body: JsonValue = match req.parse_json().await {
+                Ok(v) => v,
+                Err(e) => {
+                    res.status_code(StatusCode::BAD_REQUEST);
+                    res.render(Json(json!({ "code": 400, "details": e.to_string() })));
+                    return;
+                }
+            };
+            let Some(roles) = parse_iam_roles(&body) else {
+                res.status_code(StatusCode::BAD_REQUEST);
+                res.render(Json(json!({ "code": 400, "details": "Roles must be OWNER, EDITOR, or VIEWER" })));
+                return;
+            };
+            let new_pass = body
+                .get("pass")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty());
+            if let Some(p) = new_pass {
+                if p.len() < 4 {
+                    res.status_code(StatusCode::BAD_REQUEST);
+                    res.render(Json(json!({ "code": 400, "details": "New password must be at least 4 characters" })));
+                    return;
+                }
+            }
+            match self.db.inner.update_user(&ns, &database, &name, roles, new_pass) {
+                Ok(Some(user)) => {
+                    res.render(Json(json!({ "ok": true, "user": user })));
+                }
+                Ok(None) => {
+                    res.status_code(StatusCode::NOT_FOUND);
+                    res.render(Json(json!({ "code": 404, "details": format!("User '{}' not found", name) })));
+                }
+                Err(e) => {
+                    res.status_code(StatusCode::BAD_REQUEST);
+                    res.render(Json(json!({ "code": 400, "details": e.to_string() })));
+                }
+            }
+            return;
+        }
+
+        res.status_code(StatusCode::METHOD_NOT_ALLOWED);
+    }
+}
+
+fn valid_sql_ident(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.bytes()
+            .next()
+            .map(|b| b.is_ascii_alphabetic() || b == b'_')
+            .unwrap_or(false)
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+/// `POST /_nexus/iam/policies/apply` — Applies a live Nexus-DB record-level (`DEFINE TABLE ... PERMISSIONS`)
+/// or field-level (`DEFINE FIELD ... PERMISSIONS`) policy (`OWNER` only).
+#[derive(Clone)]
+pub struct IamPolicyApplyHandler {
+    pub db: Arc<Database>,
+}
+
+#[async_trait]
+impl Handler for IamPolicyApplyHandler {
+    async fn handle(&self, req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
+        let (ns, database) = extract_ns_db(req);
+        let body: JsonValue = match req.parse_json().await {
+            Ok(v) => v,
+            Err(e) => {
+                res.status_code(StatusCode::BAD_REQUEST);
+                res.render(Json(json!({ "code": 400, "details": e.to_string() })));
+                return;
+            }
+        };
+        let table = body.get("table").and_then(|v| v.as_str()).unwrap_or("").trim();
+        if !valid_sql_ident(table) {
+            res.status_code(StatusCode::BAD_REQUEST);
+            res.render(Json(json!({ "code": 400, "details": "Invalid table identifier" })));
+            return;
+        }
+        let scope = body.get("scope").and_then(|v| v.as_str()).unwrap_or("table").trim();
+        let mode = body.get("mode").and_then(|v| v.as_str()).unwrap_or("where").trim();
+
+        let surql = if scope == "field" {
+            let field = body.get("field").and_then(|v| v.as_str()).unwrap_or("").trim();
+            if !valid_sql_ident(field) {
+                res.status_code(StatusCode::BAD_REQUEST);
+                res.render(Json(json!({ "code": 400, "details": "Invalid field identifier" })));
+                return;
+            }
+            if mode == "full" || mode == "remove" {
+                format!("DEFINE FIELD {} ON TABLE {} PERMISSIONS FULL;", field, table)
+            } else if mode == "none" {
+                format!("DEFINE FIELD {} ON TABLE {} PERMISSIONS NONE;", field, table)
+            } else {
+                let expr = body.get("where_expr").and_then(|v| v.as_str()).unwrap_or("").trim();
+                if expr.is_empty() || expr.contains(';') {
+                    res.status_code(StatusCode::BAD_REQUEST);
+                    res.render(Json(json!({ "code": 400, "details": "Valid WHERE expression required (no semicolons)" })));
+                    return;
+                }
+                let ops = body.get("ops").and_then(|v| v.as_str()).unwrap_or("select, update").trim();
+                format!("DEFINE FIELD {} ON TABLE {} PERMISSIONS FOR {} WHERE {};", field, table, ops, expr)
+            }
+        } else if mode == "full" || mode == "remove" {
+            format!("DEFINE TABLE {} SCHEMALESS PERMISSIONS FULL;", table)
+        } else if mode == "none" {
+            format!("DEFINE TABLE {} SCHEMALESS PERMISSIONS NONE;", table)
+        } else {
+            let expr = body.get("where_expr").and_then(|v| v.as_str()).unwrap_or("").trim();
+            if expr.is_empty() || expr.contains(';') {
+                res.status_code(StatusCode::BAD_REQUEST);
+                res.render(Json(json!({ "code": 400, "details": "Valid WHERE expression required (no semicolons)" })));
+                return;
+            }
+            let ops = body
+                .get("ops")
+                .and_then(|v| v.as_str())
+                .unwrap_or("select, create, update, delete")
+                .trim();
+            format!("DEFINE TABLE {} SCHEMALESS PERMISSIONS FOR {} WHERE {};", table, ops, expr)
+        };
+
+        match self.db.inner.query_scoped_multi(&ns, &database, &surql, vec![]) {
+            Ok(_) => {
+                res.render(Json(json!({ "ok": true, "surql": surql })));
+            }
+            Err(e) => {
+                res.status_code(StatusCode::BAD_REQUEST);
+                res.render(Json(json!({ "code": 400, "details": e.to_string(), "surql": surql })));
+            }
+        }
     }
 }
 

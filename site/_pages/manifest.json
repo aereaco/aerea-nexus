@@ -107,6 +107,16 @@
     "category": "Apps"
   },
   {
+    "id": "iam",
+    "route": "/iam",
+    "path": "/_pages/apps/iam/index.html",
+    "title": "Users &amp; Groups (IAM)",
+    "icon": "material-symbols-light:admin-panel-settings-outline",
+    "order": 2,
+    "parent": null,
+    "category": "Apps"
+  },
+  {
     "id": "todo",
     "route": "/todo",
     "path": "/_pages/apps/todo/index.html",

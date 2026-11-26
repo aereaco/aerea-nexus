@@ -306,6 +306,37 @@ impl NexusDb {
         )
     }
 
+    /// Update an IAM user's roles and optionally reset password (`feature = "auth"`).
+    #[cfg(feature = "auth")]
+    pub fn update_user(
+        &self,
+        ns: &str,
+        db: &str,
+        name: &str,
+        roles: Vec<String>,
+        new_password: Option<&str>,
+    ) -> Result<Option<crate::auth::PublicUserInfo>> {
+        crate::auth::update_user(
+            self.storage.as_ref(),
+            &sanitize_ident(ns),
+            &sanitize_ident(db),
+            name,
+            roles,
+            new_password,
+        )
+    }
+
+    /// Delete an IAM user (`feature = "auth"`), enforcing last-OWNER protection.
+    #[cfg(feature = "auth")]
+    pub fn delete_user(&self, ns: &str, db: &str, name: &str) -> Result<bool> {
+        crate::auth::delete_user(
+            self.storage.as_ref(),
+            &sanitize_ident(ns),
+            &sanitize_ident(db),
+            name,
+        )
+    }
+
     /// Issue a revocable `TYPE BEARER` grant (`feature = "auth"`).
     #[cfg(feature = "auth")]
     pub fn grant_bearer(
