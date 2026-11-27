@@ -1,0 +1,158 @@
+<head>
+  <title>Organization Profile</title>
+  <meta name="id" content="iam-organization">
+  <meta name="route" content="/iam/organization">
+  <meta name="icon" content="material-symbols-light:domain-verification-outline">
+  <meta name="order" content="2">
+  <meta name="category" content="Apps">
+  <meta name="parent" content="/iam">
+</head>
+
+<div id="iam-org-profile-page" class="max-w-5xl mx-auto w-full space-y-6"
+  data-signal-src="/_pages/apps/iam/idp-state.js"
+  data-effect="if (typeof idpReady !== 'undefined' && idpReady && $auth.isAuthenticated && !orgDetail) { loadOrgDetail(selectedOrgId); }">
+
+  <div class="flex flex-wrap items-center justify-between gap-4 border-b border-base-300 pb-4">
+    <div>
+      <div class="flex items-center gap-2">
+        <h1 class="text-2xl font-bold tracking-tight" data-bind="orgDetail?.name || 'Organization Profile'">Organization Profile</h1>
+        <span class="badge badge-primary badge-sm font-mono" data-bind="orgDetail?.org_id || selectedOrgId"></span>
+      </div>
+      <p class="text-xs font-mono opacity-60 mt-1" data-bind="'Path: ' + (orgDetail?.path || '/default')"></p>
+    </div>
+    <div class="flex items-center gap-2">
+      <select class="select select-bordered select-sm" data-bind-value="selectedOrgId"
+        data-on-change="loadOrgDetail($evt.target.value)">
+        <template data-for="o in orgs" data-key="o.org_id">
+          <option data-bind-value="o.org_id" data-bind="('— '.repeat(o.depth || 0)) + o.name"></option>
+        </template>
+      </select>
+      <a href="/iam/organizations" class="btn btn-sm btn-ghost">All Organizations</a>
+    </div>
+  </div>
+
+  <!-- Composed Security Policies with Provenance Badges -->
+  <div class="card bg-base-200/60 border border-base-300 p-5 space-y-4">
+    <div class="flex items-center justify-between">
+      <div>
+        <h2 class="font-semibold text-base">Security &amp; Branding Policies (Composed)</h2>
+        <p class="text-xs opacity-70">Ancestor security constraints are enforced automatically and surfaced with explicit provenance.</p>
+      </div>
+      <button type="button" class="btn btn-primary btn-sm"
+        data-show="$auth.hasPermission('iam.policy.update')"
+        data-on-click="saveOrgPolicy()">Save Local Policy</button>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="p-3 rounded-lg bg-base-100 border border-base-300 flex items-center justify-between gap-3">
+        <div>
+          <div class="text-sm font-medium">Require MFA</div>
+          <span class="badge badge-xs mt-1"
+            data-class="(typeof provenanceBadge === 'function' ? provenanceBadge(composedPolicy?.mfa_required?.provenance).cls : 'badge-ghost')"
+            data-bind="(typeof provenanceBadge === 'function' ? provenanceBadge(composedPolicy?.mfa_required?.provenance).text : 'Inherited Default')"></span>
+        </div>
+        <input type="checkbox" class="toggle toggle-primary toggle-sm"
+          data-bind="polMfa"
+          data-bind-disabled="composedPolicy?.mfa_required?.provenance === 'inherited_enforced' || composedPolicy?.mfa_required?.provenance === 'prohibited_by_parent'" />
+      </div>
+
+      <div class="p-3 rounded-lg bg-base-100 border border-base-300 space-y-1">
+        <div class="flex items-center justify-between">
+          <span class="text-sm font-medium">Min Password Length</span>
+          <span class="badge badge-xs"
+            data-class="(typeof provenanceBadge === 'function' ? provenanceBadge(composedPolicy?.min_password_length?.provenance).cls : 'badge-ghost')"
+            data-bind="(typeof provenanceBadge === 'function' ? provenanceBadge(composedPolicy?.min_password_length?.provenance).text : 'Inherited Default')"></span>
+        </div>
+        <input type="number" min="8" max="128" class="input input-bordered input-xs w-full" data-bind-value="polMinPw" />
+      </div>
+
+      <div class="p-3 rounded-lg bg-base-100 border border-base-300 space-y-1">
+        <div class="flex items-center justify-between">
+          <span class="text-sm font-medium">Max Session TTL (seconds)</span>
+          <span class="badge badge-xs"
+            data-class="(typeof provenanceBadge === 'function' ? provenanceBadge(composedPolicy?.max_session_ttl_secs?.provenance).cls : 'badge-ghost')"
+            data-bind="(typeof provenanceBadge === 'function' ? provenanceBadge(composedPolicy?.max_session_ttl_secs?.provenance).text : 'Inherited Default')"></span>
+        </div>
+        <input type="number" min="60" class="input input-bordered input-xs w-full" data-bind-value="polMaxTtl" />
+      </div>
+
+      <div class="p-3 rounded-lg bg-base-100 border border-base-300 space-y-1">
+        <div class="flex items-center justify-between">
+          <span class="text-sm font-medium">Branding Name</span>
+          <span class="badge badge-xs"
+            data-class="(typeof provenanceBadge === 'function' ? provenanceBadge(composedPolicy?.branding_name?.provenance).cls : 'badge-ghost')"
+            data-bind="(typeof provenanceBadge === 'function' ? provenanceBadge(composedPolicy?.branding_name?.provenance).text : 'Inherited Default')"></span>
+        </div>
+        <input type="text" class="input input-bordered input-xs w-full" data-bind-value="polBranding" />
+      </div>
+    </div>
+  </div>
+
+  <!-- Explicit Memberships & Delegated Scopes -->
+  <div class="card bg-base-200/60 border border-base-300 p-5 space-y-4">
+    <div>
+      <h2 class="font-semibold text-base">Members &amp; Delegated Scopes</h2>
+      <p class="text-xs opacity-70">Hierarchy never implies authorization. Delegation scopes are explicit, auditable, and revocable without deleting the user's personal identity.</p>
+    </div>
+
+    <form data-show="$auth.hasPermission('iam.users.manage')"
+      class="grid grid-cols-1 md:grid-cols-4 gap-2.5"
+      data-on-submit_prevent="grantOrgMember()">
+      <input type="text" class="input input-bordered input-sm" placeholder="Identity ID (nxid_...) or actor" data-bind-value="grantSubjectId" />
+      <select class="select select-bordered select-sm" data-bind-value="grantRole">
+        <option value="ORG_ADMIN">ORG_ADMIN</option>
+        <option value="USER_MANAGER">USER_MANAGER</option>
+        <option value="APP_ADMIN">APP_ADMIN</option>
+        <option value="AUDITOR">AUDITOR</option>
+        <option value="MEMBER">MEMBER</option>
+      </select>
+      <select class="select select-bordered select-sm" data-bind-value="grantScopeKind">
+        <option value="self_only">Scope: This Org Only</option>
+        <option value="descendants">Scope: This Org + Descendants</option>
+      </select>
+      <button type="submit" class="btn btn-primary btn-sm">Grant Membership</button>
+    </form>
+
+    <div class="overflow-x-auto rounded-lg border border-base-300 bg-base-100">
+      <table class="table table-sm w-full">
+        <thead>
+          <tr>
+            <th>Subject</th>
+            <th>Roles</th>
+            <th>Delegation Scope</th>
+            <th>Status</th>
+            <th class="text-right">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          <template data-for="m in orgMembers" data-key="m.membership_id">
+            <tr>
+              <td class="font-mono text-xs" data-bind="m.subject_id"></td>
+              <td class="text-xs" data-bind="(m.role_assignments || []).join(', ')"></td>
+              <td><span class="badge badge-outline badge-xs" data-bind="m.scope?.kind || 'self_only'"></span></td>
+              <td><span class="badge badge-xs" data-class="{ 'badge-success': m.status === 'active', 'badge-error': m.status === 'revoked' }" data-bind="m.status"></span></td>
+              <td class="text-right">
+                <button type="button" class="btn btn-xs btn-error btn-outline"
+                  data-show="m.status === 'active' && $auth.hasPermission('iam.users.manage')"
+                  data-on-click="revokeOrgMember(m.subject_id)">Revoke</button>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Child Organizations -->
+  <div class="card bg-base-200/60 border border-base-300 p-5 space-y-3" data-show="(orgChildren || []).length > 0">
+    <h2 class="font-semibold text-base">Direct Child Organizations</h2>
+    <div class="flex flex-wrap gap-2">
+      <template data-for="ch in orgChildren" data-key="ch.org_id">
+        <button type="button" class="btn btn-sm btn-outline gap-2" data-on-click="loadOrgDetail(ch.org_id)">
+          <iconify-icon icon="material-symbols-light:subdirectory-arrow-right" class="text-base"></iconify-icon>
+          <span data-bind="ch.name"></span>
+        </button>
+      </template>
+    </div>
+  </div>
+</div>

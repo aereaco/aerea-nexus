@@ -1,0 +1,105 @@
+<head>
+  <title>Applications & SSO</title>
+  <meta name="id" content="iam-applications">
+  <meta name="route" content="/iam/applications">
+  <meta name="icon" content="material-symbols-light:apps-outage-outline">
+  <meta name="order" content="3">
+  <meta name="category" content="Apps">
+  <meta name="parent" content="/iam">
+</head>
+
+<div id="iam-apps-page" class="max-w-6xl mx-auto w-full space-y-6"
+  data-signal-src="/_pages/apps/iam/idp-state.js"
+  data-effect="if (typeof idpReady !== 'undefined' && idpReady && $auth.isAuthenticated && !idpLoaded) { loadApplications(); }">
+
+  <div class="flex flex-wrap items-center justify-between gap-4 border-b border-base-300 pb-4">
+    <div>
+      <h1 class="text-2xl font-bold tracking-tight">Applications, OIDC Clients &amp; Federation</h1>
+      <p class="text-sm opacity-70 mt-0.5">OAuth 2.1 PKCE (S256), M2M service accounts, Authentik-style Forward-Auth Outpost, and upstream OIDC/SAML 2.0 providers.</p>
+    </div>
+    <div class="flex items-center gap-2">
+      <a href="/.well-known/openid-configuration" target="_blank" class="btn btn-xs btn-outline">OIDC Discovery</a>
+      <a href="/.well-known/jwks.json" target="_blank" class="btn btn-xs btn-outline">JWKS (EdDSA)</a>
+      <a href="/_nexus/iam/saml/metadata" target="_blank" class="btn btn-xs btn-outline">SAML SP Metadata</a>
+    </div>
+  </div>
+
+  <!-- One-time Client Secret Banner -->
+  <div data-show="lastClientSecret" class="alert alert-warning text-xs flex justify-between items-center">
+    <div>
+      <div class="font-bold">Copy Client Secret Now (Argon2id-hashed — never shown again):</div>
+      <code class="font-mono select-all" data-bind="lastClientSecret"></code>
+    </div>
+    <button type="button" class="btn btn-xs btn-ghost" data-on-click="lastClientSecret = null">Dismiss</button>
+  </div>
+
+  <!-- Create OIDC Client -->
+  <form data-show="$auth.hasPermission('iam.clients.manage')"
+    class="card bg-base-200/60 border border-base-300 p-4 space-y-3"
+    data-on-submit_prevent="createOidcClient()">
+    <h2 class="font-semibold text-sm">Register OAuth 2.1 / OIDC Client</h2>
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-2.5">
+      <input type="text" class="input input-bordered input-sm" placeholder="Application Name" data-bind-value="newClientName" />
+      <select class="select select-bordered select-sm" data-bind-value="newClientType">
+        <option value="confidential">Confidential (Server / M2M)</option>
+        <option value="public">Public (SPA / Mobile PKCE)</option>
+      </select>
+      <input type="url" class="input input-bordered input-sm" placeholder="Redirect URI" data-bind-value="newClientRedirect" />
+      <button type="submit" class="btn btn-primary btn-sm">Create Client</button>
+    </div>
+  </form>
+
+  <!-- OIDC Clients Table -->
+  <div class="overflow-x-auto rounded-xl border border-base-300">
+    <table class="table table-sm w-full">
+      <thead>
+        <tr class="bg-base-200/70">
+          <th>Name</th>
+          <th>Client ID</th>
+          <th>Type</th>
+          <th>PKCE S256</th>
+          <th>Grants</th>
+        </tr>
+      </thead>
+      <tbody>
+        <template data-for="c in clients" data-key="c.client_id">
+          <tr>
+            <td class="font-medium" data-bind="c.name"></td>
+            <td class="font-mono text-xs" data-bind="c.client_id"></td>
+            <td><span class="badge badge-outline badge-xs" data-bind="c.client_type"></span></td>
+            <td><span class="badge badge-success badge-xs">Mandatory</span></td>
+            <td class="text-xs opacity-70" data-bind="(c.grant_types || []).join(', ')"></td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Upstream Federation Providers -->
+  <div class="card bg-base-200/60 border border-base-300 p-5 space-y-3">
+    <h2 class="font-semibold text-base">Upstream Federation Providers (OIDC / SAML 2.0)</h2>
+    <p class="text-xs opacity-70">Explicit (issuer, external_subject) linking enforced — email-based auto-merge is disabled to prevent account takeover.</p>
+    <div class="overflow-x-auto rounded-lg border border-base-300 bg-base-100">
+      <table class="table table-sm w-full">
+        <thead>
+          <tr>
+            <th>Provider</th>
+            <th>Protocol</th>
+            <th>Issuer</th>
+            <th>Verified Domains</th>
+          </tr>
+        </thead>
+        <tbody>
+          <template data-for="p in fedProviders" data-key="p.provider_id">
+            <tr>
+              <td class="font-medium" data-bind="p.name"></td>
+              <td><span class="badge badge-info badge-xs" data-bind="p.protocol"></span></td>
+              <td class="font-mono text-xs" data-bind="p.issuer"></td>
+              <td class="text-xs" data-bind="(p.verified_domains || []).join(', ')"></td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>

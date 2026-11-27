@@ -1,0 +1,88 @@
+<head>
+  <title>Organizations</title>
+  <meta name="id" content="iam-organizations">
+  <meta name="route" content="/iam/organizations">
+  <meta name="icon" content="material-symbols-light:corporate-fare-outline">
+  <meta name="order" content="1">
+  <meta name="category" content="Apps">
+  <meta name="parent" content="/iam">
+</head>
+
+<div id="iam-orgs-page" class="max-w-6xl mx-auto w-full space-y-6"
+  data-signal-src="/_pages/apps/iam/idp-state.js"
+  data-effect="if (typeof idpReady !== 'undefined' && idpReady && $auth.isAuthenticated && !idpLoaded) { loadOrgs(); }">
+
+  <div class="flex flex-wrap items-center justify-between gap-4 border-b border-base-300 pb-4">
+    <div>
+      <h1 class="text-2xl font-bold tracking-tight">Organizations</h1>
+      <p class="text-sm opacity-70 mt-0.5">Hierarchical organizations assigned to your identity. Click any organization to open its Organization Profile.</p>
+    </div>
+    <div class="flex items-center gap-2">
+      <input type="search" class="input input-bordered input-sm w-56" placeholder="Search organizations..." data-bind-value="orgSearch" />
+      <button type="button" class="btn btn-sm btn-ghost" data-on-click="loadOrgs()">Refresh</button>
+    </div>
+  </div>
+
+  <!-- Create Organization (visible when authorized) -->
+  <form data-show="$auth.isAuthenticated && $auth.hasPermission('iam.orgs.create')"
+    class="card bg-base-200/60 border border-base-300 p-4 space-y-3"
+    data-on-submit_prevent="createOrg()">
+    <div class="flex items-center justify-between">
+      <h2 class="font-semibold text-sm">Create Organization (Root or Nested Child)</h2>
+      <span class="badge badge-primary badge-xs">Arbitrary Nesting</span>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-5 gap-2.5">
+      <input type="text" class="input input-bordered input-sm" placeholder="Slug (e.g. acme-eu)" data-bind-value="newOrgSlug" />
+      <input type="text" class="input input-bordered input-sm" placeholder="Display Name" data-bind-value="newOrgName" />
+      <select class="select select-bordered select-sm" data-bind-value="newOrgParentId">
+        <option value="">(Root Organization)</option>
+        <template data-for="o in orgs" data-key="o.org_id">
+          <option data-bind-value="o.org_id" data-bind="('— '.repeat(o.depth || 0)) + o.name + ' (' + o.slug + ')'"></option>
+        </template>
+      </select>
+      <input type="text" class="input input-bordered input-sm" placeholder="Primary Domain (optional)" data-bind-value="newOrgDomain" />
+      <button type="submit" class="btn btn-primary btn-sm">Create Organization</button>
+    </div>
+    <label class="label cursor-pointer justify-start gap-2 py-0">
+      <input type="checkbox" class="checkbox checkbox-xs checkbox-primary" data-bind="newOrgMfa" />
+      <span class="label-text text-xs">Enforce MFA (propagates monotonically to child organizations)</span>
+    </label>
+  </form>
+
+  <!-- Hierarchy Table -->
+  <div class="overflow-x-auto rounded-xl border border-base-300">
+    <table class="table table-sm w-full">
+      <thead>
+        <tr class="bg-base-200/70">
+          <th>Organization</th>
+          <th>Slug</th>
+          <th>Org ID (Immutable)</th>
+          <th>Depth</th>
+          <th>Status</th>
+          <th class="text-right">Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        <template data-for="org in (typeof filteredOrgs === 'function' ? filteredOrgs() : [])" data-key="org.org_id">
+          <tr class="hover cursor-pointer" data-on-click="selectOrg(org.org_id, router)">
+            <td>
+              <div class="flex items-center gap-2" data-style="{ paddingLeft: ((org.depth || 0) * 18) + 'px' }">
+                <iconify-icon icon="material-symbols-light:corporate-fare-outline" class="text-lg opacity-70"></iconify-icon>
+                <span class="font-medium" data-bind="org.name"></span>
+              </div>
+            </td>
+            <td class="font-mono text-xs opacity-80" data-bind="org.slug"></td>
+            <td class="font-mono text-xs opacity-60" data-bind="org.org_id"></td>
+            <td><span class="badge badge-ghost badge-xs" data-bind="'L' + (org.depth || 0)"></span></td>
+            <td><span class="badge badge-success badge-xs" data-bind="org.status || 'active'"></span></td>
+            <td class="text-right">
+              <button type="button" class="btn btn-xs btn-outline" data-on-click_stop="selectOrg(org.org_id, router)">
+                Open Profile
+              </button>
+            </td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+  </div>
+</div>

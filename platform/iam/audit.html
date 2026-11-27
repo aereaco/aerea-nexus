@@ -1,0 +1,53 @@
+<head>
+  <title>Audit Logs</title>
+  <meta name="id" content="iam-audit">
+  <meta name="route" content="/iam/audit">
+  <meta name="icon" content="material-symbols-light:fact-check-outline">
+  <meta name="order" content="5">
+  <meta name="category" content="Apps">
+  <meta name="parent" content="/iam">
+</head>
+
+<div id="iam-audit-page" class="max-w-6xl mx-auto w-full space-y-6"
+  data-signal-src="/_pages/apps/iam/idp-state.js"
+  data-effect="if (typeof idpReady !== 'undefined' && idpReady && $auth.isAuthenticated && (auditEvents || []).length === 0) { loadAudit(); }">
+
+  <div class="flex flex-wrap items-center justify-between gap-4 border-b border-base-300 pb-4">
+    <div>
+      <h1 class="text-2xl font-bold tracking-tight">Immutable IAM Audit Log</h1>
+      <p class="text-sm opacity-70 mt-0.5">Append-only cryptographic, organization, token-replay, MFA, federation, and session audit events (`sys_iam_audit`).</p>
+    </div>
+    <button type="button" class="btn btn-sm btn-ghost" data-on-click="loadAudit()">Refresh</button>
+  </div>
+
+  <div class="overflow-x-auto rounded-xl border border-base-300">
+    <table class="table table-sm w-full">
+      <thead>
+        <tr class="bg-base-200/70">
+          <th>Timestamp</th>
+          <th>Org</th>
+          <th>Actor</th>
+          <th>Action</th>
+          <th>Outcome</th>
+          <th>Detail</th>
+        </tr>
+      </thead>
+      <tbody>
+        <template data-for="ev in auditEvents" data-key="ev.event_id">
+          <tr>
+            <td class="font-mono text-xs opacity-70" data-bind="new Date(ev.timestamp_ms).toLocaleString()"></td>
+            <td class="font-mono text-xs" data-bind="ev.org_id"></td>
+            <td class="font-mono text-xs" data-bind="ev.actor"></td>
+            <td class="font-mono text-xs font-semibold" data-bind="ev.action"></td>
+            <td>
+              <span class="badge badge-xs"
+                data-class="{ 'badge-success': ev.outcome === 'ok', 'badge-error': ev.outcome !== 'ok' }"
+                data-bind="ev.outcome"></span>
+            </td>
+            <td class="text-xs opacity-80" data-bind="ev.detail"></td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+  </div>
+</div>

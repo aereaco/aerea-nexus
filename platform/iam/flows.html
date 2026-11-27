@@ -1,0 +1,50 @@
+<head>
+  <title>Authentication Flows</title>
+  <meta name="id" content="iam-flows">
+  <meta name="route" content="/iam/flows">
+  <meta name="icon" content="material-symbols-light:account-tree-outline">
+  <meta name="order" content="4">
+  <meta name="category" content="Apps">
+  <meta name="parent" content="/iam">
+</head>
+
+<div id="iam-flows-page" class="max-w-6xl mx-auto w-full space-y-6"
+  data-signal-src="/_pages/apps/iam/idp-state.js"
+  data-effect="if (typeof idpReady !== 'undefined' && idpReady && $auth.isAuthenticated && (flows || []).length === 0) { loadFlows(); }">
+
+  <div class="flex flex-wrap items-center justify-between gap-4 border-b border-base-300 pb-4">
+    <div>
+      <h1 class="text-2xl font-bold tracking-tight">Authentication Flows</h1>
+      <p class="text-sm opacity-70 mt-0.5">Versioned declarative login &amp; MFA pipelines with conditional branching, retry lockouts, and an unbypassable native policy gate.</p>
+    </div>
+    <button type="button" class="btn btn-sm btn-ghost" data-on-click="loadFlows()">Refresh</button>
+  </div>
+
+  <form data-show="$auth.hasRole('OWNER')"
+    class="card bg-base-200/60 border border-base-300 p-4 space-y-3"
+    data-on-submit_prevent="createStandardFlow()">
+    <h2 class="font-semibold text-sm">Create Versioned Flow (Identification &rarr; Password &rarr; Conditional Org MFA &rarr; Consent)</h2>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+      <input type="text" class="input input-bordered input-sm" placeholder="Flow ID (e.g. default-login)" data-bind-value="newFlowId" />
+      <input type="text" class="input input-bordered input-sm" placeholder="Flow Name" data-bind-value="newFlowName" />
+      <button type="submit" class="btn btn-primary btn-sm">Create / Publish Version</button>
+    </div>
+  </form>
+
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <template data-for="f in flows" data-key="f.flow_id + '_v' + f.version">
+      <div class="card bg-base-200/60 border border-base-300 p-4 space-y-2">
+        <div class="flex items-center justify-between">
+          <div class="font-semibold" data-bind="f.name"></div>
+          <span class="badge badge-primary badge-xs font-mono" data-bind="'v' + f.version"></span>
+        </div>
+        <div class="text-xs font-mono opacity-60" data-bind="f.flow_id + ' • timeout ' + f.timeout_secs + 's • max_retries ' + f.max_retries"></div>
+        <div class="flex flex-wrap gap-1.5 pt-1">
+          <template data-for="st in (f.stages || [])" data-key="st.stage_id">
+            <span class="badge badge-outline badge-xs" data-bind="st.stage_id + ' (' + (st.kind?.type || 'stage') + ')'"></span>
+          </template>
+        </div>
+      </div>
+    </template>
+  </div>
+</div>

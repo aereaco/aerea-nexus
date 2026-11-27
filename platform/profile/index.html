@@ -18,6 +18,65 @@
     myGroups: [],
     currentPass: '',
     newPass: '',
+    totpSecret: '',
+    totpUri: '',
+    totpRecovery: [],
+    totpCode: '',
+    mySessions: [],
+    myDevices: [],
+    myPasskeys: [],
+    loadSecurityState: async () => {
+      try {
+        const [sRes, dRes, pRes] = await Promise.all([
+          window.fetch('/_nexus/iam/sessions', { credentials: 'same-origin' }),
+          window.fetch('/_nexus/iam/devices', { credentials: 'same-origin' }),
+          window.fetch('/_nexus/iam/webauthn/credentials', { credentials: 'same-origin' })
+        ]);
+        if (sRes.ok) { const d = await sRes.json(); mySessions = d.sessions || []; }
+        if (dRes.ok) { const d = await dRes.json(); myDevices = d.devices || []; }
+        if (pRes.ok) { const d = await pRes.json(); myPasskeys = d.credentials || []; }
+      } catch (_) {}
+    },
+    enrollMyTotp: async () => {
+      const res = await window.fetch('/_nexus/iam/mfa/totp/enroll', { method: 'POST', credentials: 'same-origin' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { if (typeof notify === 'function') notify('TOTP Enroll Failed', data.error || 'Error', 'error'); return; }
+      totpSecret = data.secret || '';
+      totpUri = data.otpauth_uri || '';
+      totpRecovery = data.recovery_codes || [];
+      if (typeof notify === 'function') notify('TOTP Secret Ready', 'Scan or copy secret and verify a 6-digit code', 'success');
+    },
+    verifyMyTotp: async () => {
+      if (!totpCode.trim()) return;
+      const res = await window.fetch('/_nexus/iam/mfa/totp/verify', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: totpCode.trim() })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.valid) {
+        totpCode = '';
+        if (typeof notify === 'function') notify('TOTP Verified', 'Two-factor authentication is active on your identity', 'success');
+      } else {
+        if (typeof notify === 'function') notify('Invalid Code', 'TOTP verification failed', 'error');
+      }
+    },
+    revokeMySession: async (sid) => {
+      await window.fetch('/_nexus/iam/sessions/' + encodeURIComponent(sid), { method: 'DELETE', credentials: 'same-origin' });
+      await loadSecurityState();
+      if (typeof notify === 'function') notify('Session Revoked', sid, 'info');
+    },
+    revokeMyDevice: async (did) => {
+      await window.fetch('/_nexus/iam/devices/' + encodeURIComponent(did), { method: 'DELETE', credentials: 'same-origin' });
+      await loadSecurityState();
+      if (typeof notify === 'function') notify('Device Revoked', 'Device and its bound sessions were revoked', 'info');
+    },
+    revokeMyPasskey: async (cid) => {
+      await window.fetch('/_nexus/iam/webauthn/credentials/' + encodeURIComponent(cid), { method: 'DELETE', credentials: 'same-origin' });
+      await loadSecurityState();
+      if (typeof notify === 'function') notify('Passkey Revoked', cid, 'info');
+    },
     loadMyProfile: async (sqlFn, actor) => {
       if (!sqlFn || !actor || syncedActor === actor) return;
       syncedActor = actor;
@@ -81,7 +140,7 @@
       if (typeof notify === 'function') notify('Password Updated', 'Your password has been changed securely', 'success');
     }
   }"
-  data-effect="if ($auth.isAuthenticated && $auth.actor) { if (syncedActor !== $auth.actor) { loadMyProfile($sql, $auth.actor); } } else { syncedActor = null; }">
+  data-effect="if ($auth.isAuthenticated && $auth.actor) { if (syncedActor !== $auth.actor) { loadMyProfile($sql, $auth.actor); loadSecurityState(); } } else { syncedActor = null; }">
 
   <div class="border-b border-base-300 pb-4">
     <h1 class="text-2xl font-bold tracking-tight">My Profile &amp; Account</h1>
@@ -172,5 +231,81 @@
         <button id="self-pass-save-btn" type="submit" class="btn btn-primary btn-sm">Update Password</button>
       </div>
     </form>
+
+    <!-- My Organizations -->
+    <div class="card bg-base-100 border border-base-300 p-5 space-y-3">
+      <div class="flex items-center justify-between">
+        <h2 class="font-semibold text-sm">My Organizations</h2>
+        <a href="/iam/organizations" class="btn btn-xs btn-ghost" data-show="($auth.authorized_orgs || []).length > 0">Manage</a>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <template data-for="org in ($auth.authorized_orgs || [])" data-key="org.org_id">
+          <button type="button" class="btn btn-sm btn-outline gap-2"
+            data-on-click="localStorage.setItem('nexus_selected_org', org.org_id); router.go('/iam/organization')">
+            <iconify-icon icon="material-symbols-light:corporate-fare-outline" class="text-base"></iconify-icon>
+            <span data-bind="org.name"></span>
+            <span class="badge badge-ghost badge-xs font-mono" data-bind="org.slug"></span>
+          </button>
+        </template>
+      </div>
+    </div>
+
+    <!-- Self-Service TOTP MFA -->
+    <div class="card bg-base-100 border border-base-300 p-5 space-y-3">
+      <div class="flex items-center justify-between">
+        <div>
+          <h2 class="font-semibold text-sm">Authenticator App (TOTP MFA)</h2>
+          <p class="text-xs opacity-70">RFC 6238 6-digit TOTP with single-use recovery codes.</p>
+        </div>
+        <button type="button" class="btn btn-sm btn-outline" data-on-click="enrollMyTotp()">Enroll TOTP</button>
+      </div>
+      <div data-show="totpSecret" class="p-3 rounded-lg bg-base-200/70 space-y-2 text-xs">
+        <div><span class="font-semibold">Secret (Base32):</span> <code class="font-mono select-all" data-bind="totpSecret"></code></div>
+        <div class="truncate"><span class="font-semibold">URI:</span> <code class="font-mono select-all" data-bind="totpUri"></code></div>
+        <div>
+          <span class="font-semibold">Recovery Codes:</span>
+          <div class="flex flex-wrap gap-1.5 mt-1">
+            <template data-for="rc in totpRecovery">
+              <span class="badge badge-outline badge-xs font-mono" data-bind="rc"></span>
+            </template>
+          </div>
+        </div>
+        <form class="flex gap-2 pt-1" data-on-submit_prevent="verifyMyTotp()">
+          <input type="text" class="input input-bordered input-xs w-36 font-mono" placeholder="6-digit code" data-bind-value="totpCode" />
+          <button type="submit" class="btn btn-primary btn-xs">Verify Code</button>
+        </form>
+      </div>
+    </div>
+
+    <!-- Passkeys, Active Sessions & Devices -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="card bg-base-100 border border-base-300 p-5 space-y-2">
+        <h2 class="font-semibold text-sm">Passkeys (W3C WebAuthn)</h2>
+        <p data-show="(myPasskeys || []).length === 0" class="text-xs opacity-60">No passkeys registered yet.</p>
+        <template data-for="pk in myPasskeys" data-key="pk.credential_id">
+          <div class="flex items-center justify-between text-xs p-2 rounded bg-base-200/60">
+            <span class="font-medium" data-bind="pk.device_name || pk.credential_id"></span>
+            <button type="button" class="btn btn-xs btn-error btn-ghost" data-on-click="revokeMyPasskey(pk.credential_id)">Revoke</button>
+          </div>
+        </template>
+      </div>
+
+      <div class="card bg-base-100 border border-base-300 p-5 space-y-2">
+        <h2 class="font-semibold text-sm">Active Sessions &amp; Devices</h2>
+        <p data-show="(mySessions || []).length === 0 && (myDevices || []).length === 0" class="text-xs opacity-60">Active cookie session only.</p>
+        <template data-for="ses in mySessions" data-key="ses.session_id">
+          <div class="flex items-center justify-between text-xs p-2 rounded bg-base-200/60">
+            <span class="font-mono" data-bind="ses.session_id + ' (' + (ses.acr || 'aal1') + ')'"></span>
+            <button type="button" class="btn btn-xs btn-error btn-ghost" data-on-click="revokeMySession(ses.session_id)">Revoke</button>
+          </div>
+        </template>
+        <template data-for="dev in myDevices" data-key="dev.device_id">
+          <div class="flex items-center justify-between text-xs p-2 rounded bg-base-200/60">
+            <span data-bind="dev.label + ' (' + dev.trust_level + ')'"></span>
+            <button type="button" class="btn btn-xs btn-error btn-ghost" data-on-click="revokeMyDevice(dev.device_id)">Revoke</button>
+          </div>
+        </template>
+      </div>
+    </div>
   </div>
 </div>
