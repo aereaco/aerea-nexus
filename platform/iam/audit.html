@@ -10,7 +10,7 @@
 
 <div id="iam-audit-page" class="max-w-6xl mx-auto w-full space-y-6"
   data-signal-src="/_pages/apps/iam/idp-state.js"
-  data-effect="if (typeof idpReady !== 'undefined' && idpReady && $auth.isAuthenticated && (auditEvents || []).length === 0) { loadAudit(); }">
+  data-effect="if (typeof idpReady !== 'undefined' && idpReady) { if ($auth.isAuthenticated && $auth.actor) { if (idpSyncedKey !== ('audit:' + selectedOrgId + ':' + $auth.actor)) { syncPage('audit', 'audit:' + selectedOrgId + ':' + $auth.actor); } } else if (idpSyncedKey) { resetIdpSync(); } }">
 
   <div class="flex flex-wrap items-center justify-between gap-4 border-b border-base-300 pb-4">
     <div>

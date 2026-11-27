@@ -23,6 +23,7 @@ export default function createIdpState(s) {
   return {
     idpReady: true,
     idpLoaded: false,
+    idpSyncedKey: null,
     orgSearch: '',
     orgs: [],
     selectedOrgId: localStorage.getItem('nexus_selected_org') || 'default',
@@ -85,6 +86,27 @@ export default function createIdpState(s) {
       );
     },
 
+    async syncPage(page, key) {
+      if (s.idpSyncedKey === key) return;
+      s.idpSyncedKey = key;
+      if (page === 'orgs') return s.loadOrgs();
+      if (page === 'organization') return s.loadOrgDetail(s.selectedOrgId);
+      if (page === 'applications') return s.loadApplications();
+      if (page === 'flows') return s.loadFlows();
+      if (page === 'audit') return s.loadAudit();
+    },
+
+    resetIdpSync() {
+      if (s.idpSyncedKey === null) return;
+      s.idpSyncedKey = null;
+      s.idpLoaded = false;
+      s.orgs = [];
+      s.orgDetail = null;
+      s.composedPolicy = null;
+      s.orgMembers = [];
+      s.orgChildren = [];
+    },
+
     async loadOrgs() {
       try {
         const data = await api('/_nexus/iam/orgs');
@@ -130,7 +152,13 @@ export default function createIdpState(s) {
 
     async loadOrgDetail(orgId) {
       const target = orgId || s.selectedOrgId || 'default';
-      s.selectedOrgId = target;
+      if (s.selectedOrgId !== target) {
+        s.selectedOrgId = target;
+      }
+      const actor = String(s.idpSyncedKey || '').split(':')[2] || '';
+      if (actor) {
+        s.idpSyncedKey = `organization:${target}:${actor}`;
+      }
       localStorage.setItem('nexus_selected_org', target);
       try {
         await s.loadOrgs();

@@ -19,6 +19,16 @@
     "category": "Apps"
   },
   {
+    "id": "iam-organizations",
+    "route": "/iam/organizations",
+    "path": "/_pages/apps/iam/organizations.html",
+    "title": "Organizations",
+    "icon": "material-symbols-light:corporate-fare-outline",
+    "order": 1,
+    "parent": "/iam",
+    "category": "Apps"
+  },
+  {
     "id": "labs-attributes",
     "route": "/labs/attributes",
     "path": "/_pages/labs/attributes/index.html",
@@ -127,6 +137,16 @@
     "category": "Apps"
   },
   {
+    "id": "iam-organization",
+    "route": "/iam/organization",
+    "path": "/_pages/apps/iam/organization.html",
+    "title": "Organization Profile",
+    "icon": "material-symbols-light:domain-verification-outline",
+    "order": 2,
+    "parent": "/iam",
+    "category": "Apps"
+  },
+  {
     "id": "lab-attr-bind",
     "route": "/labs/attributes/bind",
     "path": "/_pages/labs/attributes/bind.html",
@@ -214,6 +234,16 @@
     "icon": "material-symbols-light:flowchart-outline",
     "order": 3,
     "parent": null,
+    "category": "Apps"
+  },
+  {
+    "id": "iam-applications",
+    "route": "/iam/applications",
+    "path": "/_pages/apps/iam/applications.html",
+    "title": "Applications & SSO",
+    "icon": "material-symbols-light:apps-outage-outline",
+    "order": 3,
+    "parent": "/iam",
     "category": "Apps"
   },
   {
@@ -327,6 +357,16 @@
     ]
   },
   {
+    "id": "iam-flows",
+    "route": "/iam/flows",
+    "path": "/_pages/apps/iam/flows.html",
+    "title": "Authentication Flows",
+    "icon": "material-symbols-light:account-tree-outline",
+    "order": 4,
+    "parent": "/iam",
+    "category": "Apps"
+  },
+  {
     "id": "lab-attr-if",
     "route": "/labs/attributes/if",
     "path": "/_pages/labs/attributes/if.html",
@@ -400,6 +440,16 @@
     "order": 4,
     "parent": null,
     "category": "Docs"
+  },
+  {
+    "id": "iam-audit",
+    "route": "/iam/audit",
+    "path": "/_pages/apps/iam/audit.html",
+    "title": "Audit Logs",
+    "icon": "material-symbols-light:fact-check-outline",
+    "order": 5,
+    "parent": "/iam",
+    "category": "Apps"
   },
   {
     "id": "lab-attr-show",

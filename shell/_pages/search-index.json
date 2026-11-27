@@ -66,6 +66,33 @@
     "content": "Flow Canvas Flow Canvas Signal Driven Complete spatial node graph with reactive fine-grained proxies Shift Drag Marquee Del Delete Arrows Nudge Nodes Edges Zoom Fit Add Node In Out Pos Fit View Live Reactive Store ZCZS 60fps Viewport Pan Canvas Studio Grid Snapping Grid Spacing Snap to Grid Show Minimap Wire Routing Engine Default Routing Style SmoothStep Rounded Orthogonal Bezier Cubic Directional Step Sharp 90 Angles Straight Direct Linear Animate All Stop Wires Active Connectors No active connections. Drag between node handles to create wires. Graph Schema IO Export Graph JSON Import Graph JSON Clear Canvas xyFlow Spatial Engine Nexus-UX ZCZS Tune spatial coordinates ports subflow nesting and schema Visual Studio JSON Schema Node Identifier Display Label Node Kind Standard Action Card Input Trigger Green Accent Output Sink Warning Accent Subflow Group Container Parent Subflow Group None Root Canvas Pos X Pos Y Width Height Connection Ports Edge Points No connection ports attached. Click below to add an edge point. Source Output Port Target Input Port Right Side Left Side Top Side Bottom Side Add Port Direct Schema JSON Definition Real-time synchronization Cancel Save Changes close Configure Wire Connector Spatial curve routing arrow markers animation and port attachments Visual Studio JSON Schema Wire ID Display Badge Label Routing Algorithm SmoothStep Rounded Orthogonal Bezier Cubic Directional Step Sharp 90 Angles Straight Direct Linear Arrowhead Marker None Bare Wire Ch"
   },
   {
+    "id": "iam-applications",
+    "route": "/iam/applications",
+    "path": "/_pages/apps/iam/applications.html",
+    "title": "Applications & SSO",
+    "category": "Apps",
+    "keywords": [],
+    "content": "Applications SSO Applications OIDC Clients Federation OAuth 2.1 PKCE S256 M2M service accounts Authentik-style Forward-Auth Outpost and upstream OIDC/SAML 2.0 providers. OIDC Discovery JWKS EdDSA SAML SP Metadata Copy Client Secret Now Argon2id-hashed never shown again Dismiss Register OAuth 2.1 / OIDC Client Confidential Server / M2M Public SPA / Mobile PKCE Create Client Name Client ID Type PKCE S256 Grants Mandatory Upstream Federation Providers OIDC / SAML 2.0 Explicit issuer external_subject linking enforced email-based auto-merge is disabled to prevent account takeover. Provider Protocol Issuer Verified Domains"
+  },
+  {
+    "id": "iam-audit",
+    "route": "/iam/audit",
+    "path": "/_pages/apps/iam/audit.html",
+    "title": "Audit Logs",
+    "category": "Apps",
+    "keywords": [],
+    "content": "Audit Logs Immutable IAM Audit Log Append-only cryptographic organization token-replay MFA federation and session audit events sys_iam_audit . Refresh Timestamp Org Actor Action Outcome Detail"
+  },
+  {
+    "id": "iam-flows",
+    "route": "/iam/flows",
+    "path": "/_pages/apps/iam/flows.html",
+    "title": "Authentication Flows",
+    "category": "Apps",
+    "keywords": [],
+    "content": "Authentication Flows Authentication Flows Versioned declarative login MFA pipelines with conditional branching retry lockouts and an unbypassable native policy gate. Refresh Create Versioned Flow Identification rarr Password rarr Conditional Org MFA rarr Consent Create / Publish Version"
+  },
+  {
     "id": "iam",
     "route": "/iam",
     "path": "/_pages/apps/iam/index.html",
@@ -75,13 +102,31 @@
     "content": "Users Groups IAM Users Groups Roles Permissions Server-Enforced IAM Full account profiles group membership management custom capability roles and live Nexus-DB / SurrealQL record-level permissions. New Group New Role OWNER Role Required IAM administration and record-level database policies are strictly enforced server-side for OWNER accounts. Open Profile / Sign In Users 0 Groups 0 Roles 3 Record / Field Policies 0 Users Groups Members Roles Permissions Record Field Policies Add User VIEWER Read-Only EDITOR Read/Write Cells OWNER Full Admin Add User Account Roles Groups Effective Capabilities Actions Suspended View / Edit Profile Delete Groups grant inherited roles and capabilities to all assigned members. Create Group No groups created yet. Click Create Group to organize members and inherited permissions. Manage Delete Members None Built-in kernel roles plus custom capability bundles assignable to users and groups. Create Custom Role System Manage Delete Define Record-Level Policy Cancel Row / Record-Level DEFINE TABLE Field-Level DEFINE FIELD PERMISSIONS FOR ... WHERE PERMISSIONS FULL PERMISSIONS NONE Presets owner auth created_by auth Apply Policy Live Edit Delete Profile Groups Memberships Roles Permissions Security Display Name Email Job Title Department Status Active Suspended Upload Avatar S3 Save Profile Toggle which groups belongs to changes persist live in Nexus-DB Base Kernel Role Server-Enforced VIEWER Read-Only EDITOR Read/Write Wasm Cells OWNER Full Admin Custom"
   },
   {
+    "id": "iam-organization",
+    "route": "/iam/organization",
+    "path": "/_pages/apps/iam/organization.html",
+    "title": "Organization Profile",
+    "category": "Apps",
+    "keywords": [],
+    "content": "Organization Profile Organization Profile All Organizations Security Branding Policies Composed Ancestor security constraints are enforced automatically and surfaced with explicit provenance. Save Local Policy Require MFA Min Password Length Max Session TTL seconds Branding Name Members Delegated Scopes Hierarchy never implies authorization. Delegation scopes are explicit auditable and revocable without deleting the user s personal identity. ORG_ADMIN USER_MANAGER APP_ADMIN AUDITOR MEMBER Scope This Org Only Scope This Org Descendants Grant Membership Subject Roles Delegation Scope Status Action Revoke Direct Child Organizations"
+  },
+  {
+    "id": "iam-organizations",
+    "route": "/iam/organizations",
+    "path": "/_pages/apps/iam/organizations.html",
+    "title": "Organizations",
+    "category": "Apps",
+    "keywords": [],
+    "content": "Organizations Organizations Hierarchical organizations assigned to your identity. Click any organization to open its Organization Profile. Refresh Create Organization Root or Nested Child Arbitrary Nesting Root Organization Create Organization Enforce MFA propagates monotonically to child organizations Organization Slug Org ID Immutable Depth Status Action Open Profile"
+  },
+  {
     "id": "profile",
     "route": "/profile",
     "path": "/_pages/apps/profile/index.html",
     "title": "My Profile &amp; Account",
     "category": "Apps",
     "keywords": [],
-    "content": "My Profile Account My Profile Account View your verified Nexus-IO identity groups capabilities and security settings. Sign in to view your profile Sign In Open IAM Admin Profile Information Display Name Email Job Title Department Save Profile Read-Only Account Server-Verified Capabilities Change Password Update Password"
+    "content": "My Profile Account My Profile Account View your verified Nexus-IO identity groups capabilities and security settings. Sign in to view your profile Sign In Open IAM Admin Profile Information Display Name Email Job Title Department Save Profile Read-Only Account Server-Verified Capabilities Change Password Update Password My Organizations Manage Authenticator App TOTP MFA RFC 6238 6-digit TOTP with single-use recovery codes. Enroll TOTP Secret Base32 URI Recovery Codes Verify Code Passkeys W3C WebAuthn No passkeys registered yet. Revoke Active Sessions Devices Active cookie session only. Revoke Revoke"
   },
   {
     "id": "lab-attr-assert",
