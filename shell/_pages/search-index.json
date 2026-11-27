@@ -69,10 +69,10 @@
     "id": "iam-applications",
     "route": "/iam/applications",
     "path": "/_pages/apps/iam/applications.html",
-    "title": "Applications & SSO",
+    "title": "Application & SSO",
     "category": "Apps",
     "keywords": [],
-    "content": "Applications SSO Applications OIDC Clients Federation OAuth 2.1 PKCE S256 M2M service accounts Authentik-style Forward-Auth Outpost and upstream OIDC/SAML 2.0 providers. OIDC Discovery JWKS EdDSA SAML SP Metadata Copy Client Secret Now Argon2id-hashed never shown again Dismiss Register OAuth 2.1 / OIDC Client Confidential Server / M2M Public SPA / Mobile PKCE Create Client Name Client ID Type PKCE S256 Grants Mandatory Upstream Federation Providers OIDC / SAML 2.0 Explicit issuer external_subject linking enforced email-based auto-merge is disabled to prevent account takeover. Provider Protocol Issuer Verified Domains"
+    "content": "Application SSO Applications OIDC Clients Federation OAuth 2.1 PKCE S256 M2M service accounts Authentik-style Forward-Auth Outpost and upstream OIDC/SAML 2.0 providers. OIDC Discovery JWKS EdDSA SAML SP Metadata Copy Client Secret Now Argon2id-hashed never shown again Dismiss Register OAuth 2.1 / OIDC Client Confidential Server / M2M Public SPA / Mobile PKCE Create Client Name Client ID Type PKCE S256 Grants Mandatory Upstream Federation Providers OIDC / SAML 2.0 Explicit issuer external_subject linking enforced email-based auto-merge is disabled to prevent account takeover. Provider Protocol Issuer Verified Domains"
   },
   {
     "id": "iam-audit",
@@ -87,19 +87,19 @@
     "id": "iam-flows",
     "route": "/iam/flows",
     "path": "/_pages/apps/iam/flows.html",
-    "title": "Authentication Flows",
+    "title": "Authorization Flows",
     "category": "Apps",
     "keywords": [],
-    "content": "Authentication Flows Authentication Flows Versioned declarative login MFA pipelines with conditional branching retry lockouts and an unbypassable native policy gate. Refresh Create Versioned Flow Identification rarr Password rarr Conditional Org MFA rarr Consent Create / Publish Version"
+    "content": "Authorization Flows Authorization Flows Versioned declarative login MFA pipelines with conditional branching retry lockouts and an unbypassable native policy gate. Refresh Create Versioned Flow Identification rarr Password rarr Conditional Org MFA rarr Consent Create / Publish Version"
   },
   {
     "id": "iam",
     "route": "/iam",
     "path": "/_pages/apps/iam/index.html",
-    "title": "Users &amp; Groups (IAM)",
+    "title": "Identity & Access Management",
     "category": "Apps",
     "keywords": [],
-    "content": "Users Groups IAM Users Groups Roles Permissions Server-Enforced IAM Full account profiles group membership management custom capability roles and live Nexus-DB / SurrealQL record-level permissions. New Group New Role OWNER Role Required IAM administration and record-level database policies are strictly enforced server-side for OWNER accounts. Open Profile / Sign In Users 0 Groups 0 Roles 3 Record / Field Policies 0 Users Groups Members Roles Permissions Record Field Policies Add User VIEWER Read-Only EDITOR Read/Write Cells OWNER Full Admin Add User Account Roles Groups Effective Capabilities Actions Suspended View / Edit Profile Delete Groups grant inherited roles and capabilities to all assigned members. Create Group No groups created yet. Click Create Group to organize members and inherited permissions. Manage Delete Members None Built-in kernel roles plus custom capability bundles assignable to users and groups. Create Custom Role System Manage Delete Define Record-Level Policy Cancel Row / Record-Level DEFINE TABLE Field-Level DEFINE FIELD PERMISSIONS FOR ... WHERE PERMISSIONS FULL PERMISSIONS NONE Presets owner auth created_by auth Apply Policy Live Edit Delete Profile Groups Memberships Roles Permissions Security Display Name Email Job Title Department Status Active Suspended Upload Avatar S3 Save Profile Toggle which groups belongs to changes persist live in Nexus-DB Base Kernel Role Server-Enforced VIEWER Read-Only EDITOR Read/Write Wasm Cells OWNER Full Admin Custom"
+    "content": "Identity Access Management Nexus-IDP Platform Identity-First Zero-Copy Standards-Native Identity Access Management Unified Identity Provider IdP and Access Management control plane separating portable self-certifying identities from organizational authority delegated scopes composed security policies OAuth 2.1 / OIDC / SAML 2.0 SSO and immutable cryptographic auditing. Organizations Hierarchy Manage arbitrary-depth organization trees click any organization to inspect its Organization Profile composed security policies and delegated memberships. Open Organizations rarr Users Groups Directory Administer user accounts full profiles group memberships inherited group capabilities and account lifecycle controls. Open Users Groups rarr RBAC Policies Authority Configure system and custom capability roles alongside live Nexus-DB / SurrealQL row-level and field-level access policies. Open RBAC Policies rarr Application SSO Federation Register OAuth 2.1 PKCE S256 / OIDC clients M2M credentials Forward-Auth Outpost and upstream OIDC / SAML 2.0 identity providers. Open Application SSO rarr Authorization Flows Pipelines Build versioned authentication pipelines with password WebAuthn passkeys TOTP MFA verified federation conditional branching and native policy gates. Open Authorization Flows rarr Audit Logs Compliance Inspect append-only cryptographic organization token-replay MFA federation session and device trust audit events. Open Audit Logs rarr Personal Security Hub Manage your own in"
   },
   {
     "id": "iam-organization",
@@ -118,6 +118,24 @@
     "category": "Apps",
     "keywords": [],
     "content": "Organizations Organizations Hierarchical organizations assigned to your identity. Click any organization to open its Organization Profile. Refresh Create Organization Root or Nested Child Arbitrary Nesting Root Organization Create Organization Enforce MFA propagates monotonically to child organizations Organization Slug Org ID Immutable Depth Status Action Open Profile"
+  },
+  {
+    "id": "iam-rbac",
+    "route": "/iam/rbac",
+    "path": "/_pages/apps/iam/rbac.html",
+    "title": "RBAC & Policies",
+    "category": "Apps",
+    "keywords": [],
+    "content": "RBAC Policies RBAC Policies Server-Enforced IAM Role-based capability bundles and live Nexus-DB / SurrealQL record-level and field-level security policies. New Role IAM Permission Required Sign in with an account holding iam.roles.manage or iam.policy.update permissions. Open Profile / Sign In Roles System Custom 3 Record / Field Policies 0 Roles Permissions Record Field Policies Built-in kernel roles plus custom capability bundles assignable to users and groups. Create Custom Role System Manage Delete Define Record-Level Policy Cancel Row / Record-Level DEFINE TABLE Field-Level DEFINE FIELD PERMISSIONS FOR ... WHERE PERMISSIONS FULL PERMISSIONS NONE Presets owner auth created_by auth Apply Policy Live Edit Delete Manage Role Base Kernel Level VIEWER Base Kernel Level EDITOR Base Kernel Level OWNER Granted Capabilities Cancel Save Role"
+  },
+  {
+    "id": "iam-users",
+    "route": "/iam/users",
+    "path": "/_pages/apps/iam/users.html",
+    "title": "Users & Groups",
+    "category": "Apps",
+    "keywords": [],
+    "content": "Users Groups Users Groups Server-Enforced IAM Manage account profiles group memberships inherited roles and effective capabilities. New Group IAM Permission Required Sign in with an account holding iam.users.manage or iam.read permissions to manage users and groups. Open Profile / Sign In Users 0 Groups 0 Users Groups Members Add User VIEWER Read-Only EDITOR Read/Write Cells OWNER Full Admin Add User Account Roles Groups Effective Capabilities Actions Suspended View / Edit Profile Delete Groups grant inherited roles and capabilities to all assigned members. Create Group No groups created yet. Click Create Group to organize members and inherited permissions. Manage Delete Members None Profile Groups Memberships Roles Permissions Security Display Name Email Job Title Department Status Active Suspended Upload Avatar S3 Save Profile Toggle which groups belongs to changes persist live in Nexus-DB Base Kernel Role Server-Enforced VIEWER Read-Only EDITOR Read/Write Wasm Cells OWNER Full Admin Custom Roles Computed Effective Capabilities Save Roles Admin Password Reset Reset Password Delete Account Removes user from Nexus-IO IAM protected if last OWNER . Delete User Manage Group Inherited Role VIEWER Inherited Role EDITOR Inherited Role OWNER Members 0 Additional Group Capabilities Cancel Save Group"
   },
   {
     "id": "profile",

@@ -24,6 +24,7 @@ export interface RouteManifestEntry {
   icon?: string;
   order?: number;
   internal?: boolean;
+  hidden?: boolean;
   parent?: string | null;
   category?: string;
   keywords?: string[];
@@ -47,6 +48,7 @@ interface RawManifestEntry {
   icon?: string;
   order?: number;
   internal?: boolean;
+  hidden?: boolean;
   parent?: string | null;
   category?: string;
   keywords?: string[];
@@ -80,6 +82,7 @@ function parseHeadMetadata(content: string): {
   icon?: string;
   order?: number;
   internal?: boolean;
+  hidden?: boolean;
   parent?: string | null;
   category?: string;
   keywords?: string[];
@@ -111,6 +114,8 @@ function parseHeadMetadata(content: string): {
     content.match(/<meta\s+[^>]*content=["']([^"']*)["'][^>]*name=["']order["']/i);
   const internalMatch = content.match(/<meta\s+[^>]*name=["']internal["'][^>]*content=["']([^"']*)["']/i) ||
     content.match(/<meta\s+[^>]*content=["']([^"']*)["'][^>]*name=["']internal["']/i);
+  const hiddenMatch = content.match(/<meta\s+[^>]*name=["']hidden["'][^>]*content=["']([^"']*)["']/i) ||
+    content.match(/<meta\s+[^>]*content=["']([^"']*)["'][^>]*name=["']hidden["']/i);
   const parentMatch = content.match(/<meta\s+[^>]*name=["']parent["'][^>]*content=["']([^"']*)["']/i) ||
     content.match(/<meta\s+[^>]*content=["']([^"']*)["'][^>]*name=["']parent["']/i);
   const categoryMatch = content.match(/<meta\s+[^>]*name=["']category["'][^>]*content=["']([^"']*)["']/i) ||
@@ -125,6 +130,7 @@ function parseHeadMetadata(content: string): {
   const orderVal = fmMaps["order"] ? parseInt(fmMaps["order"], 10) : (orderMatch ? parseInt(orderMatch[1].trim(), 10) : undefined);
   const order = !isNaN(orderVal!) ? orderVal : undefined;
   const internal = fmMaps["internal"] ? fmMaps["internal"].toLowerCase() === "true" : (internalMatch ? internalMatch[1].trim().toLowerCase() === "true" : undefined);
+  const hidden = fmMaps["hidden"] ? fmMaps["hidden"].toLowerCase() === "true" : (hiddenMatch ? hiddenMatch[1].trim().toLowerCase() === "true" : undefined);
   const parentRaw = fmMaps["parent"] || (parentMatch ? parentMatch[1].trim() : undefined);
   const parent = parentRaw ? (parentRaw === "null" ? null : parentRaw) : undefined;
   const category = fmMaps["category"] || (categoryMatch ? categoryMatch[1].trim() : undefined);
@@ -171,7 +177,7 @@ function parseHeadMetadata(content: string): {
 
   const cleanContent = stripMarkup(content + " " + labContent).slice(0, 1500);
 
-  return { id, title, route, icon, order, internal, parent, category, keywords: kwList.length > 0 ? kwList : undefined, cleanContent };
+  return { id, title, route, icon, order, internal, hidden, parent, category, keywords: kwList.length > 0 ? kwList : undefined, cleanContent };
 }
 
 function scanDirectory(
@@ -220,6 +226,7 @@ function scanDirectory(
         if (meta.icon) item.icon = meta.icon;
         if (meta.order !== undefined) item.order = meta.order;
         if (internal) item.internal = internal;
+        if (meta.hidden) item.hidden = meta.hidden;
         if (meta.parent !== undefined) item.parent = meta.parent;
         else if (parentRoute && nameWithoutExt !== "index") item.parent = parentRoute;
         if (category) item.category = category;
@@ -429,6 +436,7 @@ export function generateManifest(): RouteManifestEntry[] {
     if (raw.icon) entry.icon = raw.icon;
     if (raw.order !== undefined) entry.order = raw.order;
     if (raw.internal) entry.internal = raw.internal;
+    if (raw.hidden) entry.hidden = raw.hidden;
     if (parent !== undefined) entry.parent = parent;
     if (raw.category !== undefined) entry.category = raw.category;
     if (raw.keywords && raw.keywords.length > 0) entry.keywords = raw.keywords;

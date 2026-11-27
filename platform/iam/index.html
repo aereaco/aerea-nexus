@@ -1,5 +1,5 @@
 <head>
-  <title>Users &amp; Groups (IAM)</title>
+  <title>Identity & Access Management</title>
   <meta name="id" content="iam">
   <meta name="route" content="/iam">
   <meta name="icon" content="material-symbols-light:admin-panel-settings-outline">
@@ -7,587 +7,153 @@
   <meta name="category" content="Apps">
 </head>
 
-<div id="iam-workbench" class="max-w-6xl mx-auto w-full space-y-6"
-  data-signal-src="/_pages/apps/iam/iam-state.js"
-  data-effect="if (typeof iamReady !== 'undefined' && iamReady) { if ($auth.isAuthenticated && $auth.hasRole('OWNER') && $auth.actor) { if (iamSyncedActor !== $auth.actor) { connectIam($sql, $auth.actor); } } else if (iamSyncedActor) { disconnectIam(); } }">
-
-  <!-- Header -->
-  <div class="flex flex-wrap items-center justify-between gap-4 border-b border-base-300 pb-4">
-    <div>
-      <div class="flex items-center gap-2">
-        <h1 class="text-2xl font-bold tracking-tight">Users, Groups, Roles &amp; Permissions</h1>
-        <span data-show="typeof iamSyncedActor !== 'undefined' && iamSyncedActor" class="badge badge-success badge-sm">Server-Enforced IAM</span>
-      </div>
-      <p class="text-sm opacity-70 mt-0.5">Full account profiles, group membership management, custom capability roles, and live Nexus-DB / SurrealQL record-level permissions.</p>
+<div id="iam-landing-page" class="p-6 max-w-5xl mx-auto w-full space-y-6">
+  <div class="border-b border-base-content/10 pb-4">
+    <div class="flex flex-wrap items-center gap-2 mb-1">
+      <span class="badge badge-primary badge-sm font-semibold uppercase tracking-wider">Nexus-IDP Platform</span>
+      <span class="badge badge-ghost badge-sm">Identity-First · Zero-Copy · Standards-Native</span>
     </div>
-    <div class="flex items-center gap-2" data-show="$auth.isAuthenticated && $auth.hasRole('OWNER') && typeof iamReady !== 'undefined' && iamReady">
-      <button type="button" class="btn btn-sm btn-ghost gap-1.5" data-on-click="openGroupModal(null)">
-        <iconify-icon icon="material-symbols-light:group-add-outline" class="text-lg"></iconify-icon>
-        <span>New Group</span>
-      </button>
-      <button type="button" class="btn btn-sm btn-ghost gap-1.5" data-on-click="openRoleModal(null)">
-        <iconify-icon icon="material-symbols-light:add-moderator-outline" class="text-lg"></iconify-icon>
-        <span>New Role</span>
-      </button>
+    <h1 class="text-3xl font-extrabold tracking-tight text-base-content flex items-center gap-3">
+      <iconify-icon icon="material-symbols-light:admin-panel-settings-outline" class="text-primary text-3xl"></iconify-icon>
+      Identity &amp; Access Management
+    </h1>
+    <p class="text-base text-base-content/70 mt-1 leading-relaxed">
+      Unified Identity Provider (IdP) and Access Management control plane separating portable self-certifying identities
+      from organizational authority, delegated scopes, composed security policies, OAuth 2.1 / OIDC / SAML 2.0 SSO,
+      and immutable cryptographic auditing.
+    </p>
+  </div>
+
+  <!-- Quick-Link Console Cards -->
+  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+    <!-- 1. Organizations -->
+    <div class="card bg-base-100 border border-base-content/10 p-5 hover:border-primary/50 transition-all duration-200 shadow-sm hover:shadow-md flex flex-col justify-between group">
+      <div>
+        <div class="flex items-center justify-between mb-3">
+          <div class="flex items-center gap-2.5 min-w-0">
+            <div class="w-9 h-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center text-xl shrink-0 group-hover:scale-110 transition-transform">
+              <iconify-icon icon="material-symbols-light:corporate-fare-outline"></iconify-icon>
+            </div>
+            <span class="font-bold text-base-content text-sm truncate">Organizations</span>
+          </div>
+          <span class="badge badge-xs badge-ghost shrink-0">Hierarchy</span>
+        </div>
+        <p class="text-xs text-base-content/70 mb-4 leading-relaxed">
+          Manage arbitrary-depth organization trees, click any organization to inspect its Organization Profile, composed security policies, and delegated memberships.
+        </p>
+      </div>
+      <a href="/iam/organizations" class="btn btn-xs btn-outline btn-primary self-start gap-1 group-hover:btn-active transition-all">Open Organizations &rarr;</a>
+    </div>
+
+    <!-- 2. Users & Groups -->
+    <div class="card bg-base-100 border border-base-content/10 p-5 hover:border-primary/50 transition-all duration-200 shadow-sm hover:shadow-md flex flex-col justify-between group">
+      <div>
+        <div class="flex items-center justify-between mb-3">
+          <div class="flex items-center gap-2.5 min-w-0">
+            <div class="w-9 h-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center text-xl shrink-0 group-hover:scale-110 transition-transform">
+              <iconify-icon icon="material-symbols-light:groups-outline"></iconify-icon>
+            </div>
+            <span class="font-bold text-base-content text-sm truncate">Users &amp; Groups</span>
+          </div>
+          <span class="badge badge-xs badge-ghost shrink-0">Directory</span>
+        </div>
+        <p class="text-xs text-base-content/70 mb-4 leading-relaxed">
+          Administer user accounts, full profiles, group memberships, inherited group capabilities, and account lifecycle controls.
+        </p>
+      </div>
+      <a href="/iam/users" class="btn btn-xs btn-outline btn-primary self-start gap-1 group-hover:btn-active transition-all">Open Users &amp; Groups &rarr;</a>
+    </div>
+
+    <!-- 3. RBAC & Policies -->
+    <div class="card bg-base-100 border border-base-content/10 p-5 hover:border-primary/50 transition-all duration-200 shadow-sm hover:shadow-md flex flex-col justify-between group">
+      <div>
+        <div class="flex items-center justify-between mb-3">
+          <div class="flex items-center gap-2.5 min-w-0">
+            <div class="w-9 h-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center text-xl shrink-0 group-hover:scale-110 transition-transform">
+              <iconify-icon icon="material-symbols-light:policy-outline"></iconify-icon>
+            </div>
+            <span class="font-bold text-base-content text-sm truncate">RBAC &amp; Policies</span>
+          </div>
+          <span class="badge badge-xs badge-ghost shrink-0">Authority</span>
+        </div>
+        <p class="text-xs text-base-content/70 mb-4 leading-relaxed">
+          Configure system and custom capability roles alongside live Nexus-DB / SurrealQL row-level and field-level access policies.
+        </p>
+      </div>
+      <a href="/iam/rbac" class="btn btn-xs btn-outline btn-primary self-start gap-1 group-hover:btn-active transition-all">Open RBAC &amp; Policies &rarr;</a>
+    </div>
+
+    <!-- 4. Application & SSO -->
+    <div class="card bg-base-100 border border-base-content/10 p-5 hover:border-primary/50 transition-all duration-200 shadow-sm hover:shadow-md flex flex-col justify-between group">
+      <div>
+        <div class="flex items-center justify-between mb-3">
+          <div class="flex items-center gap-2.5 min-w-0">
+            <div class="w-9 h-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center text-xl shrink-0 group-hover:scale-110 transition-transform">
+              <iconify-icon icon="material-symbols-light:apps-outage-outline"></iconify-icon>
+            </div>
+            <span class="font-bold text-base-content text-sm truncate">Application &amp; SSO</span>
+          </div>
+          <span class="badge badge-xs badge-ghost shrink-0">Federation</span>
+        </div>
+        <p class="text-xs text-base-content/70 mb-4 leading-relaxed">
+          Register OAuth 2.1 PKCE (S256) / OIDC clients, M2M credentials, Forward-Auth Outpost, and upstream OIDC / SAML 2.0 identity providers.
+        </p>
+      </div>
+      <a href="/iam/applications" class="btn btn-xs btn-outline btn-primary self-start gap-1 group-hover:btn-active transition-all">Open Application &amp; SSO &rarr;</a>
+    </div>
+
+    <!-- 5. Authorization Flows -->
+    <div class="card bg-base-100 border border-base-content/10 p-5 hover:border-primary/50 transition-all duration-200 shadow-sm hover:shadow-md flex flex-col justify-between group">
+      <div>
+        <div class="flex items-center justify-between mb-3">
+          <div class="flex items-center gap-2.5 min-w-0">
+            <div class="w-9 h-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center text-xl shrink-0 group-hover:scale-110 transition-transform">
+              <iconify-icon icon="material-symbols-light:account-tree-outline"></iconify-icon>
+            </div>
+            <span class="font-bold text-base-content text-sm truncate">Authorization Flows</span>
+          </div>
+          <span class="badge badge-xs badge-ghost shrink-0">Pipelines</span>
+        </div>
+        <p class="text-xs text-base-content/70 mb-4 leading-relaxed">
+          Build versioned authentication pipelines with password, WebAuthn passkeys, TOTP MFA, verified federation, conditional branching, and native policy gates.
+        </p>
+      </div>
+      <a href="/iam/flows" class="btn btn-xs btn-outline btn-primary self-start gap-1 group-hover:btn-active transition-all">Open Authorization Flows &rarr;</a>
+    </div>
+
+    <!-- 6. Audit Logs -->
+    <div class="card bg-base-100 border border-base-content/10 p-5 hover:border-primary/50 transition-all duration-200 shadow-sm hover:shadow-md flex flex-col justify-between group">
+      <div>
+        <div class="flex items-center justify-between mb-3">
+          <div class="flex items-center gap-2.5 min-w-0">
+            <div class="w-9 h-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center text-xl shrink-0 group-hover:scale-110 transition-transform">
+              <iconify-icon icon="material-symbols-light:fact-check-outline"></iconify-icon>
+            </div>
+            <span class="font-bold text-base-content text-sm truncate">Audit Logs</span>
+          </div>
+          <span class="badge badge-xs badge-ghost shrink-0">Compliance</span>
+        </div>
+        <p class="text-xs text-base-content/70 mb-4 leading-relaxed">
+          Inspect append-only cryptographic, organization, token-replay, MFA, federation, session, and device trust audit events.
+        </p>
+      </div>
+      <a href="/iam/audit" class="btn btn-xs btn-outline btn-primary self-start gap-1 group-hover:btn-active transition-all">Open Audit Logs &rarr;</a>
     </div>
   </div>
 
-  <!-- Non-OWNER / Unauthenticated Gate -->
-  <div data-show="!$auth.isAuthenticated || !$auth.hasRole('OWNER')"
-    class="card bg-base-200 border border-base-300 p-8 text-center max-w-lg mx-auto">
-    <iconify-icon icon="material-symbols-light:shield-lock-outline" class="text-5xl text-warning mx-auto mb-3"></iconify-icon>
-    <h2 class="text-lg font-bold">OWNER Role Required</h2>
-    <p class="text-sm opacity-70 mt-1 mb-4">IAM administration and record-level database policies are strictly enforced server-side for OWNER accounts.</p>
-    <button type="button" class="btn btn-primary btn-sm mx-auto"
-      data-on-click="headerDropdownTab = 'profile'; headerDropdownOpen = true">
-      Open Profile / Sign In
-    </button>
-  </div>
-
-  <!-- Authenticated OWNER Console -->
-  <div data-show="$auth.isAuthenticated && $auth.hasRole('OWNER') && typeof iamReady !== 'undefined' && iamReady" class="space-y-6">
-    <!-- Summary KPIs -->
-    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
-      <div class="stat bg-base-200/70 rounded-xl border border-base-300 p-4">
-        <div class="stat-title text-xs">Users</div>
-        <div class="stat-value text-2xl" id="iam-kpi-users" data-bind="(users || []).length">0</div>
+  <!-- Personal Security Hub Callout -->
+  <div class="card bg-base-200/60 border border-base-300 p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+    <div class="flex items-start gap-3">
+      <div class="w-10 h-10 rounded-xl bg-secondary/15 text-secondary flex items-center justify-center text-2xl shrink-0">
+        <iconify-icon icon="material-symbols-light:passkey"></iconify-icon>
       </div>
-      <div class="stat bg-base-200/70 rounded-xl border border-base-300 p-4">
-        <div class="stat-title text-xs">Groups</div>
-        <div class="stat-value text-2xl" id="iam-kpi-groups" data-bind="typeof getGroups === 'function' ? getGroups().length : 0">0</div>
-      </div>
-      <div class="stat bg-base-200/70 rounded-xl border border-base-300 p-4">
-        <div class="stat-title text-xs">Roles</div>
-        <div class="stat-value text-2xl" id="iam-kpi-roles" data-bind="(systemRoles || []).length + (typeof getCustomRoles === 'function' ? getCustomRoles().length : 0)">3</div>
-      </div>
-      <div class="stat bg-base-200/70 rounded-xl border border-base-300 p-4">
-        <div class="stat-title text-xs">Record / Field Policies</div>
-        <div class="stat-value text-2xl text-primary" id="iam-kpi-policies" data-bind="typeof getPolicies === 'function' ? getPolicies().length : 0">0</div>
+      <div>
+        <h2 class="font-bold text-sm">Personal Security Hub</h2>
+        <p class="text-xs opacity-70 mt-0.5">
+          Manage your own independent <code class="font-mono">NEXUS-ID-v1</code> credentials, WebAuthn passkeys, active sessions, and trusted devices.
+        </p>
       </div>
     </div>
-
-    <!-- Navigation Tabs -->
-    <div role="tablist" class="tabs tabs-bordered">
-      <button type="button" role="tab" id="iam-tab-users" class="tab gap-1.5"
-        data-class="{ 'tab-active font-semibold': iamTab === 'users' }"
-        data-on-click="iamTab = 'users'; refreshUsers()">
-        <iconify-icon icon="material-symbols-light:person-outline" class="text-base"></iconify-icon>
-        <span>Users</span>
-      </button>
-      <button type="button" role="tab" id="iam-tab-groups" class="tab gap-1.5"
-        data-class="{ 'tab-active font-semibold': iamTab === 'groups' }"
-        data-on-click="iamTab = 'groups'">
-        <iconify-icon icon="material-symbols-light:groups-outline" class="text-base"></iconify-icon>
-        <span>Groups &amp; Members</span>
-      </button>
-      <button type="button" role="tab" id="iam-tab-roles" class="tab gap-1.5"
-        data-class="{ 'tab-active font-semibold': iamTab === 'roles' }"
-        data-on-click="iamTab = 'roles'">
-        <iconify-icon icon="material-symbols-light:badge-outline" class="text-base"></iconify-icon>
-        <span>Roles &amp; Permissions</span>
-      </button>
-      <button type="button" role="tab" id="iam-tab-policies" class="tab gap-1.5"
-        data-class="{ 'tab-active font-semibold': iamTab === 'policies' }"
-        data-on-click="iamTab = 'policies'">
-        <iconify-icon icon="material-symbols-light:policy-outline" class="text-base"></iconify-icon>
-        <span>Record &amp; Field Policies</span>
-      </button>
-    </div>
-
-    <!-- ==================== TAB 1: USERS ==================== -->
-    <div data-show="iamTab === 'users'" class="space-y-4">
-      <form class="card bg-base-200/60 border border-base-300 p-4 space-y-3"
-        data-on-submit_prevent="addUser()">
-        <h2 class="font-semibold text-sm">Add User</h2>
-        <div class="grid grid-cols-1 md:grid-cols-4 gap-2.5">
-          <input id="iam-add-user" type="text" class="input input-bordered input-sm"
-            placeholder="Username" data-bind-value="uName" />
-          <input id="iam-add-pass" type="password" class="input input-bordered input-sm"
-            placeholder="Password (min 4 chars)" data-bind-value="uPass" />
-          <select id="iam-add-role" class="select select-bordered select-sm" data-bind-value="uRole">
-            <option value="VIEWER">VIEWER (Read-Only)</option>
-            <option value="EDITOR">EDITOR (Read/Write + Cells)</option>
-            <option value="OWNER">OWNER (Full Admin)</option>
-          </select>
-          <button id="iam-add-btn" type="submit" class="btn btn-primary btn-sm">Add User</button>
-        </div>
-      </form>
-
-      <div class="overflow-x-auto rounded-xl border border-base-300">
-        <table class="table table-sm w-full">
-          <thead>
-            <tr class="bg-base-200/70">
-              <th>Account</th>
-              <th>Roles</th>
-              <th>Groups</th>
-              <th>Effective Capabilities</th>
-              <th class="text-end">Actions</th>
-            </tr>
-          </thead>
-          <tbody id="iam-users-table">
-            <template data-for="u in (users || [])">
-              <tr class="hover">
-                <td>
-                  <div class="flex items-center gap-2.5">
-                    <div class="avatar placeholder">
-                      <div class="w-8 rounded-full bg-primary/15 text-primary flex items-center justify-center overflow-hidden">
-                        <img data-show="getProfile(u.name).avatar_path" data-bind-src="getProfile(u.name).avatar_path" class="w-full h-full object-cover" alt="" />
-                        <span data-show="!getProfile(u.name).avatar_path" class="text-xs font-bold uppercase" data-bind="String(u.name || '?').slice(0, 2)"></span>
-                      </div>
-                    </div>
-                    <div>
-                      <div class="font-semibold text-sm flex items-center gap-1.5">
-                        <span data-bind="getProfile(u.name).display_name || u.name"></span>
-                        <span data-show="getProfile(u.name).status === 'suspended'" class="badge badge-error badge-xs">Suspended</span>
-                      </div>
-                      <div class="text-[11px] opacity-60 font-mono" data-bind="'@' + u.name + (getProfile(u.name).department ? ' · ' + getProfile(u.name).department : '')"></div>
-                    </div>
-                  </div>
-                </td>
-                <td>
-                  <div class="flex gap-1 flex-wrap">
-                    <template data-for="r in (u.roles || [])">
-                      <span class="badge badge-primary badge-xs" data-bind="r"></span>
-                    </template>
-                    <template data-for="cr in (getProfile(u.name).custom_roles || [])">
-                      <span class="badge badge-accent badge-outline badge-xs" data-bind="cr"></span>
-                    </template>
-                  </div>
-                </td>
-                <td>
-                  <div class="flex gap-1 flex-wrap">
-                    <template data-for="ug in getUserGroups(u.name)">
-                      <span class="badge badge-secondary badge-outline badge-xs" data-bind="ug.name"></span>
-                    </template>
-                  </div>
-                </td>
-                <td>
-                  <span class="badge badge-ghost badge-xs font-mono" data-bind="getEffectiveCaps(u).length + ' capabilities'"></span>
-                </td>
-                <td class="text-end space-x-1 whitespace-nowrap">
-                  <button type="button" class="btn btn-primary btn-outline btn-xs"
-                    data-on-click="openUserModal(u, 'profile')">View / Edit Profile</button>
-                  <button type="button" class="btn btn-ghost btn-xs text-error"
-                    data-on-click="deleteUser(u.name)">Delete</button>
-                </td>
-              </tr>
-            </template>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- ==================== TAB 2: GROUPS & MEMBERS ==================== -->
-    <div data-show="iamTab === 'groups'" class="space-y-4">
-      <div class="flex items-center justify-between">
-        <p class="text-xs opacity-70">Groups grant inherited roles and capabilities to all assigned members.</p>
-        <button id="iam-new-group-btn" type="button" class="btn btn-primary btn-sm gap-1.5"
-          data-on-click="openGroupModal(null)">
-          <iconify-icon icon="material-symbols-light:group-add-outline" class="text-base"></iconify-icon>
-          <span>Create Group</span>
-        </button>
-      </div>
-
-      <div data-show="typeof getGroups === 'function' && getGroups().length === 0"
-        class="p-8 text-center rounded-xl border border-dashed border-base-300 opacity-60 text-sm">
-        No groups created yet. Click "Create Group" to organize members and inherited permissions.
-      </div>
-
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-3" id="iam-groups-list">
-        <template data-for="grp in (typeof getGroups === 'function' ? getGroups() : [])">
-          <div class="card bg-base-100 border border-base-300 p-4 space-y-2.5 shadow-sm">
-            <div class="flex items-start justify-between gap-2">
-              <div>
-                <div class="font-semibold text-sm flex items-center gap-2 flex-wrap">
-                  <span data-bind="grp.name"></span>
-                  <span class="badge badge-primary badge-xs" data-bind="grp.role || 'VIEWER'"></span>
-                  <span class="badge badge-ghost badge-xs" data-bind="(grp.members || []).length + ' member(s)'"></span>
-                </div>
-                <div class="text-xs opacity-60 mt-0.5" data-bind="grp.description || 'No description'"></div>
-              </div>
-              <div class="flex gap-1">
-                <button type="button" class="btn btn-primary btn-outline btn-xs" data-on-click="openGroupModal(grp)">Manage</button>
-                <button type="button" class="btn btn-ghost btn-xs text-error" data-on-click="deleteGroup(grp, $sql)">Delete</button>
-              </div>
-            </div>
-            <div class="flex flex-wrap gap-1 pt-1 border-t border-base-200">
-              <span class="text-[10px] uppercase opacity-50 me-1 self-center">Members:</span>
-              <template data-for="m in (grp.members || [])">
-                <span class="badge badge-secondary badge-outline badge-xs" data-bind="m"></span>
-              </template>
-              <span data-show="!(grp.members && grp.members.length)" class="text-xs opacity-40">None</span>
-            </div>
-          </div>
-        </template>
-      </div>
-    </div>
-
-    <!-- ==================== TAB 3: ROLES & PERMISSIONS ==================== -->
-    <div data-show="iamTab === 'roles'" class="space-y-4">
-      <div class="flex items-center justify-between">
-        <p class="text-xs opacity-70">Built-in kernel roles plus custom capability bundles assignable to users and groups.</p>
-        <button id="iam-new-role-btn" type="button" class="btn btn-primary btn-sm gap-1.5"
-          data-on-click="openRoleModal(null)">
-          <iconify-icon icon="material-symbols-light:add-moderator-outline" class="text-base"></iconify-icon>
-          <span>Create Custom Role</span>
-        </button>
-      </div>
-
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-        <template data-for="sr in (systemRoles || [])">
-          <div class="card bg-base-200/40 border border-base-300 p-4 space-y-2">
-            <div class="flex items-center justify-between">
-              <span class="font-semibold text-sm" data-bind="sr.name"></span>
-              <span class="badge badge-xs badge-outline">System</span>
-            </div>
-            <p class="text-xs opacity-70" data-bind="sr.desc"></p>
-            <div class="flex flex-wrap gap-1">
-              <template data-for="c in sr.caps">
-                <span class="badge badge-ghost badge-xs font-mono text-[10px]" data-bind="c"></span>
-              </template>
-            </div>
-          </div>
-        </template>
-      </div>
-
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-3" id="iam-custom-roles-list">
-        <template data-for="cr in (typeof getCustomRoles === 'function' ? getCustomRoles() : [])">
-          <div class="card bg-base-100 border border-base-300 p-4 space-y-2 shadow-sm">
-            <div class="flex items-start justify-between gap-2">
-              <div>
-                <div class="font-semibold text-sm flex items-center gap-2">
-                  <span data-bind="cr.name"></span>
-                  <span class="badge badge-secondary badge-xs" data-bind="'Base: ' + (cr.base_role || 'VIEWER')"></span>
-                </div>
-                <p class="text-xs opacity-60" data-bind="cr.description || 'Custom capability role'"></p>
-              </div>
-              <div class="flex gap-1">
-                <button type="button" class="btn btn-primary btn-outline btn-xs" data-on-click="openRoleModal(cr)">Manage</button>
-                <button type="button" class="btn btn-ghost btn-xs text-error" data-on-click="deleteRole(cr, $sql)">Delete</button>
-              </div>
-            </div>
-            <div class="flex flex-wrap gap-1">
-              <template data-for="c in (cr.caps || [])">
-                <span class="badge badge-primary badge-outline badge-xs font-mono text-[10px]" data-bind="c"></span>
-              </template>
-            </div>
-          </div>
-        </template>
-      </div>
-    </div>
-
-    <!-- ==================== TAB 4: RECORD & FIELD POLICIES ==================== -->
-    <div data-show="iamTab === 'policies'" class="space-y-4">
-      <form class="card bg-base-200/60 border border-base-300 p-4 space-y-3"
-        data-on-submit_prevent="savePolicy($sql, $auth.actor)">
-        <div class="flex items-center justify-between">
-          <h2 class="font-semibold text-sm" data-bind="editingPolicyId ? 'Edit Record/Field Policy' : 'Define Record-Level or Field-Level Policy (Nexus-DB / SurrealQL)'">Define Record-Level Policy</h2>
-          <button type="button" data-show="editingPolicyId" class="btn btn-ghost btn-xs" data-on-click="cancelEditPolicy()">Cancel</button>
-        </div>
-        <div class="grid grid-cols-1 md:grid-cols-4 gap-2.5">
-          <input id="pol-table" type="text" class="input input-bordered input-sm font-mono"
-            placeholder="Table (e.g. erp_po)" data-bind-value="pTable" />
-          <select id="pol-scope" class="select select-bordered select-sm" data-bind-value="pScope">
-            <option value="table">Row / Record-Level (DEFINE TABLE)</option>
-            <option value="field">Field-Level (DEFINE FIELD)</option>
-          </select>
-          <input id="pol-field" type="text" class="input input-bordered input-sm font-mono"
-            data-show="pScope === 'field'"
-            placeholder="Field (e.g. salary)" data-bind-value="pField" />
-          <select id="pol-mode" class="select select-bordered select-sm" data-bind-value="pMode">
-            <option value="where">PERMISSIONS FOR ... WHERE</option>
-            <option value="full">PERMISSIONS FULL</option>
-            <option value="none">PERMISSIONS NONE</option>
-          </select>
-        </div>
-        <div data-show="pMode === 'where'" class="grid grid-cols-1 md:grid-cols-3 gap-2.5">
-          <input id="pol-ops" type="text" class="input input-bordered input-sm font-mono"
-            placeholder="Operations (e.g. select, update)" data-bind-value="pOps" />
-          <input id="pol-expr" type="text" class="input input-bordered input-sm font-mono md:col-span-2"
-            placeholder="WHERE expression (e.g. owner == $auth)" data-bind-value="pExpr" />
-        </div>
-        <div data-show="pMode === 'where'" class="flex flex-wrap items-center gap-1.5 text-xs">
-          <span class="opacity-60">Presets:</span>
-          <button type="button" class="badge badge-ghost badge-sm font-mono cursor-pointer hover:badge-primary"
-            data-on-click="pExpr = 'owner == $auth'">owner == $auth</button>
-          <button type="button" class="badge badge-ghost badge-sm font-mono cursor-pointer hover:badge-primary"
-            data-on-click="pExpr = 'created_by == $auth'">created_by == $auth</button>
-        </div>
-        <div>
-          <button id="pol-save-btn" type="submit" class="btn btn-primary btn-sm"
-            data-bind="editingPolicyId ? 'Update &amp; Apply Policy' : 'Apply Policy Live'">Apply Policy Live</button>
-        </div>
-      </form>
-
-      <div class="space-y-2.5" id="iam-policies-list">
-        <template data-for="pol in (typeof getPolicies === 'function' ? getPolicies() : [])">
-          <div class="card bg-base-100 border border-base-300 p-4 space-y-1.5">
-            <div class="flex items-center justify-between gap-2">
-              <div class="flex items-center gap-2 flex-wrap">
-                <span class="badge badge-primary badge-xs font-mono" data-bind="pol.scope === 'field' ? (pol.table + '.' + pol.field) : pol.table"></span>
-                <span class="badge badge-outline badge-xs" data-bind="pol.scope === 'field' ? 'Field-Level' : 'Record-Level'"></span>
-              </div>
-              <div class="flex gap-1">
-                <button type="button" class="btn btn-ghost btn-xs" data-on-click="startEditPolicy(pol)">Edit</button>
-                <button type="button" class="btn btn-ghost btn-xs text-error" data-on-click="deletePolicy(pol, $sql)">Delete</button>
-              </div>
-            </div>
-            <pre class="text-xs font-mono bg-base-200/70 rounded-lg px-3 py-2 overflow-x-auto" data-bind="pol.surql"></pre>
-          </div>
-        </template>
-      </div>
-    </div>
-  </div>
-
-  <!-- ==================== FULL ACCOUNT PROFILE MODAL ==================== -->
-  <div id="iam-user-modal" class="modal" role="dialog" data-class="{ 'modal-open': typeof userModalOpen !== 'undefined' && userModalOpen }">
-    <div class="modal-box max-w-2xl bg-base-100 border border-base-300 p-0 overflow-hidden">
-      <!-- Modal Header -->
-      <div class="p-4 bg-base-200/60 border-b border-base-300 flex items-center justify-between gap-3">
-        <div class="flex items-center gap-3 min-w-0">
-          <div class="avatar placeholder">
-            <div class="w-12 rounded-full bg-primary/15 text-primary ring ring-primary/30 flex items-center justify-center overflow-hidden">
-              <img data-show="profAvatarPath" data-bind-src="profAvatarPath" class="w-full h-full object-cover" alt="" />
-              <span data-show="!profAvatarPath" class="text-base font-bold uppercase" data-bind="String(activeUserName || '?').slice(0, 2)"></span>
-            </div>
-          </div>
-          <div class="min-w-0">
-            <h3 class="font-bold text-base truncate" id="iam-modal-user-title" data-bind="profDisplayName || activeUserName || 'Account Profile'"></h3>
-            <div class="text-xs opacity-60 font-mono truncate" data-bind="'@' + (activeUserName || '') + ' · ' + (profBaseRole || 'VIEWER')"></div>
-          </div>
-        </div>
-        <button type="button" class="btn btn-ghost btn-xs btn-circle" data-on-click="closeUserModal()">
-          <iconify-icon icon="material-symbols-light:close" class="text-lg"></iconify-icon>
-        </button>
-      </div>
-
-      <!-- Modal Sub-tabs -->
-      <div role="tablist" class="tabs tabs-bordered px-4 bg-base-200/30">
-        <button type="button" role="tab" class="tab tab-sm"
-          data-class="{ 'tab-active font-semibold': userModalTab === 'profile' }"
-          data-on-click="userModalTab = 'profile'">Profile</button>
-        <button type="button" role="tab" id="iam-modal-tab-groups" class="tab tab-sm"
-          data-class="{ 'tab-active font-semibold': userModalTab === 'groups' }"
-          data-on-click="userModalTab = 'groups'">Groups &amp; Memberships</button>
-        <button type="button" role="tab" id="iam-modal-tab-roles" class="tab tab-sm"
-          data-class="{ 'tab-active font-semibold': userModalTab === 'roles' }"
-          data-on-click="userModalTab = 'roles'">Roles &amp; Permissions</button>
-        <button type="button" role="tab" id="iam-modal-tab-security" class="tab tab-sm"
-          data-class="{ 'tab-active font-semibold': userModalTab === 'security' }"
-          data-on-click="userModalTab = 'security'">Security</button>
-      </div>
-
-      <!-- Modal Body -->
-      <div class="p-5 max-h-[65vh] overflow-y-auto space-y-4">
-        <!-- Sub-tab 1: Profile Info -->
-        <form data-show="userModalTab === 'profile'" class="space-y-3" data-on-submit_prevent="saveUserProfile($sql)">
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <label class="form-control">
-              <span class="label-text text-xs opacity-70 mb-1">Display Name</span>
-              <input id="prof-display-name" type="text" class="input input-bordered input-sm" data-bind-value="profDisplayName" />
-            </label>
-            <label class="form-control">
-              <span class="label-text text-xs opacity-70 mb-1">Email</span>
-              <input id="prof-email" type="email" class="input input-bordered input-sm" placeholder="name@company.com" data-bind-value="profEmail" />
-            </label>
-            <label class="form-control">
-              <span class="label-text text-xs opacity-70 mb-1">Job Title</span>
-              <input id="prof-title" type="text" class="input input-bordered input-sm" placeholder="e.g. VP Operations" data-bind-value="profTitle" />
-            </label>
-            <label class="form-control">
-              <span class="label-text text-xs opacity-70 mb-1">Department</span>
-              <input id="prof-dept" type="text" class="input input-bordered input-sm" placeholder="e.g. Procurement" data-bind-value="profDepartment" />
-            </label>
-          </div>
-          <div class="flex flex-wrap items-center justify-between gap-3 pt-1">
-            <label class="flex items-center gap-2 text-xs">
-              <span class="opacity-70">Status:</span>
-              <select class="select select-bordered select-xs" data-bind-value="profStatus">
-                <option value="active">Active</option>
-                <option value="suspended">Suspended</option>
-              </select>
-            </label>
-            <label class="btn btn-xs btn-outline cursor-pointer gap-1">
-              <iconify-icon icon="material-symbols-light:upload" class="text-sm"></iconify-icon>
-              <span>Upload Avatar (S3)</span>
-              <input type="file" accept="image/*" class="hidden" data-on-change="uploadUserAvatar($el, $sql)" />
-            </label>
-          </div>
-          <div class="pt-2 flex justify-end">
-            <button id="prof-save-btn" type="submit" class="btn btn-primary btn-sm">Save Profile</button>
-          </div>
-        </form>
-
-        <!-- Sub-tab 2: Group Memberships -->
-        <div data-show="userModalTab === 'groups'" class="space-y-3">
-          <p class="text-xs opacity-70">Toggle which groups <strong data-bind="activeUserName"></strong> belongs to (changes persist live in Nexus-DB):</p>
-          <div class="space-y-2" id="iam-modal-groups-list">
-            <template data-for="grp in (typeof getGroups === 'function' ? getGroups() : [])">
-              <div class="flex items-center justify-between p-3 rounded-xl border border-base-300 bg-base-200/40">
-                <div>
-                  <div class="font-semibold text-sm flex items-center gap-2">
-                    <span data-bind="grp.name"></span>
-                    <span class="badge badge-primary badge-xs" data-bind="grp.role || 'VIEWER'"></span>
-                  </div>
-                  <div class="text-xs opacity-60" data-bind="grp.description || 'No description'"></div>
-                </div>
-                <button type="button" class="btn btn-xs"
-                  data-class="{
-                    'btn-error btn-outline': Array.isArray(grp.members) && grp.members.includes(activeUserName),
-                    'btn-primary': !(Array.isArray(grp.members) && grp.members.includes(activeUserName))
-                  }"
-                  data-on-click="toggleUserInGroup(activeUserName, grp, $sql)"
-                  data-bind="(Array.isArray(grp.members) && grp.members.includes(activeUserName)) ? 'Remove' : 'Add to Group'"></button>
-              </div>
-            </template>
-          </div>
-        </div>
-
-        <!-- Sub-tab 3: Roles & Effective Permissions -->
-        <form data-show="userModalTab === 'roles'" class="space-y-4" data-on-submit_prevent="saveUserRolesAndSecurity($sql)">
-          <label class="form-control">
-            <span class="label-text text-xs font-semibold mb-1">Base Kernel Role (Server-Enforced)</span>
-            <select id="prof-base-role" class="select select-bordered select-sm" data-bind-value="profBaseRole">
-              <option value="VIEWER">VIEWER (Read-Only)</option>
-              <option value="EDITOR">EDITOR (Read/Write + Wasm Cells)</option>
-              <option value="OWNER">OWNER (Full Admin)</option>
-            </select>
-          </label>
-          <div class="space-y-1.5">
-            <div class="text-xs font-semibold">Custom Roles</div>
-            <div class="flex flex-wrap gap-1.5">
-              <template data-for="cr in (typeof getCustomRoles === 'function' ? getCustomRoles() : [])">
-                <button type="button" class="badge badge-sm cursor-pointer py-2.5"
-                  data-class="{ 'badge-accent': (profCustomRoles || []).includes(cr.name), 'badge-ghost': !(profCustomRoles || []).includes(cr.name) }"
-                  data-on-click="toggleUserCustomRole(cr.name)" data-bind="cr.name"></button>
-              </template>
-            </div>
-          </div>
-          <div class="p-3 rounded-xl bg-base-200/50 border border-base-300 space-y-1.5">
-            <div class="text-[11px] font-semibold uppercase tracking-wider opacity-60">Computed Effective Capabilities (Direct + Custom + Groups)</div>
-            <div class="flex flex-wrap gap-1" id="prof-effective-caps">
-              <template data-for="c in (typeof getEffectiveCaps === 'function' ? getEffectiveCaps(getActiveUserObj()) : [])">
-                <span class="badge badge-primary badge-outline badge-xs font-mono text-[10px]" data-bind="c"></span>
-              </template>
-            </div>
-          </div>
-          <div class="flex justify-end">
-            <button id="prof-roles-save-btn" type="submit" class="btn btn-primary btn-sm">Save Roles</button>
-          </div>
-        </form>
-
-        <!-- Sub-tab 4: Security -->
-        <div data-show="userModalTab === 'security'" class="space-y-4">
-          <form class="space-y-2.5 p-3 rounded-xl bg-base-200/40 border border-base-300"
-            data-on-submit_prevent="saveUserRolesAndSecurity($sql)">
-            <div class="font-semibold text-xs">Admin Password Reset</div>
-            <div class="flex gap-2">
-              <input id="prof-new-pass" type="password" class="input input-bordered input-sm flex-1"
-                placeholder="New password (min 4 chars)" data-bind-value="profNewPass" />
-              <button type="submit" class="btn btn-primary btn-sm">Reset Password</button>
-            </div>
-          </form>
-          <div class="p-3 rounded-xl bg-error/5 border border-error/30 flex items-center justify-between gap-3">
-            <div>
-              <div class="font-semibold text-xs text-error">Delete Account</div>
-              <div class="text-[11px] opacity-70">Removes user from Nexus-IO IAM (protected if last OWNER).</div>
-            </div>
-            <button type="button" class="btn btn-error btn-xs" data-on-click="deleteUser(activeUserName)">Delete User</button>
-          </div>
-        </div>
-      </div>
-    </div>
-    <div class="modal-backdrop bg-black/40" data-on-click="closeUserModal()"></div>
-  </div>
-
-  <!-- ==================== GROUP MANAGEMENT MODAL ==================== -->
-  <div id="iam-group-modal" class="modal" role="dialog" data-class="{ 'modal-open': typeof groupModalOpen !== 'undefined' && groupModalOpen }">
-    <div class="modal-box max-w-xl bg-base-100 border border-base-300 space-y-4">
-      <div class="flex items-center justify-between border-b border-base-200 pb-3">
-        <h3 class="font-bold text-base" data-bind="editingGroupId ? 'Manage Group' : 'Create Group'">Manage Group</h3>
-        <button type="button" class="btn btn-ghost btn-xs btn-circle" data-on-click="closeGroupModal()">
-          <iconify-icon icon="material-symbols-light:close" class="text-lg"></iconify-icon>
-        </button>
-      </div>
-      <form class="space-y-3" data-on-submit_prevent="saveGroup($sql)">
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-          <input id="grp-name" type="text" class="input input-bordered input-sm" placeholder="Group Name" data-bind-value="gName" />
-          <select id="grp-role" class="select select-bordered select-sm" data-bind-value="gRole">
-            <option value="VIEWER">Inherited Role: VIEWER</option>
-            <option value="EDITOR">Inherited Role: EDITOR</option>
-            <option value="OWNER">Inherited Role: OWNER</option>
-          </select>
-        </div>
-        <input id="grp-desc" type="text" class="input input-bordered input-sm w-full" placeholder="Description" data-bind-value="gDesc" />
-
-        <div class="space-y-1.5">
-          <div class="text-xs font-semibold">Members (<span data-bind="(gMembers || []).length">0</span>)</div>
-          <div class="flex flex-wrap gap-1.5" id="grp-modal-members">
-            <template data-for="u in (users || [])">
-              <button type="button" class="badge badge-sm cursor-pointer py-2.5"
-                data-class="{ 'badge-primary': (gMembers || []).includes(u.name), 'badge-ghost': !(gMembers || []).includes(u.name) }"
-                data-on-click="toggleGroupMember(u.name)" data-bind="u.name"></button>
-            </template>
-          </div>
-        </div>
-
-        <div class="space-y-1.5">
-          <div class="text-xs font-semibold">Additional Group Capabilities</div>
-          <div class="flex flex-wrap gap-1">
-            <template data-for="cap in (allCaps || [])">
-              <button type="button" class="badge badge-xs font-mono cursor-pointer py-2"
-                data-class="{ 'badge-secondary': (gCaps || []).includes(cap), 'badge-ghost': !(gCaps || []).includes(cap) }"
-                data-on-click="toggleGroupCap(cap)" data-bind="cap"></button>
-            </template>
-          </div>
-        </div>
-
-        <div class="flex justify-end gap-2 pt-2">
-          <button type="button" class="btn btn-ghost btn-sm" data-on-click="closeGroupModal()">Cancel</button>
-          <button id="grp-save-btn" type="submit" class="btn btn-primary btn-sm"
-            data-bind="editingGroupId ? 'Save Group' : 'Create Group'">Save Group</button>
-        </div>
-      </form>
-    </div>
-    <div class="modal-backdrop bg-black/40" data-on-click="closeGroupModal()"></div>
-  </div>
-
-  <!-- ==================== ROLE & PERMISSION MANAGEMENT MODAL ==================== -->
-  <div id="iam-role-modal" class="modal" role="dialog" data-class="{ 'modal-open': typeof roleModalOpen !== 'undefined' && roleModalOpen }">
-    <div class="modal-box max-w-xl bg-base-100 border border-base-300 space-y-4">
-      <div class="flex items-center justify-between border-b border-base-200 pb-3">
-        <h3 class="font-bold text-base" data-bind="editingRoleId ? 'Manage Role &amp; Permissions' : 'Create Custom Role'">Manage Role</h3>
-        <button type="button" class="btn btn-ghost btn-xs btn-circle" data-on-click="closeRoleModal()">
-          <iconify-icon icon="material-symbols-light:close" class="text-lg"></iconify-icon>
-        </button>
-      </div>
-      <form class="space-y-3" data-on-submit_prevent="saveRole($sql)">
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-          <input id="role-name" type="text" class="input input-bordered input-sm" placeholder="Role Name" data-bind-value="rName" />
-          <select id="role-base" class="select select-bordered select-sm" data-bind-value="rBase">
-            <option value="VIEWER">Base Kernel Level: VIEWER</option>
-            <option value="EDITOR">Base Kernel Level: EDITOR</option>
-            <option value="OWNER">Base Kernel Level: OWNER</option>
-          </select>
-        </div>
-        <input id="role-desc" type="text" class="input input-bordered input-sm w-full" placeholder="Description" data-bind-value="rDesc" />
-        <div class="space-y-1.5">
-          <div class="text-xs font-semibold">Granted Capabilities</div>
-          <div class="flex flex-wrap gap-1.5">
-            <template data-for="cap in (allCaps || [])">
-              <button type="button" class="badge badge-sm font-mono cursor-pointer py-2.5"
-                data-class="{ 'badge-primary': (rCaps || []).includes(cap), 'badge-ghost': !(rCaps || []).includes(cap) }"
-                data-on-click="toggleRoleCap(cap)" data-bind="cap"></button>
-            </template>
-          </div>
-        </div>
-        <div class="flex justify-end gap-2 pt-2">
-          <button type="button" class="btn btn-ghost btn-sm" data-on-click="closeRoleModal()">Cancel</button>
-          <button id="role-save-btn" type="submit" class="btn btn-primary btn-sm"
-            data-bind="editingRoleId ? 'Save Role' : 'Create Role'">Save Role</button>
-        </div>
-      </form>
-    </div>
-    <div class="modal-backdrop bg-black/40" data-on-click="closeRoleModal()"></div>
+    <a href="/profile" class="btn btn-sm btn-secondary btn-outline shrink-0">Open My Profile &rarr;</a>
   </div>
 </div>

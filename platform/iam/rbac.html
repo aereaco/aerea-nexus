@@ -1,0 +1,222 @@
+<head>
+  <title>RBAC & Policies</title>
+  <meta name="id" content="iam-rbac">
+  <meta name="route" content="/iam/rbac">
+  <meta name="icon" content="material-symbols-light:policy-outline">
+  <meta name="order" content="3">
+  <meta name="category" content="Apps">
+  <meta name="parent" content="/iam">
+</head>
+
+<div id="iam-rbac-workbench" class="max-w-6xl mx-auto w-full space-y-6"
+  data-signal-src="/_pages/apps/iam/iam-state.js"
+  data-effect="if (typeof iamReady !== 'undefined' && iamReady) { const canAccess = $auth.isAuthenticated && ($auth.hasPermission('iam.roles.manage') || $auth.hasPermission('iam.policy.update') || $auth.hasPermission('iam.read') || $auth.hasRole('OWNER')); if (canAccess && $auth.actor) { if (iamSyncedActor !== $auth.actor) { iamTab = (iamTab === 'policies') ? 'policies' : 'roles'; connectIam($sql, $auth.actor); } } else if (iamSyncedActor) { disconnectIam(); } }">
+
+  <!-- Header -->
+  <div class="flex flex-wrap items-center justify-between gap-4 border-b border-base-300 pb-4">
+    <div>
+      <div class="flex items-center gap-2">
+        <h1 class="text-2xl font-bold tracking-tight">RBAC &amp; Policies</h1>
+        <span data-show="typeof iamSyncedActor !== 'undefined' && iamSyncedActor" class="badge badge-success badge-sm">Server-Enforced IAM</span>
+      </div>
+      <p class="text-sm opacity-70 mt-0.5">Role-based capability bundles and live Nexus-DB / SurrealQL record-level and field-level security policies.</p>
+    </div>
+    <div class="flex items-center gap-2" data-show="$auth.isAuthenticated && ($auth.hasPermission('iam.roles.manage') || $auth.hasRole('OWNER')) && typeof iamReady !== 'undefined' && iamReady">
+      <button type="button" class="btn btn-sm btn-ghost gap-1.5" data-on-click="openRoleModal(null)">
+        <iconify-icon icon="material-symbols-light:add-moderator-outline" class="text-lg"></iconify-icon>
+        <span>New Role</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Authorization Gate -->
+  <div data-show="!$auth.isAuthenticated || !($auth.hasPermission('iam.roles.manage') || $auth.hasPermission('iam.policy.update') || $auth.hasPermission('iam.read') || $auth.hasRole('OWNER'))"
+    class="card bg-base-200 border border-base-300 p-8 text-center max-w-lg mx-auto">
+    <iconify-icon icon="material-symbols-light:shield-lock-outline" class="text-5xl text-warning mx-auto mb-3"></iconify-icon>
+    <h2 class="text-lg font-bold">IAM Permission Required</h2>
+    <p class="text-sm opacity-70 mt-1 mb-4">Sign in with an account holding <code class="font-mono">iam.roles.manage</code> or <code class="font-mono">iam.policy.update</code> permissions.</p>
+    <button type="button" class="btn btn-primary btn-sm mx-auto"
+      data-on-click="headerDropdownTab = 'profile'; headerDropdownOpen = true">
+      Open Profile / Sign In
+    </button>
+  </div>
+
+  <!-- Authorized Console -->
+  <div data-show="$auth.isAuthenticated && ($auth.hasPermission('iam.roles.manage') || $auth.hasPermission('iam.policy.update') || $auth.hasPermission('iam.read') || $auth.hasRole('OWNER')) && typeof iamReady !== 'undefined' && iamReady" class="space-y-6">
+    <!-- Summary KPIs -->
+    <div class="grid grid-cols-2 gap-3">
+      <div class="stat bg-base-200/70 rounded-xl border border-base-300 p-4">
+        <div class="stat-title text-xs">Roles (System + Custom)</div>
+        <div class="stat-value text-2xl" id="iam-kpi-roles" data-bind="(systemRoles || []).length + (typeof getCustomRoles === 'function' ? getCustomRoles().length : 0)">3</div>
+      </div>
+      <div class="stat bg-base-200/70 rounded-xl border border-base-300 p-4">
+        <div class="stat-title text-xs">Record / Field Policies</div>
+        <div class="stat-value text-2xl text-primary" id="iam-kpi-policies" data-bind="typeof getPolicies === 'function' ? getPolicies().length : 0">0</div>
+      </div>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <div role="tablist" class="tabs tabs-bordered">
+      <button type="button" role="tab" id="iam-tab-roles" class="tab gap-1.5"
+        data-class="{ 'tab-active font-semibold': iamTab !== 'policies' }"
+        data-on-click="iamTab = 'roles'">
+        <iconify-icon icon="material-symbols-light:badge-outline" class="text-base"></iconify-icon>
+        <span>Roles &amp; Permissions</span>
+      </button>
+      <button type="button" role="tab" id="iam-tab-policies" class="tab gap-1.5"
+        data-class="{ 'tab-active font-semibold': iamTab === 'policies' }"
+        data-on-click="iamTab = 'policies'">
+        <iconify-icon icon="material-symbols-light:policy-outline" class="text-base"></iconify-icon>
+        <span>Record &amp; Field Policies</span>
+      </button>
+    </div>
+
+    <!-- ==================== TAB 1: ROLES & PERMISSIONS ==================== -->
+    <div data-show="iamTab !== 'policies'" class="space-y-4">
+      <div class="flex items-center justify-between">
+        <p class="text-xs opacity-70">Built-in kernel roles plus custom capability bundles assignable to users and groups.</p>
+        <button id="iam-new-role-btn" type="button" class="btn btn-primary btn-sm gap-1.5"
+          data-show="$auth.hasPermission('iam.roles.manage') || $auth.hasRole('OWNER')"
+          data-on-click="openRoleModal(null)">
+          <iconify-icon icon="material-symbols-light:add-moderator-outline" class="text-base"></iconify-icon>
+          <span>Create Custom Role</span>
+        </button>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <template data-for="sr in (systemRoles || [])">
+          <div class="card bg-base-200/40 border border-base-300 p-4 space-y-2">
+            <div class="flex items-center justify-between">
+              <span class="font-semibold text-sm" data-bind="sr.name"></span>
+              <span class="badge badge-xs badge-outline">System</span>
+            </div>
+            <p class="text-xs opacity-70" data-bind="sr.desc"></p>
+            <div class="flex flex-wrap gap-1">
+              <template data-for="c in sr.caps">
+                <span class="badge badge-ghost badge-xs font-mono text-[10px]" data-bind="c"></span>
+              </template>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3" id="iam-custom-roles-list">
+        <template data-for="cr in (typeof getCustomRoles === 'function' ? getCustomRoles() : [])">
+          <div class="card bg-base-100 border border-base-300 p-4 space-y-2 shadow-sm">
+            <div class="flex items-start justify-between gap-2">
+              <div>
+                <div class="font-semibold text-sm flex items-center gap-2">
+                  <span data-bind="cr.name"></span>
+                  <span class="badge badge-secondary badge-xs" data-bind="'Base: ' + (cr.base_role || 'VIEWER')"></span>
+                </div>
+                <p class="text-xs opacity-60" data-bind="cr.description || 'Custom capability role'"></p>
+              </div>
+              <div class="flex gap-1" data-show="$auth.hasPermission('iam.roles.manage') || $auth.hasRole('OWNER')">
+                <button type="button" class="btn btn-primary btn-outline btn-xs" data-on-click="openRoleModal(cr)">Manage</button>
+                <button type="button" class="btn btn-ghost btn-xs text-error" data-on-click="deleteRole(cr, $sql)">Delete</button>
+              </div>
+            </div>
+            <div class="flex flex-wrap gap-1">
+              <template data-for="c in (cr.caps || [])">
+                <span class="badge badge-primary badge-outline badge-xs font-mono text-[10px]" data-bind="c"></span>
+              </template>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- ==================== TAB 2: RECORD & FIELD POLICIES ==================== -->
+    <div data-show="iamTab === 'policies'" class="space-y-4">
+      <form data-show="$auth.hasPermission('iam.policy.update') || $auth.hasRole('OWNER')"
+        class="card bg-base-200/60 border border-base-300 p-4 space-y-3"
+        data-on-submit_prevent="savePolicy($sql, $auth.actor)">
+        <div class="flex items-center justify-between">
+          <h2 class="font-semibold text-sm" data-bind="editingPolicyId ? 'Edit Record/Field Policy' : 'Define Record-Level or Field-Level Policy (Nexus-DB / SurrealQL)'">Define Record-Level Policy</h2>
+          <button type="button" data-show="editingPolicyId" class="btn btn-ghost btn-xs" data-on-click="cancelEditPolicy()">Cancel</button>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-2.5">
+          <input id="pol-table" type="text" class="input input-bordered input-sm font-mono" placeholder="Table (e.g. erp_po)" data-bind-value="pTable" />
+          <select id="pol-scope" class="select select-bordered select-sm" data-bind-value="pScope">
+            <option value="table">Row / Record-Level (DEFINE TABLE)</option>
+            <option value="field">Field-Level (DEFINE FIELD)</option>
+          </select>
+          <input id="pol-field" type="text" class="input input-bordered input-sm font-mono" data-show="pScope === 'field'" placeholder="Field (e.g. salary)" data-bind-value="pField" />
+          <select id="pol-mode" class="select select-bordered select-sm" data-bind-value="pMode">
+            <option value="where">PERMISSIONS FOR ... WHERE</option>
+            <option value="full">PERMISSIONS FULL</option>
+            <option value="none">PERMISSIONS NONE</option>
+          </select>
+        </div>
+        <div data-show="pMode === 'where'" class="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+          <input id="pol-ops" type="text" class="input input-bordered input-sm font-mono" placeholder="Operations (e.g. select, update)" data-bind-value="pOps" />
+          <input id="pol-expr" type="text" class="input input-bordered input-sm font-mono md:col-span-2" placeholder="WHERE expression (e.g. owner == $auth)" data-bind-value="pExpr" />
+        </div>
+        <div data-show="pMode === 'where'" class="flex flex-wrap items-center gap-1.5 text-xs">
+          <span class="opacity-60">Presets:</span>
+          <button type="button" class="badge badge-ghost badge-sm font-mono cursor-pointer hover:badge-primary" data-on-click="pExpr = 'owner == $auth'">owner == $auth</button>
+          <button type="button" class="badge badge-ghost badge-sm font-mono cursor-pointer hover:badge-primary" data-on-click="pExpr = 'created_by == $auth'">created_by == $auth</button>
+        </div>
+        <div>
+          <button id="pol-save-btn" type="submit" class="btn btn-primary btn-sm" data-bind="editingPolicyId ? 'Update &amp; Apply Policy' : 'Apply Policy Live'">Apply Policy Live</button>
+        </div>
+      </form>
+
+      <div class="space-y-2.5" id="iam-policies-list">
+        <template data-for="pol in (typeof getPolicies === 'function' ? getPolicies() : [])">
+          <div class="card bg-base-100 border border-base-300 p-4 space-y-1.5">
+            <div class="flex items-center justify-between gap-2">
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="badge badge-primary badge-xs font-mono" data-bind="pol.scope === 'field' ? (pol.table + '.' + pol.field) : pol.table"></span>
+                <span class="badge badge-outline badge-xs" data-bind="pol.scope === 'field' ? 'Field-Level' : 'Record-Level'"></span>
+              </div>
+              <div class="flex gap-1" data-show="$auth.hasPermission('iam.policy.update') || $auth.hasRole('OWNER')">
+                <button type="button" class="btn btn-ghost btn-xs" data-on-click="startEditPolicy(pol)">Edit</button>
+                <button type="button" class="btn btn-ghost btn-xs text-error" data-on-click="deletePolicy(pol, $sql)">Delete</button>
+              </div>
+            </div>
+            <pre class="text-xs font-mono bg-base-200/70 rounded-lg px-3 py-2 overflow-x-auto" data-bind="pol.surql"></pre>
+          </div>
+        </template>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== ROLE & PERMISSION MANAGEMENT MODAL ==================== -->
+  <div id="iam-role-modal" class="modal" role="dialog" data-class="{ 'modal-open': typeof roleModalOpen !== 'undefined' && roleModalOpen }">
+    <div class="modal-box max-w-xl bg-base-100 border border-base-300 space-y-4">
+      <div class="flex items-center justify-between border-b border-base-200 pb-3">
+        <h3 class="font-bold text-base" data-bind="editingRoleId ? 'Manage Role &amp; Permissions' : 'Create Custom Role'">Manage Role</h3>
+        <button type="button" class="btn btn-ghost btn-xs btn-circle" data-on-click="closeRoleModal()">
+          <iconify-icon icon="material-symbols-light:close" class="text-lg"></iconify-icon>
+        </button>
+      </div>
+      <form class="space-y-3" data-on-submit_prevent="saveRole($sql)">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+          <input id="role-name" type="text" class="input input-bordered input-sm" placeholder="Role Name" data-bind-value="rName" />
+          <select id="role-base" class="select select-bordered select-sm" data-bind-value="rBase">
+            <option value="VIEWER">Base Kernel Level: VIEWER</option>
+            <option value="EDITOR">Base Kernel Level: EDITOR</option>
+            <option value="OWNER">Base Kernel Level: OWNER</option>
+          </select>
+        </div>
+        <input id="role-desc" type="text" class="input input-bordered input-sm w-full" placeholder="Description" data-bind-value="rDesc" />
+        <div class="space-y-1.5">
+          <div class="text-xs font-semibold">Granted Capabilities</div>
+          <div class="flex flex-wrap gap-1.5">
+            <template data-for="cap in (allCaps || [])">
+              <button type="button" class="badge badge-sm font-mono cursor-pointer py-2.5"
+                data-class="{ 'badge-primary': (rCaps || []).includes(cap), 'badge-ghost': !(rCaps || []).includes(cap) }"
+                data-on-click="toggleRoleCap(cap)" data-bind="cap"></button>
+            </template>
+          </div>
+        </div>
+        <div class="flex justify-end gap-2 pt-2">
+          <button type="button" class="btn btn-ghost btn-sm" data-on-click="closeRoleModal()">Cancel</button>
+          <button id="role-save-btn" type="submit" class="btn btn-primary btn-sm" data-bind="editingRoleId ? 'Save Role' : 'Create Role'">Save Role</button>
+        </div>
+      </form>
+    </div>
+    <div class="modal-backdrop bg-black/40" data-on-click="closeRoleModal()"></div>
+  </div>
+</div>
