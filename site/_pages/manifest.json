@@ -130,18 +130,18 @@
     "id": "iam",
     "route": "/iam",
     "path": "/_pages/apps/iam/index.html",
-    "title": "Users &amp; Groups (IAM)",
+    "title": "Identity & Access Management",
     "icon": "material-symbols-light:admin-panel-settings-outline",
     "order": 2,
     "parent": null,
     "category": "Apps"
   },
   {
-    "id": "iam-organization",
-    "route": "/iam/organization",
-    "path": "/_pages/apps/iam/organization.html",
-    "title": "Organization Profile",
-    "icon": "material-symbols-light:domain-verification-outline",
+    "id": "iam-users",
+    "route": "/iam/users",
+    "path": "/_pages/apps/iam/users.html",
+    "title": "Users & Groups",
+    "icon": "material-symbols-light:groups-outline",
     "order": 2,
     "parent": "/iam",
     "category": "Apps"
@@ -237,11 +237,11 @@
     "category": "Apps"
   },
   {
-    "id": "iam-applications",
-    "route": "/iam/applications",
-    "path": "/_pages/apps/iam/applications.html",
-    "title": "Applications & SSO",
-    "icon": "material-symbols-light:apps-outage-outline",
+    "id": "iam-rbac",
+    "route": "/iam/rbac",
+    "path": "/_pages/apps/iam/rbac.html",
+    "title": "RBAC & Policies",
+    "icon": "material-symbols-light:policy-outline",
     "order": 3,
     "parent": "/iam",
     "category": "Apps"
@@ -357,11 +357,11 @@
     ]
   },
   {
-    "id": "iam-flows",
-    "route": "/iam/flows",
-    "path": "/_pages/apps/iam/flows.html",
-    "title": "Authentication Flows",
-    "icon": "material-symbols-light:account-tree-outline",
+    "id": "iam-applications",
+    "route": "/iam/applications",
+    "path": "/_pages/apps/iam/applications.html",
+    "title": "Application & SSO",
+    "icon": "material-symbols-light:apps-outage-outline",
     "order": 4,
     "parent": "/iam",
     "category": "Apps"
@@ -442,11 +442,11 @@
     "category": "Docs"
   },
   {
-    "id": "iam-audit",
-    "route": "/iam/audit",
-    "path": "/_pages/apps/iam/audit.html",
-    "title": "Audit Logs",
-    "icon": "material-symbols-light:fact-check-outline",
+    "id": "iam-flows",
+    "route": "/iam/flows",
+    "path": "/_pages/apps/iam/flows.html",
+    "title": "Authorization Flows",
+    "icon": "material-symbols-light:account-tree-outline",
     "order": 5,
     "parent": "/iam",
     "category": "Apps"
@@ -514,6 +514,16 @@
     "order": 5,
     "parent": null,
     "category": "Docs"
+  },
+  {
+    "id": "iam-audit",
+    "route": "/iam/audit",
+    "path": "/_pages/apps/iam/audit.html",
+    "title": "Audit Logs",
+    "icon": "material-symbols-light:fact-check-outline",
+    "order": 6,
+    "parent": "/iam",
+    "category": "Apps"
   },
   {
     "id": "lab-attr-on",
@@ -1218,6 +1228,16 @@
     "title": "Error",
     "icon": "material-symbols-light:error-outline",
     "parent": null
+  },
+  {
+    "id": "iam-organization",
+    "route": "/iam/organization",
+    "path": "/_pages/apps/iam/organization.html",
+    "title": "Organization Profile",
+    "icon": "material-symbols-light:domain-verification-outline",
+    "hidden": true,
+    "parent": "/iam",
+    "category": "Apps"
   },
   {
     "id": "admin",
