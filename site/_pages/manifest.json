@@ -590,9 +590,9 @@
     ]
   },
   {
-    "id": "profile",
-    "route": "/profile",
-    "path": "/_pages/apps/profile/index.html",
+    "id": "iam-profile",
+    "route": "/iam/profile",
+    "path": "/_pages/apps/iam/profile.html",
     "title": "My Account & Profile",
     "icon": "material-symbols-light:account-circle-outline",
     "order": 7,

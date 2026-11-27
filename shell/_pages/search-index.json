@@ -120,6 +120,15 @@
     "content": "Organizations Organizations Hierarchical organizations assigned to your identity. Click any organization to open its Organization Profile. Refresh Create Organization Root or Nested Child Arbitrary Nesting Root Organization Create Organization Enforce MFA propagates monotonically to child organizations Organization Slug Org ID Immutable Depth Status Action Open Profile"
   },
   {
+    "id": "iam-profile",
+    "route": "/iam/profile",
+    "path": "/_pages/apps/iam/profile.html",
+    "title": "My Account & Profile",
+    "category": "Apps",
+    "keywords": [],
+    "content": "My Account Profile My Profile Account View your verified Nexus-IO identity groups capabilities and security settings. Sign in to view your profile Sign In Open IAM Admin Profile Information Display Name Email Job Title Department Save Profile Read-Only Account Server-Verified Capabilities Change Password Update Password My Organizations Manage Authenticator App TOTP MFA RFC 6238 6-digit TOTP with single-use recovery codes. Enroll TOTP Secret Base32 URI Recovery Codes Verify Code Passkeys W3C WebAuthn No passkeys registered yet. Revoke Active Sessions Devices Active cookie session only. Revoke Revoke"
+  },
+  {
     "id": "iam-rbac",
     "route": "/iam/rbac",
     "path": "/_pages/apps/iam/rbac.html",
@@ -136,15 +145,6 @@
     "category": "Apps",
     "keywords": [],
     "content": "Users Groups Users Groups Server-Enforced IAM Manage account profiles group memberships inherited roles and effective capabilities. New Group IAM Permission Required Sign in with an account holding iam.users.manage or iam.read permissions to manage users and groups. Open Profile / Sign In Users 0 Groups 0 Users Groups Members Add User VIEWER Read-Only EDITOR Read/Write Cells OWNER Full Admin Add User Account Roles Groups Effective Capabilities Actions Suspended View / Edit Profile Delete Groups grant inherited roles and capabilities to all assigned members. Create Group No groups created yet. Click Create Group to organize members and inherited permissions. Manage Delete Members None Profile Groups Memberships Roles Permissions Security Display Name Email Job Title Department Status Active Suspended Upload Avatar S3 Save Profile Toggle which groups belongs to changes persist live in Nexus-DB Base Kernel Role Server-Enforced VIEWER Read-Only EDITOR Read/Write Wasm Cells OWNER Full Admin Custom Roles Computed Effective Capabilities Save Roles Admin Password Reset Reset Password Delete Account Removes user from Nexus-IO IAM protected if last OWNER . Delete User Manage Group Inherited Role VIEWER Inherited Role EDITOR Inherited Role OWNER Members 0 Additional Group Capabilities Cancel Save Group"
-  },
-  {
-    "id": "profile",
-    "route": "/profile",
-    "path": "/_pages/apps/profile/index.html",
-    "title": "My Account & Profile",
-    "category": "Apps",
-    "keywords": [],
-    "content": "My Account Profile My Profile Account View your verified Nexus-IO identity groups capabilities and security settings. Sign in to view your profile Sign In Open IAM Admin Profile Information Display Name Email Job Title Department Save Profile Read-Only Account Server-Verified Capabilities Change Password Update Password My Organizations Manage Authenticator App TOTP MFA RFC 6238 6-digit TOTP with single-use recovery codes. Enroll TOTP Secret Base32 URI Recovery Codes Verify Code Passkeys W3C WebAuthn No passkeys registered yet. Revoke Active Sessions Devices Active cookie session only. Revoke Revoke"
   },
   {
     "id": "lab-attr-assert",
