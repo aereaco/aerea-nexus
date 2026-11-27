@@ -141,10 +141,10 @@
     "id": "profile",
     "route": "/profile",
     "path": "/_pages/apps/profile/index.html",
-    "title": "My Profile &amp; Account",
+    "title": "My Account & Profile",
     "category": "Apps",
     "keywords": [],
-    "content": "My Profile Account My Profile Account View your verified Nexus-IO identity groups capabilities and security settings. Sign in to view your profile Sign In Open IAM Admin Profile Information Display Name Email Job Title Department Save Profile Read-Only Account Server-Verified Capabilities Change Password Update Password My Organizations Manage Authenticator App TOTP MFA RFC 6238 6-digit TOTP with single-use recovery codes. Enroll TOTP Secret Base32 URI Recovery Codes Verify Code Passkeys W3C WebAuthn No passkeys registered yet. Revoke Active Sessions Devices Active cookie session only. Revoke Revoke"
+    "content": "My Account Profile My Profile Account View your verified Nexus-IO identity groups capabilities and security settings. Sign in to view your profile Sign In Open IAM Admin Profile Information Display Name Email Job Title Department Save Profile Read-Only Account Server-Verified Capabilities Change Password Update Password My Organizations Manage Authenticator App TOTP MFA RFC 6238 6-digit TOTP with single-use recovery codes. Enroll TOTP Secret Base32 URI Recovery Codes Verify Code Passkeys W3C WebAuthn No passkeys registered yet. Revoke Active Sessions Devices Active cookie session only. Revoke Revoke"
   },
   {
     "id": "lab-attr-assert",

@@ -247,16 +247,6 @@
     "category": "Apps"
   },
   {
-    "id": "profile",
-    "route": "/profile",
-    "path": "/_pages/apps/profile/index.html",
-    "title": "My Profile &amp; Account",
-    "icon": "material-symbols-light:account-circle-outline",
-    "order": 3,
-    "parent": null,
-    "category": "Apps"
-  },
-  {
     "id": "lab-attr-for",
     "route": "/labs/attributes/for",
     "path": "/_pages/labs/attributes/for.html",
@@ -598,6 +588,16 @@
       "value",
       "pattern"
     ]
+  },
+  {
+    "id": "profile",
+    "route": "/profile",
+    "path": "/_pages/apps/profile/index.html",
+    "title": "My Account & Profile",
+    "icon": "material-symbols-light:account-circle-outline",
+    "order": 7,
+    "parent": "/iam",
+    "category": "Apps"
   },
   {
     "id": "lab-attr-class",
