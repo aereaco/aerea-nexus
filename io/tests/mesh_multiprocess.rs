@@ -167,7 +167,7 @@ async fn run_voter_child() {
     };
 
     let db = Arc::new(Database::init_in(data_dir.join("db")).await);
-    let voter = VoterNode::new(node_id, sk, db.clone());
+    let voter = VoterNode::new(node_id, sk, db.clone()).with_legacy_term_zero_compat();
     let guard = FencedResourceGuard::new(db.clone());
     voter.ensure_tables().await.unwrap();
     guard.ensure_tables().await.unwrap();
@@ -199,6 +199,13 @@ async fn run_voter_child() {
                     Err(e) => VoterRpcResp::Err { message: e.to_string() },
                 },
                 Ok(VoterRpcReq::InstallMembershipEpoch { decision, prev_members }) => {
+                    let _ = voter_c
+                        .install_genesis_epoch(
+                            &decision.proposal.group_id,
+                            decision.proposal.mode,
+                            prev_members.clone(),
+                        )
+                        .await;
                     let prev_cfg = MembershipEpochConfig {
                         mode: decision.proposal.mode,
                         members: prev_members.into_iter().map(|m| (m.node_id.clone(), m)).collect(),

@@ -332,6 +332,10 @@ pub struct TakeoverReport {
     pub next_slot: u64,
     pub recovered_slots: Vec<u64>,
     pub filled_gaps: Vec<u64>,
+    /// Operational telemetry: removed voters that were unreachable during epoch transition
+    /// activation (safety is still enforced by the old-configuration fence quorum).
+    #[serde(default)]
+    pub pending_removed_fence_nodes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -605,6 +609,8 @@ struct DurableVoterTermState {
     promised_leader_id: Option<String>,
     min_active_epoch: u64,
     #[serde(default)]
+    trusted_genesis_digest: Option<String>,
+    #[serde(default)]
     installed_epochs: HashMap<u64, MembershipEpochConfig>,
 }
 
@@ -722,16 +728,48 @@ pub fn canonical_promise_payload(
     out
 }
 
+/// Canonical length-prefixed digest (`NEXUS-GENESIS-ANCHOR-v1`) anchoring a group's trusted
+/// epoch-1 genesis membership configuration so newly admitted voters cannot be fooled by a
+/// substituted genesis chain.
+pub fn hash_genesis_config(
+    group_id: &str,
+    mode: ConsensusMode,
+    members: &[GroupMember],
+) -> Result<String> {
+    if members.is_empty() {
+        anyhow::bail!("Genesis configuration cannot have an empty member set");
+    }
+    let mut sorted = members.to_vec();
+    sorted.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+    let mut seen = HashSet::new();
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"NEXUS-GENESIS-ANCHOR-v1");
+    push_len_prefixed(&mut hasher, group_id.as_bytes());
+    push_len_prefixed(&mut hasher, mode.canonical_tag().as_bytes());
+    hasher.update(&(sorted.len() as u32).to_be_bytes());
+    for m in &sorted {
+        if !seen.insert(m.node_id.as_str()) {
+            anyhow::bail!("Duplicate node_id '{}' in genesis config", m.node_id);
+        }
+        push_len_prefixed(&mut hasher, m.node_id.as_bytes());
+        push_len_prefixed(&mut hasher, m.identity_id.as_bytes());
+        push_len_prefixed(&mut hasher, m.org_id.as_bytes());
+        push_len_prefixed(&mut hasher, m.ed25519_pubkey.as_bytes());
+    }
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
 /// Pure, shared Phase-1 `TermCertificate` & Paxos value-adoption verifier used by BOTH voters
 /// (`VoterNode::cast_vote`) and coordinators (`CoordinationGroup::plan_takeover_from_promises`).
 ///
 /// Protocol invariant:
 /// - Verifies a quorum of authorized `epoch_cfg.members` signed `NEXUS-TERM-PROMISE-v1` for
 ///   `(cert.group_id, cert.epoch, cert.term, cert.leader_id, cert.from_slot)`.
+/// - Validates EVERY reported `AcceptedSlotLock` on every promise (epoch, slot >= from_slot,
+///   accepted_term < cert.term, no duplicate slots per voter, embedded `SignedVote` fields &
+///   Ed25519 signature, and canonical proposal digest). Any malformed lock fails the ENTIRE promise.
 /// - For `slot`: selects the unique proposal with the highest `accepted_term` across all promises.
 /// - Fails closed if two conflicting proposals share the highest `accepted_term`.
-/// - Returns `Ok(Some(adopted))` if an accepted value exists for `slot`, or `Ok(None)` if no
-///   promise in the quorum reported an accepted value for `slot`.
 pub fn verify_term_certificate_and_adoption(
     cert: &TermCertificate,
     epoch_cfg: &MembershipEpochConfig,
@@ -793,20 +831,80 @@ pub fn verify_term_certificate_and_adoption(
         }
         unique_voters.insert(p.voter_node_id.clone());
 
+        let mut seen_slots_for_voter = HashSet::new();
         for lock in &p.accepted_locks {
-            if lock.slot != slot {
-                continue;
-            }
             if lock.epoch != cert.epoch {
-                continue;
+                anyhow::bail!(
+                    "Invalid AcceptedSlotLock from '{}': lock epoch {} does not match certificate epoch {}",
+                    p.voter_node_id,
+                    lock.epoch,
+                    cert.epoch
+                );
+            }
+            if lock.slot < cert.from_slot {
+                anyhow::bail!(
+                    "Invalid AcceptedSlotLock from '{}': slot {} is below from_slot {}",
+                    p.voter_node_id,
+                    lock.slot,
+                    cert.from_slot
+                );
+            }
+            if lock.accepted_term >= cert.term {
+                anyhow::bail!(
+                    "Invalid AcceptedSlotLock from '{}': accepted_term {} >= certificate term {}",
+                    p.voter_node_id,
+                    lock.accepted_term,
+                    cert.term
+                );
+            }
+            if !seen_slots_for_voter.insert(lock.slot) {
+                anyhow::bail!(
+                    "Duplicate AcceptedSlotLock for slot {} in TermPromise from '{}'",
+                    lock.slot,
+                    p.voter_node_id
+                );
+            }
+            // Verify embedded SignedVote agrees with lock & voter identity AND verify its signature!
+            let v = &lock.vote;
+            if v.group_id != cert.group_id
+                || v.epoch != lock.epoch
+                || v.term != lock.accepted_term
+                || v.slot != lock.slot
+                || v.proposal_hash != lock.proposal_hash
+                || v.voter_node_id != p.voter_node_id
+            {
+                anyhow::bail!(
+                    "Mismatched embedded SignedVote in AcceptedSlotLock from '{}' at slot {}",
+                    p.voter_node_id,
+                    lock.slot
+                );
+            }
+            let vote_payload = canonical_vote_payload_for_term(
+                &v.group_id,
+                v.epoch,
+                v.term,
+                v.slot,
+                &v.proposal_hash,
+                &v.voter_node_id,
+            );
+            if !nexus_db::auth::ed25519_verify(&member.ed25519_pubkey, &vote_payload, &v.signature) {
+                anyhow::bail!(
+                    "Invalid Ed25519 signature on embedded SignedVote from '{}' at slot {}",
+                    p.voter_node_id,
+                    lock.slot
+                );
             }
             let computed = lock.proposal.validate_for_vote(&cert.group_id, lock.epoch, lock.slot)?;
             if computed != lock.proposal_hash {
                 anyhow::bail!(
                     "Tampered AcceptedSlotLock in TermPromise from '{}' at slot {}",
                     p.voter_node_id,
-                    slot
+                    lock.slot
                 );
+            }
+
+            if lock.slot != slot {
+                continue;
             }
             match best_term {
                 None => {
@@ -959,6 +1057,10 @@ pub struct VoterNode {
     pub node_id: String,
     pub ed25519_sk_b64: String,
     db: Arc<Database>,
+    /// Production voters default to `false` (strictly requiring installed membership config and
+    /// `term >= 1` + verifiable `TermCertificate`). Legacy Milestone-1 `term == 0` compatibility
+    /// must be explicitly opted into via `with_legacy_term_zero_compat()`.
+    allow_legacy_term_zero: bool,
 }
 
 impl VoterNode {
@@ -967,7 +1069,14 @@ impl VoterNode {
             node_id: node_id.into(),
             ed25519_sk_b64: ed25519_sk_b64.into(),
             db,
+            allow_legacy_term_zero: false,
         }
+    }
+
+    /// Explicit opt-in for legacy Milestone-1 `term == 0` compatibility tests only.
+    pub fn with_legacy_term_zero_compat(mut self) -> Self {
+        self.allow_legacy_term_zero = true;
+        self
     }
 
     pub async fn ensure_tables(&self) -> Result<()> {
@@ -1034,6 +1143,42 @@ impl VoterNode {
         Ok(())
     }
 
+    /// Pin a trusted genesis anchor digest (`hash_genesis_config(...)`) on this voter BEFORE
+    /// bootstrapping from a membership-transition chain.
+    pub async fn set_trusted_genesis_anchor(
+        &self,
+        group_id: &str,
+        genesis_digest: impl Into<String>,
+    ) -> Result<()> {
+        let _tx = self.db.lock_tx().await;
+        let digest = genesis_digest.into();
+        let mut state = match self.load_term_state(group_id).await? {
+            Some(s) => s,
+            None => DurableVoterTermState {
+                term_key: self.term_state_key(group_id),
+                group_id: group_id.to_string(),
+                voter_node_id: self.node_id.clone(),
+                promised_term: 0,
+                promised_leader_id: None,
+                min_active_epoch: 1,
+                trusted_genesis_digest: None,
+                installed_epochs: HashMap::new(),
+            },
+        };
+        if let Some(ref existing) = state.trusted_genesis_digest {
+            if existing != &digest {
+                anyhow::bail!(
+                    "Conflicting trusted genesis anchor on voter '{}' for '{}'",
+                    self.node_id,
+                    group_id
+                );
+            }
+            return Ok(());
+        }
+        state.trusted_genesis_digest = Some(digest);
+        self.persist_term_state(&state).await
+    }
+
     /// Durably install the genesis epoch-1 membership configuration on this voter so it can
     /// independently verify Phase-1 `TermCertificate`s and enforce epoch fencing.
     pub async fn install_genesis_epoch(
@@ -1041,7 +1186,9 @@ impl VoterNode {
         group_id: &str,
         mode: ConsensusMode,
         members: Vec<GroupMember>,
-    ) -> Result<()> {
+    ) -> Result<String> {
+        let _tx = self.db.lock_tx().await;
+        let genesis_digest = hash_genesis_config(group_id, mode, &members)?;
         let mut map = HashMap::new();
         for m in members {
             map.insert(m.node_id.clone(), m);
@@ -1056,9 +1203,20 @@ impl VoterNode {
                 promised_term: 0,
                 promised_leader_id: None,
                 min_active_epoch: 1,
+                trusted_genesis_digest: Some(genesis_digest.clone()),
                 installed_epochs: HashMap::new(),
             },
         };
+        if let Some(ref pinned) = state.trusted_genesis_digest {
+            if pinned != &genesis_digest {
+                anyhow::bail!(
+                    "Genesis configuration does not match voter '{}' pinned trusted genesis anchor!",
+                    self.node_id
+                );
+            }
+        } else {
+            state.trusted_genesis_digest = Some(genesis_digest.clone());
+        }
         if let Some(existing) = state.installed_epochs.get(&1) {
             if existing != &cfg {
                 anyhow::bail!(
@@ -1067,24 +1225,86 @@ impl VoterNode {
                     group_id
                 );
             }
-            return Ok(());
+            return Ok(genesis_digest);
         }
         state.installed_epochs.insert(1, cfg);
         if state.min_active_epoch == 0 {
             state.min_active_epoch = 1;
         }
-        self.persist_term_state(&state).await
+        self.persist_term_state(&state).await?;
+        Ok(genesis_digest)
     }
 
-    /// Explicit, idempotent, durable membership-epoch installation for BOTH existing voters AND
-    /// newly admitted voters (as well as removed voters to fence old-epoch requests).
+    /// Bootstrap a newly admitted voter exclusively from a trusted genesis anchor + complete
+    /// sequential transition chain (`1 -> 2 -> ... -> N`), rejecting substituted genesis configs,
+    /// skipped epochs, or invalid transition QCs!
+    pub async fn install_membership_chain_from_genesis(
+        &self,
+        group_id: &str,
+        expected_genesis_digest: &str,
+        genesis_mode: ConsensusMode,
+        genesis_members: Vec<GroupMember>,
+        transitions: &[MembershipTransitionDecision],
+    ) -> Result<u64> {
+        let computed = hash_genesis_config(group_id, genesis_mode, &genesis_members)?;
+        if computed != expected_genesis_digest {
+            anyhow::bail!(
+                "Genesis substitution rejected on voter '{}': supplied genesis digest '{}' != trusted anchor '{}'",
+                self.node_id,
+                computed,
+                expected_genesis_digest
+            );
+        }
+        let _ = self
+            .install_genesis_epoch(group_id, genesis_mode, genesis_members.clone())
+            .await?;
+
+        let mut prev_cfg = MembershipEpochConfig {
+            mode: genesis_mode,
+            members: genesis_members
+                .into_iter()
+                .map(|m| (m.node_id.clone(), m))
+                .collect(),
+        };
+        let mut cur_epoch = 1u64;
+        for dec in transitions {
+            if dec.proposal.group_id != group_id
+                || dec.proposal.prev_epoch != cur_epoch
+                || dec.proposal.next_epoch != cur_epoch + 1
+            {
+                anyhow::bail!(
+                    "Non-consecutive or mismatched transition in bootstrap chain on '{}': expected epoch {} -> {}",
+                    self.node_id,
+                    cur_epoch,
+                    cur_epoch + 1
+                );
+            }
+            cur_epoch = self.install_membership_epoch(dec, &prev_cfg).await?;
+            prev_cfg = MembershipEpochConfig {
+                mode: dec.proposal.mode,
+                members: dec
+                    .proposal
+                    .new_members
+                    .iter()
+                    .cloned()
+                    .map(|m| (m.node_id.clone(), m))
+                    .collect(),
+            };
+        }
+        Ok(cur_epoch)
+    }
+
+    /// Explicit, idempotent, durable membership-epoch installation for voters that ALREADY hold
+    /// a locally verified predecessor epoch (`prop.prev_epoch`).
     ///
-    /// Independently verifies `decision.qc` against `prev_cfg` before advancing `min_active_epoch`.
+    /// Rejects any unanchored caller-supplied `prev_cfg` that is not already installed on this
+    /// voter — new voters MUST bootstrap via `install_membership_chain_from_genesis()`!
     pub async fn install_membership_epoch(
         &self,
         decision: &MembershipTransitionDecision,
         prev_cfg: &MembershipEpochConfig,
     ) -> Result<u64> {
+        let _tx = self.db.lock_tx().await;
         let prop = &decision.proposal;
         if prop.next_epoch != prop.prev_epoch.saturating_add(1) {
             anyhow::bail!(
@@ -1100,6 +1320,30 @@ impl VoterNode {
                 prev_cfg.mode
             );
         }
+
+        let mut state = self.load_term_state(&prop.group_id).await?.ok_or_else(|| {
+            anyhow!(
+                "Voter '{}' has no trusted genesis/predecessor anchor for '{}'; use install_membership_chain_from_genesis()",
+                self.node_id,
+                prop.group_id
+            )
+        })?;
+        let installed_prev = state.installed_epochs.get(&prop.prev_epoch).ok_or_else(|| {
+            anyhow!(
+                "Voter '{}' lacks locally verified predecessor epoch {} for '{}'; rejecting unanchored prev_cfg",
+                self.node_id,
+                prop.prev_epoch,
+                prop.group_id
+            )
+        })?;
+        if installed_prev != prev_cfg {
+            anyhow::bail!(
+                "Supplied prev_cfg disagrees with voter '{}' locally verified epoch {} configuration",
+                self.node_id,
+                prop.prev_epoch
+            );
+        }
+
         let expected_digest = prop.canonical_digest()?;
         if decision.qc.group_id != prop.group_id
             || decision.qc.epoch != prop.prev_epoch
@@ -1161,29 +1405,6 @@ impl VoterNode {
                 .collect(),
         };
 
-        let mut state = match self.load_term_state(&prop.group_id).await? {
-            Some(s) => s,
-            None => DurableVoterTermState {
-                term_key: self.term_state_key(&prop.group_id),
-                group_id: prop.group_id.clone(),
-                voter_node_id: self.node_id.clone(),
-                promised_term: 0,
-                promised_leader_id: None,
-                min_active_epoch: prop.prev_epoch,
-                installed_epochs: HashMap::new(),
-            },
-        };
-        if let Some(existing_prev) = state.installed_epochs.get(&prop.prev_epoch) {
-            if existing_prev != prev_cfg {
-                anyhow::bail!(
-                    "Predecessor epoch {} configuration mismatch on voter '{}'",
-                    prop.prev_epoch,
-                    self.node_id
-                );
-            }
-        } else {
-            state.installed_epochs.insert(prop.prev_epoch, prev_cfg.clone());
-        }
         if let Some(existing_next) = state.installed_epochs.get(&prop.next_epoch) {
             if existing_next != &new_cfg {
                 anyhow::bail!(
@@ -1200,36 +1421,26 @@ impl VoterNode {
         Ok(state.min_active_epoch)
     }
 
-    /// Phase-1 durable term promise with idempotent same-leader retry, stale-term/stale-epoch
-    /// fencing, removed-member rejection, and signed reporting of all accepted locks `>= from_slot`.
+    /// Atomic Phase-1 durable term promise + linearizable accepted-lock snapshot:
+    /// - Serialized across all `VoterNode` handles sharing `self.db` (`self.db.lock_tx()`) AND
+    ///   backed by DB-atomic conditional `UPDATE ... WHERE` in `nexus-db`.
+    /// - Lower terms can never replace higher terms; a term can be promised to at most one leader;
+    ///   same-term same-leader retries are idempotent; accepted locks are read at the exact
+    ///   linearization point so no concurrent `cast_vote()` can interleave!
     pub async fn prepare_term(&self, req: &PrepareTermRequest) -> Result<TermPromise> {
         if req.term == 0 || req.leader_id.is_empty() {
             anyhow::bail!("PrepareTermRequest requires term >= 1 and non-empty leader_id");
         }
+        let _tx = self.db.lock_tx().await;
         self.ensure_tables().await?;
 
-        let mut state = match self.load_term_state(&req.group_id).await? {
-            Some(s) => s,
-            None => {
-                if req.epoch > 1 {
-                    anyhow::bail!(
-                        "Voter '{}' has not installed membership transition certificate for epoch {}",
-                        self.node_id,
-                        req.epoch
-                    );
-                }
-                DurableVoterTermState {
-                    term_key: self.term_state_key(&req.group_id),
-                    group_id: req.group_id.clone(),
-                    voter_node_id: self.node_id.clone(),
-                    promised_term: 0,
-                    promised_leader_id: None,
-                    min_active_epoch: 1,
-                    installed_epochs: HashMap::new(),
-                }
-            }
-        };
-
+        let state = self.load_term_state(&req.group_id).await?.ok_or_else(|| {
+            anyhow!(
+                "Voter '{}' has no installed membership configuration for '{}'; install genesis/chain first",
+                self.node_id,
+                req.group_id
+            )
+        })?;
         if req.epoch < state.min_active_epoch {
             anyhow::bail!(
                 "Stale epoch {} rejected on voter '{}' (min_active_epoch={})",
@@ -1238,50 +1449,55 @@ impl VoterNode {
                 state.min_active_epoch
             );
         }
-        if req.epoch > 1 && !state.installed_epochs.contains_key(&req.epoch) {
-            anyhow::bail!(
+        let epoch_cfg = state.installed_epochs.get(&req.epoch).ok_or_else(|| {
+            anyhow!(
                 "Voter '{}' has not installed membership epoch {} certificate",
+                self.node_id,
+                req.epoch
+            )
+        })?;
+        if !epoch_cfg.members.contains_key(&self.node_id) {
+            anyhow::bail!(
+                "Removed voter '{}' cannot participate in epoch {}",
                 self.node_id,
                 req.epoch
             );
         }
-        if let Some(cfg) = state.installed_epochs.get(&req.epoch) {
-            if !cfg.members.contains_key(&self.node_id) {
-                anyhow::bail!(
-                    "Removed voter '{}' cannot participate in epoch {}",
-                    self.node_id,
-                    req.epoch
-                );
-            }
-        }
 
-        if req.term < state.promised_term {
-            anyhow::bail!(
-                "Stale term {} rejected on voter '{}' (promised_term={})",
-                req.term,
+        // Atomic conditional UPDATE in nexus-db (monotonically advances promised_term OR allows
+        // exact same-term same-leader idempotent retry; rejects lower term or rival leader!)
+        let tkey = self.term_state_key(&req.group_id);
+        let mut upd = self
+            .db
+            .client
+            .query(
+                "UPDATE type::record('sys_mesh_voter_term', $id) \
+                 SET promised_term = $term, promised_leader_id = $leader \
+                 WHERE min_active_epoch <= $epoch \
+                   AND (promised_term < $term OR (promised_term == $term AND promised_leader_id == $leader));",
+            )
+            .bind(("id", tkey))
+            .bind(("term", req.term))
+            .bind(("leader", req.leader_id.clone()))
+            .bind(("epoch", req.epoch))
+            .await?;
+        let updated_rows: Vec<serde_json::Value> = upd.take(0).unwrap_or_default();
+        let committed_raw = updated_rows.first().ok_or_else(|| {
+            anyhow!(
+                "Atomic term promise rejected on voter '{}' for (group={}, epoch={}, term={}, leader={}): stale epoch/term or term already promised to another leader",
                 self.node_id,
-                state.promised_term
-            );
-        }
-        if req.term == state.promised_term {
-            if state.promised_leader_id.as_deref() != Some(req.leader_id.as_str()) {
-                anyhow::bail!(
-                    "Term {} on voter '{}' already promised to different leader '{:?}', refusing '{}'",
-                    req.term,
-                    self.node_id,
-                    state.promised_leader_id,
-                    req.leader_id
-                );
-            }
-            // Same term + same leader -> idempotent retry!
-        } else {
-            // Persist higher term promise BEFORE responding!
-            state.promised_term = req.term;
-            state.promised_leader_id = Some(req.leader_id.clone());
-            self.persist_term_state(&state).await?;
-        }
+                req.group_id,
+                req.epoch,
+                req.term,
+                req.leader_id
+            )
+        })?;
+        let committed_state: DurableVoterTermState =
+            serde_json::from_value(committed_raw.clone()).map_err(|e| {
+                anyhow!("Failed to parse committed voter term state: {}", e)
+            })?;
 
-        // Collect all durable accepted locks for `(req.group_id, self.node_id)` with `slot >= req.from_slot`
+        // Collect all durable accepted locks at this EXACT linearization point (inside `_tx`!)
         let mut resp = self
             .db
             .client
@@ -1347,22 +1563,22 @@ impl VoterNode {
         let payload = canonical_promise_payload(
             &req.group_id,
             req.epoch,
-            req.term,
+            committed_state.promised_term,
             &req.leader_id,
             req.from_slot,
             &self.node_id,
-            state.min_active_epoch,
+            committed_state.min_active_epoch,
             &accepted_locks,
         );
         let signature = nexus_db::auth::ed25519_sign(&self.ed25519_sk_b64, &payload)?;
         Ok(TermPromise {
             group_id: req.group_id.clone(),
             epoch: req.epoch,
-            term: req.term,
+            term: committed_state.promised_term,
             leader_id: req.leader_id.clone(),
             from_slot: req.from_slot,
             voter_node_id: self.node_id.clone(),
-            min_active_epoch: state.min_active_epoch,
+            min_active_epoch: committed_state.min_active_epoch,
             accepted_locks,
             signature,
         })
@@ -1465,6 +1681,14 @@ impl VoterNode {
             );
         }
 
+        if req.term == 0 && !self.allow_legacy_term_zero {
+            anyhow::bail!(
+                "Production VoterNode '{}' rejects term-0 VoteRequest: require installed membership config, term >= 1, and verifiable Phase-1 TermCertificate",
+                self.node_id
+            );
+        }
+
+        let _tx = self.db.lock_tx().await;
         self.ensure_tables().await?;
         let term_state_opt = self.load_term_state(&req.group_id).await?;
 
@@ -1616,22 +1840,47 @@ impl VoterNode {
 
         if req.term > existing_vote.term {
             // Higher term with verified Phase-1 TermCertificate & adoption proof:
-            // atomically advance lock to `req.term` (never overwriting legacy `None` without payload)!
-            if existing_prop.is_none() {
-                anyhow::bail!(
-                    "Cannot overwrite legacy payload-less lock on '{}' at slot {}",
-                    self.node_id,
-                    req.slot
-                );
-            }
-            self.db
+            // DB-atomic conditional UPDATE (`WHERE accepted_term < $term AND proposal != NONE`)
+            // guarantees at most ONE proposal wins the transition to `req.term`!
+            let prop_val = serde_json::to_value(req_prop)?;
+            let mut upd = self
+                .db
                 .client
-                .query("UPSERT type::record('sys_mesh_voter_lock', $id) CONTENT $l;")
+                .query(
+                    "UPDATE type::record('sys_mesh_voter_lock', $id) \
+                     SET accepted_term = $term, proposal_hash = $ph, proposal = $prop, signature = $sig, locked_at_ms = $now \
+                     WHERE accepted_term < $term AND proposal != NONE;",
+                )
                 .bind(("id", lock_key))
-                .bind(("l", val))
+                .bind(("term", req.term))
+                .bind(("ph", req.proposal_hash.clone()))
+                .bind(("prop", prop_val))
+                .bind(("sig", vote.signature.clone()))
+                .bind(("now", now_ms()))
+                .await?;
+            let updated_rows: Vec<serde_json::Value> = upd.take(0).unwrap_or_default();
+            if !updated_rows.is_empty() {
+                return Ok(vote);
+            }
+            // Conditional UPDATE lost a race (or encountered a legacy payload-less lock):
+            // re-read committed lock and accept ONLY on strict exact equality!
+            let (committed_vote, committed_prop) = self
+                .query_slot_lock(&req.group_id, req.epoch, req.slot)
                 .await?
-                .check()?;
-            return Ok(vote);
+                .ok_or_else(|| anyhow!("Voter lock vanished after conditional UPDATE"))?;
+            if committed_vote.term == req.term
+                && committed_vote.proposal_hash == req.proposal_hash
+                && committed_prop.as_ref() == Some(req_prop)
+            {
+                return Ok(committed_vote);
+            }
+            anyhow::bail!(
+                "Atomic higher-term slot-lock replacement lost/rejected on '{}' at slot {} (committed_term={}, requested_term={})",
+                self.node_id,
+                req.slot,
+                committed_vote.term,
+                req.term
+            );
         }
 
         // Same term: require STRICT equality of BOTH proposal_hash AND canonical proposal!
@@ -3282,6 +3531,7 @@ impl CoordinationGroup {
 
         let mut recovered_slots = Vec::new();
         let mut filled_gaps = Vec::new();
+        let mut pending_removed_fence_nodes = Vec::new();
 
         for (slot, action) in plan {
             // Check if already durably committed in local decision log first
@@ -3362,9 +3612,14 @@ impl CoordinationGroup {
                 }
                 SlotRecoveryAction::Adopt(SlotProposal::Membership(mp)) => {
                     let mdec = self.reconfigure_membership_with_quorum(&mp, votes).await?;
-                    for v in voters {
-                        let _ = v.install_membership_epoch(&mdec, &prev_cfg).await;
-                    }
+                    // Dual-quorum activation safety rule:
+                    // 1. Old-configuration fence quorum MUST durably advance `min_active_epoch >= next_epoch`
+                    //    so NO disconnected subset of `prev_cfg` can ever commit a conflicting old-epoch decision!
+                    // 2. New-configuration activation quorum MUST durably install & verify `next_epoch`!
+                    let pending = self
+                        .activate_membership_transition(&mdec, &prev_cfg, voters)
+                        .await?;
+                    pending_removed_fence_nodes.extend(pending);
                     recovered_slots.push(slot);
                 }
                 SlotRecoveryAction::Adopt(SlotProposal::NoOp(np)) => {
@@ -3384,7 +3639,85 @@ impl CoordinationGroup {
             next_slot: self.next_slot,
             recovered_slots,
             filled_gaps,
+            pending_removed_fence_nodes,
         })
+    }
+
+    /// Dual-quorum membership activation & old-configuration fencing barrier:
+    /// - Installs `mdec` on reachable old and new voters.
+    /// - Requires BOTH:
+    ///   1. Old-configuration fence quorum (`>= Q(C_old)`) durably fenced at `min_active_epoch >= next_epoch`
+    ///      (guarantees no isolated old-configuration quorum can commit conflicting old-epoch decisions!).
+    ///   2. New-configuration activation quorum (`>= Q(C_new)`) durably installed at `next_epoch`.
+    /// - Fails closed if either quorum is not achieved; returns unreachable removed voters as
+    ///   explicit operational telemetry (`pending_removed_fence_nodes`).
+    pub async fn activate_membership_transition(
+        &self,
+        mdec: &MembershipTransitionDecision,
+        prev_cfg: &MembershipEpochConfig,
+        voters: &[VoterNode],
+    ) -> Result<Vec<String>> {
+        let new_member_ids: HashSet<&str> = mdec
+            .proposal
+            .new_members
+            .iter()
+            .map(|m| m.node_id.as_str())
+            .collect();
+        let mut fenced_old = HashSet::new();
+        let mut activated_new = HashSet::new();
+        let mut failed_voters = HashSet::new();
+
+        for v in voters {
+            let in_old = prev_cfg.members.contains_key(&v.node_id);
+            let in_new = new_member_ids.contains(v.node_id.as_str());
+            if !in_old && !in_new {
+                continue;
+            }
+            match v.install_membership_epoch(mdec, prev_cfg).await {
+                Ok(min_ep) if min_ep >= mdec.proposal.next_epoch => {
+                    if in_old {
+                        fenced_old.insert(v.node_id.clone());
+                    }
+                    if in_new {
+                        activated_new.insert(v.node_id.clone());
+                    }
+                }
+                Ok(_) | Err(_) => {
+                    failed_voters.insert(v.node_id.clone());
+                }
+            }
+        }
+
+        let req_old = prev_cfg.mode.quorum_size(prev_cfg.members.len());
+        if fenced_old.len() < req_old {
+            anyhow::bail!(
+                "Membership transition to epoch {} CANNOT activate safely: only {}/{} old-configuration voters durably fenced (need >= {} to prevent old-epoch split-brain)",
+                mdec.proposal.next_epoch,
+                fenced_old.len(),
+                prev_cfg.members.len(),
+                req_old
+            );
+        }
+
+        let req_new = mdec.proposal.mode.quorum_size(mdec.proposal.new_members.len());
+        if activated_new.len() < req_new {
+            anyhow::bail!(
+                "Membership transition to epoch {} FAILED installation: only {}/{} new-configuration voters installed it (need >= {})",
+                mdec.proposal.next_epoch,
+                activated_new.len(),
+                mdec.proposal.new_members.len(),
+                req_new
+            );
+        }
+
+        let mut pending_removed = Vec::new();
+        for old_id in prev_cfg.members.keys() {
+            if !new_member_ids.contains(old_id.as_str()) && !fenced_old.contains(old_id) {
+                pending_removed.push(old_id.clone());
+            }
+        }
+        pending_removed.sort();
+        Ok(pending_removed)
     }
 
     /// Commit a quorum-certified membership transition using the unified `SlotProposal::Membership`

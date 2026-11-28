@@ -3,10 +3,11 @@
 use nexus_io::db::{is_already_exists_error, Database};
 use nexus_io::iam::idp::{NexusIdp, OrgPolicyPatch};
 use nexus_io::mesh::consensus::{
-    hash_lease_proposal, hash_membership_change, sign_vote_raw, verify_term_certificate_and_adoption,
-    AcceptedSlotLock, ConsensusMode, CoordinationGroup, FencedLease, FencedResourceGuard,
-    GroupMember, LeaseProposal, MembershipEpochConfig, MembershipTransitionProposal,
-    PrepareTermRequest, QuorumCertificate, SlotProposal, TermCertificate, VoteRequest, VoterNode,
+    hash_genesis_config, hash_lease_proposal, hash_membership_change, sign_vote_raw,
+    sign_vote_raw_in_term, verify_term_certificate_and_adoption, AcceptedSlotLock, ConsensusMode,
+    CoordinationGroup, FencedLease, FencedResourceGuard, GroupMember, LeaseProposal,
+    MembershipEpochConfig, MembershipTransitionProposal, PrepareTermRequest, QuorumCertificate,
+    SlotProposal, TermCertificate, VoteRequest, VoterNode,
 };
 use nexus_io::mesh::resources::{
     schedule_and_lease_workload, GpuCapability, NodeAdvertisement, ReservationLedger,
@@ -37,10 +38,10 @@ async fn p0_resource_trust_crdt_expiry_membership_digest_and_authenticated_bound
         GroupMember { node_id: "node-d".into(), identity_id: id_d.identity_id.clone(), org_id: org.org_id.clone(), ed25519_pubkey: id_d.active_pubkey.clone() },
     ];
 
-    let voter_a = VoterNode::new("node-a", sk_a.clone(), Arc::new(Database::open_mem()));
-    let voter_b = VoterNode::new("node-b", sk_b.clone(), Arc::new(Database::open_mem()));
-    let voter_c = VoterNode::new("node-c", sk_c.clone(), Arc::new(Database::open_mem()));
-    let voter_d = VoterNode::new("node-d", sk_d.clone(), Arc::new(Database::open_mem()));
+    let voter_a = VoterNode::new("node-a", sk_a.clone(), Arc::new(Database::open_mem())).with_legacy_term_zero_compat();
+    let voter_b = VoterNode::new("node-b", sk_b.clone(), Arc::new(Database::open_mem())).with_legacy_term_zero_compat();
+    let voter_c = VoterNode::new("node-c", sk_c.clone(), Arc::new(Database::open_mem())).with_legacy_term_zero_compat();
+    let voter_d = VoterNode::new("node-d", sk_d.clone(), Arc::new(Database::open_mem())).with_legacy_term_zero_compat();
     let all_voters = vec![voter_a.clone(), voter_b.clone(), voter_c.clone(), voter_d.clone()];
 
     let mut group = CoordinationGroup::open_durable(
@@ -199,7 +200,7 @@ async fn p0_resource_trust_crdt_expiry_membership_digest_and_authenticated_bound
 
     // Seed pre-existing legacy on-disk lock (missing `proposal`) directly into voter DB
     let legacy_db = Arc::new(Database::open_mem());
-    let legacy_voter = VoterNode::new("node-a", sk_a.clone(), legacy_db.clone());
+    let legacy_voter = VoterNode::new("node-a", sk_a.clone(), legacy_db.clone()).with_legacy_term_zero_compat();
     legacy_voter.ensure_tables().await.unwrap();
     let lv1 = sign_vote_raw("pool:us-east", 1, 60, &legacy_hash, "node-a", &sk_a).unwrap();
     let lv2 = sign_vote_raw("pool:us-east", 1, 60, &legacy_hash, "node-b", &sk_b).unwrap();
@@ -449,12 +450,12 @@ async fn p0_resource_trust_crdt_expiry_membership_digest_and_authenticated_bound
     let epoch2_req = VoteRequest::for_membership(epoch2_prop.clone()).unwrap();
     let sig_before_restart = {
         let vdb = Arc::new(Database::init_in(&voter_disk_dir).await);
-        let v_disk = VoterNode::new("node-a", sk_a.clone(), vdb);
+        let v_disk = VoterNode::new("node-a", sk_a.clone(), vdb).with_legacy_term_zero_compat();
         v_disk.cast_vote(&epoch2_req).await.unwrap()
     };
     {
         let vdb_reopened = Arc::new(Database::init_in(&voter_disk_dir).await);
-        let v_disk_reopened = VoterNode::new("node-a", sk_a.clone(), vdb_reopened);
+        let v_disk_reopened = VoterNode::new("node-a", sk_a.clone(), vdb_reopened).with_legacy_term_zero_compat();
         let sig_after_restart = v_disk_reopened.cast_vote(&epoch2_req).await.unwrap();
         assert_eq!(sig_before_restart.signature, sig_after_restart.signature);
 
@@ -1077,10 +1078,10 @@ async fn milestone2_durable_terms_adoption_epoch_install_and_contiguous_takeover
     let m_d = GroupMember { node_id: "node-d".into(), identity_id: id_d.identity_id, org_id: org.org_id.clone(), ed25519_pubkey: id_d.active_pubkey };
 
     let epoch1_members = vec![m_a.clone(), m_b.clone(), m_c.clone()];
-    let voter_a = VoterNode::new("node-a", sk_a.clone(), Arc::new(Database::open_mem()));
-    let voter_b = VoterNode::new("node-b", sk_b.clone(), Arc::new(Database::open_mem()));
-    let voter_c = VoterNode::new("node-c", sk_c.clone(), Arc::new(Database::open_mem()));
-    let voter_d = VoterNode::new("node-d", sk_d.clone(), Arc::new(Database::open_mem()));
+    let voter_a = VoterNode::new("node-a", sk_a.clone(), Arc::new(Database::open_mem())).with_legacy_term_zero_compat();
+    let voter_b = VoterNode::new("node-b", sk_b.clone(), Arc::new(Database::open_mem())).with_legacy_term_zero_compat();
+    let voter_c = VoterNode::new("node-c", sk_c.clone(), Arc::new(Database::open_mem())).with_legacy_term_zero_compat();
+    let voter_d = VoterNode::new("node-d", sk_d.clone(), Arc::new(Database::open_mem())).with_legacy_term_zero_compat();
     for v in [&voter_a, &voter_b, &voter_c] {
         v.install_genesis_epoch("pool:m2", ConsensusMode::CftFastPath, epoch1_members.clone())
             .await
@@ -1214,7 +1215,7 @@ async fn milestone2_durable_terms_adoption_epoch_install_and_contiguous_takeover
     let mut conflict_p_a = p2_a.clone();
     let mut conflict_p_b = p2_b.clone();
     let alt_lp = LeaseProposal { lease_id: "lse_alt_conflict".into(), ..lp_s1.clone() };
-    let alt_vote = sign_vote_raw("pool:m2", 1, 1, &alt_lp.canonical_digest(), "node-b", &sk_b).unwrap();
+    let alt_vote = sign_vote_raw_in_term("pool:m2", 1, 1, 1, &alt_lp.canonical_digest(), "node-b", &sk_b).unwrap();
     conflict_p_b.accepted_locks = vec![AcceptedSlotLock {
         epoch: 1,
         slot: 1,
@@ -1334,10 +1335,27 @@ async fn milestone2_durable_terms_adoption_epoch_install_and_contiguous_takeover
         "New member D MUST NOT participate in epoch 2 before installing transition certificate!"
     );
 
-    // Install verified transition certificate on A, B, C (removed), and D (newly admitted)!
-    for v in [&voter_a, &voter_b, &voter_c, &voter_d] {
+    // Install verified transition certificate on A, B, C (anchored to epoch 1), and bootstrap
+    // newly admitted D exclusively via trusted genesis chain!
+    let m2_genesis_digest = hash_genesis_config("pool:m2", ConsensusMode::CftFastPath, &epoch1_members).unwrap();
+    for v in [&voter_a, &voter_b, &voter_c] {
         v.install_membership_epoch(&mdec, &ep1_cfg).await.unwrap();
     }
+    // Unanchored direct `install_membership_epoch` on brand-new D MUST fail!
+    assert!(
+        voter_d.install_membership_epoch(&mdec, &ep1_cfg).await.is_err(),
+        "New voter D MUST reject unanchored install_membership_epoch!"
+    );
+    voter_d
+        .install_membership_chain_from_genesis(
+            "pool:m2",
+            &m2_genesis_digest,
+            ConsensusMode::CftFastPath,
+            epoch1_members.clone(),
+            &[mdec],
+        )
+        .await
+        .unwrap();
 
     // Now D CAN participate in epoch 2!
     let p5_d = voter_d.prepare_term(&prep_e2_t5).await.unwrap();
@@ -1361,4 +1379,476 @@ async fn milestone2_durable_terms_adoption_epoch_install_and_contiguous_takeover
     );
 
     let _ = std::fs::remove_dir_all(&standby_db_dir);
+}
+
+#[tokio::test]
+async fn milestone2_1_atomic_cas_dual_quorum_trusted_genesis_and_strict_promises() {
+    use tokio::sync::Barrier;
+
+    let db_idp = Arc::new(Database::open_mem());
+    let idp = NexusIdp::new(db_idp.clone());
+    let org = idp
+        .create_org("root", "m21-org", "Milestone 2.1 Org", None, None, OrgPolicyPatch::default())
+        .await
+        .unwrap();
+    let mut keys = Vec::new();
+    let mut gm = Vec::new();
+    for name in ["a", "b", "c", "d", "e", "f", "g", "h"] {
+        let (id, sk) = idp.create_identity(&format!("m21-{}", name), None).await.unwrap();
+        gm.push(GroupMember {
+            node_id: format!("node-{}", name),
+            identity_id: id.identity_id,
+            org_id: org.org_id.clone(),
+            ed25519_pubkey: id.active_pubkey,
+        });
+        keys.push(sk);
+    }
+
+    let t0 = CoordinationGroup::now_ms();
+    let old_members = gm[0..5].to_vec(); // a, b, c, d, e (quorum = 3)
+    let new_members = vec![gm[0].clone(), gm[1].clone(), gm[5].clone(), gm[6].clone(), gm[7].clone()]; // a, b, f, g, h (quorum = 3)
+    let genesis_digest = hash_genesis_config("pool:m21", ConsensusMode::CftFastPath, &old_members).unwrap();
+
+    // 1. P1 Explicit production term-zero policy: default VoterNode::new() MUST reject term == 0!
+    let prod_voter = VoterNode::new("node-a", keys[0].clone(), Arc::new(Database::open_mem()));
+    let lp0 = LeaseProposal {
+        group_id: "pool:m21".into(),
+        lease_id: "lse_term0".into(),
+        resource_key: "gpu:0".into(),
+        holder_node_id: "node-a".into(),
+        workload_id: "wl-0".into(),
+        fencing_epoch: 1,
+        issued_at_ms: t0,
+        expires_at_ms: t0 + 60_000,
+    };
+    assert!(
+        prod_voter.cast_vote(&VoteRequest::for_lease(1, 1, lp0.clone())).await.is_err(),
+        "Default production VoterNode MUST reject term-0 VoteRequest!"
+    );
+
+    // 2. P0 Concurrent competing prepare_term race across SEPARATE VoterNode instances sharing ONE durable DB!
+    let shared_voter_db = Arc::new(Database::open_mem());
+    let va_1 = VoterNode::new("node-a", keys[0].clone(), shared_voter_db.clone());
+    let va_2 = VoterNode::new("node-a", keys[0].clone(), shared_voter_db.clone());
+    va_1.install_genesis_epoch("pool:m21", ConsensusMode::CftFastPath, old_members.clone())
+        .await
+        .unwrap();
+
+    // 2a. Competing terms 5 vs 6 -> durable promised_term MUST end at 6 (never regress to 5!)
+    let b1 = Arc::new(Barrier::new(2));
+    let (r5, r6) = tokio::join!(
+        {
+            let b = b1.clone();
+            let v = va_1.clone();
+            async move {
+                b.wait().await;
+                v.prepare_term(&PrepareTermRequest {
+                    group_id: "pool:m21".into(),
+                    epoch: 1,
+                    term: 5,
+                    leader_id: "leader-5".into(),
+                    from_slot: 1,
+                })
+                .await
+            }
+        },
+        {
+            let b = b1.clone();
+            let v = va_2.clone();
+            async move {
+                b.wait().await;
+                v.prepare_term(&PrepareTermRequest {
+                    group_id: "pool:m21".into(),
+                    epoch: 1,
+                    term: 6,
+                    leader_id: "leader-6".into(),
+                    from_slot: 1,
+                })
+                .await
+            }
+        }
+    );
+    assert!(r6.is_ok(), "Higher term 6 must succeed");
+    let _ = r5;
+    // Verify durable promised_term is 6 by rejecting term 5 afterward!
+    assert!(
+        va_1.prepare_term(&PrepareTermRequest {
+            group_id: "pool:m21".into(),
+            epoch: 1,
+            term: 5,
+            leader_id: "leader-5".into(),
+            from_slot: 1,
+        })
+        .await
+        .is_err(),
+        "Durable promised_term MUST NOT regress below 6!"
+    );
+
+    // 2b. Competing same-term (term 7) rival leaders -> EXACTLY ONE wins!
+    let b2 = Arc::new(Barrier::new(2));
+    let (ra, rb) = tokio::join!(
+        {
+            let b = b2.clone();
+            let v = va_1.clone();
+            async move {
+                b.wait().await;
+                v.prepare_term(&PrepareTermRequest {
+                    group_id: "pool:m21".into(),
+                    epoch: 1,
+                    term: 7,
+                    leader_id: "rival-A".into(),
+                    from_slot: 1,
+                })
+                .await
+            }
+        },
+        {
+            let b = b2.clone();
+            let v = va_2.clone();
+            async move {
+                b.wait().await;
+                v.prepare_term(&PrepareTermRequest {
+                    group_id: "pool:m21".into(),
+                    epoch: 1,
+                    term: 7,
+                    leader_id: "rival-B".into(),
+                    from_slot: 1,
+                })
+                .await
+            }
+        }
+    );
+    assert_eq!(
+        ra.is_ok() as u8 + rb.is_ok() as u8,
+        1,
+        "At most ONE leader may win same-term concurrent prepare_term!"
+    );
+
+    // 3. P0 Prepare/Vote snapshot race + Concurrent higher-term slot-lock replacement race!
+    let race_db = Arc::new(Database::open_mem());
+    let vr_a1 = VoterNode::new("node-a", keys[0].clone(), race_db.clone());
+    let vr_a2 = VoterNode::new("node-a", keys[0].clone(), race_db.clone());
+    let vr_b = VoterNode::new("node-b", keys[1].clone(), Arc::new(Database::open_mem()));
+    let vr_c = VoterNode::new("node-c", keys[2].clone(), Arc::new(Database::open_mem()));
+    for v in [&vr_a1, &vr_b, &vr_c] {
+        v.install_genesis_epoch("pool:m21", ConsensusMode::CftFastPath, old_members.clone())
+            .await
+            .unwrap();
+    }
+    let p1_a = vr_a1.prepare_term(&PrepareTermRequest { group_id: "pool:m21".into(), epoch: 1, term: 1, leader_id: "c1".into(), from_slot: 1 }).await.unwrap();
+    let p1_b = vr_b.prepare_term(&PrepareTermRequest { group_id: "pool:m21".into(), epoch: 1, term: 1, leader_id: "c1".into(), from_slot: 1 }).await.unwrap();
+    let p1_c = vr_c.prepare_term(&PrepareTermRequest { group_id: "pool:m21".into(), epoch: 1, term: 1, leader_id: "c1".into(), from_slot: 1 }).await.unwrap();
+    let cert_1 = TermCertificate {
+        group_id: "pool:m21".into(),
+        epoch: 1,
+        term: 1,
+        leader_id: "c1".into(),
+        from_slot: 1,
+        mode: ConsensusMode::CftFastPath,
+        promises: vec![p1_a, p1_b, p1_c],
+    };
+
+    // 3a. Prepare(term=2) vs CastVote(term=1) snapshot race on separate handles sharing `race_db`:
+    //     If CastVote(term=1) succeeds, Prepare(term=2) MUST include slot 1 in accepted_locks!
+    let b3 = Arc::new(Barrier::new(2));
+    let vreq_t1 = VoteRequest::for_lease(1, 1, lp0.clone()).with_term(1, "c1", cert_1.clone());
+    let (vote_res, prep2_res) = tokio::join!(
+        {
+            let b = b3.clone();
+            let v = vr_a1.clone();
+            let req = vreq_t1.clone();
+            async move {
+                b.wait().await;
+                v.cast_vote(&req).await
+            }
+        },
+        {
+            let b = b3.clone();
+            let v = vr_a2.clone();
+            async move {
+                b.wait().await;
+                v.prepare_term(&PrepareTermRequest {
+                    group_id: "pool:m21".into(),
+                    epoch: 1,
+                    term: 2,
+                    leader_id: "c2".into(),
+                    from_slot: 1,
+                })
+                .await
+            }
+        }
+    );
+    let p2_a = prep2_res.unwrap();
+    if vote_res.is_ok() {
+        assert!(
+            p2_a.accepted_locks.iter().any(|l| l.slot == 1),
+            "TermPromise(term=2) MUST NOT omit an accepted slot-1 lock that linearized before it!"
+        );
+    }
+
+    // 3b. Concurrent higher-term slot-lock replacement with conflicting proposals on slot 2:
+    //     First accept slot 2 at term 2 on vr_a1 (only on vr_a1; vr_b & vr_c have NO lock on slot 2),
+    //     then form TermCertificate(term=3) from vr_b + vr_c + vr_d (no reported lock on slot 2!),
+    //     so term 3 permits a fresh value -> race TWO conflicting proposals at term 3 on vr_a1 vs vr_a2!
+    let vr_d = VoterNode::new("node-d", keys[3].clone(), Arc::new(Database::open_mem()));
+    vr_d.install_genesis_epoch("pool:m21", ConsensusMode::CftFastPath, old_members.clone())
+        .await
+        .unwrap();
+    let p2_b = vr_b.prepare_term(&PrepareTermRequest { group_id: "pool:m21".into(), epoch: 1, term: 2, leader_id: "c2".into(), from_slot: 1 }).await.unwrap();
+    let p2_c = vr_c.prepare_term(&PrepareTermRequest { group_id: "pool:m21".into(), epoch: 1, term: 2, leader_id: "c2".into(), from_slot: 1 }).await.unwrap();
+    let cert_2 = TermCertificate {
+        group_id: "pool:m21".into(),
+        epoch: 1,
+        term: 2,
+        leader_id: "c2".into(),
+        from_slot: 1,
+        mode: ConsensusMode::CftFastPath,
+        promises: vec![p2_a, p2_b, p2_c],
+    };
+    let lp_s2_old = LeaseProposal { lease_id: "lse_s2_old".into(), ..lp0.clone() };
+    let _ = vr_a1
+        .cast_vote(&VoteRequest::for_lease(1, 2, lp_s2_old).with_term(2, "c2", cert_2))
+        .await
+        .unwrap();
+
+    // Now prepare term 3 on vr_a1, vr_b, vr_c, vr_d, and build cert_3 from (b, c, d) which report no slot 2 lock
+    let _p3_a = vr_a1.prepare_term(&PrepareTermRequest { group_id: "pool:m21".into(), epoch: 1, term: 3, leader_id: "c3".into(), from_slot: 1 }).await.unwrap();
+    let p3_b = vr_b.prepare_term(&PrepareTermRequest { group_id: "pool:m21".into(), epoch: 1, term: 3, leader_id: "c3".into(), from_slot: 1 }).await.unwrap();
+    let p3_c = vr_c.prepare_term(&PrepareTermRequest { group_id: "pool:m21".into(), epoch: 1, term: 3, leader_id: "c3".into(), from_slot: 1 }).await.unwrap();
+    let p3_d = vr_d.prepare_term(&PrepareTermRequest { group_id: "pool:m21".into(), epoch: 1, term: 3, leader_id: "c3".into(), from_slot: 1 }).await.unwrap();
+    let cert_3 = TermCertificate {
+        group_id: "pool:m21".into(),
+        epoch: 1,
+        term: 3,
+        leader_id: "c3".into(),
+        from_slot: 1,
+        mode: ConsensusMode::CftFastPath,
+        promises: vec![p3_b, p3_c, p3_d],
+    };
+    let lp_s2_x = LeaseProposal { lease_id: "lse_s2_X".into(), ..lp0.clone() };
+    let lp_s2_y = LeaseProposal { lease_id: "lse_s2_Y".into(), ..lp0.clone() };
+    let b4 = Arc::new(Barrier::new(2));
+    let (rx, ry) = tokio::join!(
+        {
+            let b = b4.clone();
+            let v = vr_a1.clone();
+            let req = VoteRequest::for_lease(1, 2, lp_s2_x.clone()).with_term(3, "c3", cert_3.clone());
+            async move {
+                b.wait().await;
+                v.cast_vote(&req).await
+            }
+        },
+        {
+            let b = b4.clone();
+            let v = vr_a2.clone();
+            let req = VoteRequest::for_lease(1, 2, lp_s2_y.clone()).with_term(3, "c3", cert_3.clone());
+            async move {
+                b.wait().await;
+                v.cast_vote(&req).await
+            }
+        }
+    );
+    assert_eq!(
+        rx.is_ok() as u8 + ry.is_ok() as u8,
+        1,
+        "Atomic higher-term slot-lock replacement MUST allow at most ONE conflicting proposal to win!"
+    );
+    let (winner_vote, _) = vr_a1.query_slot_lock("pool:m21", 1, 2).await.unwrap().unwrap();
+    assert_eq!(winner_vote.term, 3);
+    if rx.is_ok() {
+        assert_eq!(winner_vote.proposal_hash, lp_s2_x.canonical_digest());
+    } else {
+        assert_eq!(winner_vote.proposal_hash, lp_s2_y.canonical_digest());
+    }
+
+    // 4. P0 Dual-quorum membership partition safety + P1 Trusted genesis substitution test!
+    let mut part_voters = Vec::new();
+    for i in 0..8 {
+        let v = VoterNode::new(format!("node-{}", ["a","b","c","d","e","f","g","h"][i]), keys[i].clone(), Arc::new(Database::open_mem()));
+        if i < 5 {
+            v.install_genesis_epoch("pool:m21", ConsensusMode::CftFastPath, old_members.clone())
+                .await
+                .unwrap();
+        }
+        part_voters.push(v);
+    }
+    let mut grp = CoordinationGroup::open_durable(
+        Arc::new(Database::open_mem()),
+        "pool:m21",
+        ConsensusMode::CftFastPath,
+        old_members.clone(),
+    )
+    .await
+    .unwrap();
+    let _ = grp.execute_takeover_catch_up("c1", 1, &part_voters[0..5]).await.unwrap();
+    let cert_p1 = grp.active_term_cert.clone().unwrap();
+    let m_prop = MembershipTransitionProposal::new(
+        "pool:m21",
+        1,
+        2,
+        1,
+        ConsensusMode::CftFastPath,
+        new_members.clone(),
+    )
+    .unwrap();
+    let m_req = VoteRequest::for_membership(m_prop.clone()).unwrap().with_term(1, "c1", cert_p1);
+    let mut m_votes = Vec::new();
+    for v in &part_voters[0..3] {
+        m_votes.push(v.cast_vote(&m_req).await.unwrap());
+    }
+    let mdec = grp.reconfigure_membership_with_quorum(&m_prop, m_votes).await.unwrap();
+    let old_cfg = MembershipEpochConfig {
+        mode: ConsensusMode::CftFastPath,
+        members: old_members.iter().cloned().map(|m| (m.node_id.clone(), m)).collect(),
+    };
+
+    // Genesis substitution test: valid transition chain rooted in a DIFFERENT genesis MUST be rejected!
+    let fake_genesis_members = vec![gm[5].clone(), gm[6].clone(), gm[7].clone()];
+    assert!(
+        part_voters[5]
+            .install_membership_chain_from_genesis(
+                "pool:m21",
+                &genesis_digest,
+                ConsensusMode::CftFastPath,
+                fake_genesis_members,
+                &[],
+            )
+            .await
+            .is_err(),
+        "Genesis substitution MUST be rejected against trusted genesis anchor!"
+    );
+    // Bootstrap new members F, G, H with the genuine trusted genesis anchor + verified transition!
+    for v in &part_voters[5..8] {
+        v.install_membership_chain_from_genesis(
+            "pool:m21",
+            &genesis_digest,
+            ConsensusMode::CftFastPath,
+            old_members.clone(),
+            &[mdec.clone()],
+        )
+        .await
+        .unwrap();
+    }
+
+    // Partition test: isolate old-config quorum (C, D, E unreachable -> only A, B + F, G, H reachable).
+    // Even though 5/5 new members installed epoch 2, only 2/5 old members (A, B) are fenced (< quorum 3) ->
+    // `activate_membership_transition` MUST FAIL CLOSED so C, D, E cannot split-brain!
+    let reachable_without_old_quorum = vec![
+        part_voters[0].clone(),
+        part_voters[1].clone(),
+        part_voters[5].clone(),
+        part_voters[6].clone(),
+        part_voters[7].clone(),
+    ];
+    assert!(
+        grp.activate_membership_transition(&mdec, &old_cfg, &reachable_without_old_quorum)
+            .await
+            .is_err(),
+        "Activation MUST fail closed when fewer than Q(C_old) old voters are durably fenced!"
+    );
+
+    // Once C reconnects (3/5 old voters A,B,C fenced + 5/5 new voters installed):
+    // activation SUCCEEDS, reports D & E in `pending_removed_fence_nodes`, AND isolated (C,D,E)
+    // can NO LONGER form an epoch-1 quorum because C is durably fenced at epoch 2!
+    let reachable_with_old_quorum = vec![
+        part_voters[0].clone(),
+        part_voters[1].clone(),
+        part_voters[2].clone(),
+        part_voters[5].clone(),
+        part_voters[6].clone(),
+        part_voters[7].clone(),
+    ];
+    let pending_removed = grp
+        .activate_membership_transition(&mdec, &old_cfg, &reachable_with_old_quorum)
+        .await
+        .unwrap();
+    assert_eq!(pending_removed, vec!["node-d".to_string(), "node-e".to_string()]);
+    assert!(
+        part_voters[2]
+            .prepare_term(&PrepareTermRequest {
+                group_id: "pool:m21".into(),
+                epoch: 1,
+                term: 9,
+                leader_id: "split-brain-old".into(),
+                from_slot: 1,
+            })
+            .await
+            .is_err(),
+        "Fenced old voter C MUST reject epoch-1 requests, preventing C+D+E split-brain!"
+    );
+
+    // 5. P1 Strict accepted-lock history validation: wrong epoch, duplicate slot, forged embedded vote!
+    let mut bad_epoch_cert = cert_3.clone();
+    let bad_lock = AcceptedSlotLock {
+        epoch: 99, // Wrong epoch!
+        slot: 1,
+        accepted_term: 1,
+        proposal_hash: lp0.canonical_digest(),
+        proposal: SlotProposal::Lease(lp0.clone()),
+        vote: sign_vote_raw_in_term("pool:m21", 99, 1, 1, &lp0.canonical_digest(), "node-b", &keys[1]).unwrap(),
+    };
+    bad_epoch_cert.promises[0].accepted_locks = vec![bad_lock.clone()];
+    let bp = nexus_io::mesh::consensus::canonical_promise_payload(
+        &bad_epoch_cert.promises[0].group_id,
+        bad_epoch_cert.promises[0].epoch,
+        bad_epoch_cert.promises[0].term,
+        &bad_epoch_cert.promises[0].leader_id,
+        bad_epoch_cert.promises[0].from_slot,
+        &bad_epoch_cert.promises[0].voter_node_id,
+        bad_epoch_cert.promises[0].min_active_epoch,
+        &bad_epoch_cert.promises[0].accepted_locks,
+    );
+    bad_epoch_cert.promises[0].signature = nexus_db::auth::ed25519_sign(&keys[1], &bp).unwrap();
+    assert!(
+        verify_term_certificate_and_adoption(&bad_epoch_cert, &old_cfg, 1).is_err(),
+        "Wrong-epoch accepted lock MUST fail the entire promise!"
+    );
+
+    // Duplicate slot lock in same promise -> REJECTED!
+    let mut dup_slot_cert = cert_3.clone();
+    let valid_lock_b = AcceptedSlotLock {
+        epoch: 1,
+        slot: 1,
+        accepted_term: 1,
+        proposal_hash: lp0.canonical_digest(),
+        proposal: SlotProposal::Lease(lp0.clone()),
+        vote: sign_vote_raw_in_term("pool:m21", 1, 1, 1, &lp0.canonical_digest(), "node-b", &keys[1]).unwrap(),
+    };
+    dup_slot_cert.promises[0].accepted_locks = vec![valid_lock_b.clone(), valid_lock_b.clone()];
+    let dp = nexus_io::mesh::consensus::canonical_promise_payload(
+        &dup_slot_cert.promises[0].group_id,
+        dup_slot_cert.promises[0].epoch,
+        dup_slot_cert.promises[0].term,
+        &dup_slot_cert.promises[0].leader_id,
+        dup_slot_cert.promises[0].from_slot,
+        &dup_slot_cert.promises[0].voter_node_id,
+        dup_slot_cert.promises[0].min_active_epoch,
+        &dup_slot_cert.promises[0].accepted_locks,
+    );
+    dup_slot_cert.promises[0].signature = nexus_db::auth::ed25519_sign(&keys[1], &dp).unwrap();
+    assert!(
+        verify_term_certificate_and_adoption(&dup_slot_cert, &old_cfg, 1).is_err(),
+        "Duplicate accepted lock for same slot in one promise MUST fail closed!"
+    );
+
+    // Forged embedded SignedVote signature inside an otherwise validly signed TermPromise -> REJECTED!
+    let mut forged_vote_cert = cert_3.clone();
+    let mut bad_sig_lock = valid_lock_b;
+    bad_sig_lock.vote.signature = "AAAA_FORGED_SIG".into();
+    forged_vote_cert.promises[0].accepted_locks = vec![bad_sig_lock];
+    let fp = nexus_io::mesh::consensus::canonical_promise_payload(
+        &forged_vote_cert.promises[0].group_id,
+        forged_vote_cert.promises[0].epoch,
+        forged_vote_cert.promises[0].term,
+        &forged_vote_cert.promises[0].leader_id,
+        forged_vote_cert.promises[0].from_slot,
+        &forged_vote_cert.promises[0].voter_node_id,
+        forged_vote_cert.promises[0].min_active_epoch,
+        &forged_vote_cert.promises[0].accepted_locks,
+    );
+    forged_vote_cert.promises[0].signature = nexus_db::auth::ed25519_sign(&keys[1], &fp).unwrap();
+    assert!(
+        verify_term_certificate_and_adoption(&forged_vote_cert, &old_cfg, 1).is_err(),
+        "Forged embedded SignedVote signature in AcceptedSlotLock MUST fail closed!"
+    );
 }

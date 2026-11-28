@@ -74,6 +74,10 @@ pub type ModuleInvoker = Arc<dyn Fn(&str, &str, &[Value]) -> Result<Value> + Sen
 pub struct NexusDb {
     storage: Arc<dyn StorageBackend>,
     live: Arc<LiveBroker>,
+    /// Serializes mutating statements (`CREATE`, `UPDATE ... WHERE`, `UPSERT`, `DELETE`,
+    /// `BEGIN ... COMMIT`) so predicate evaluation and mutation execute atomically under
+    /// concurrent callers sharing this database.
+    write_lock: Arc<std::sync::Mutex<()>>,
     #[cfg(feature = "ml")]
     ml: Arc<crate::ml::MlRegistry>,
     module_invoker: Option<ModuleInvoker>,
@@ -85,6 +89,7 @@ impl NexusDb {
         Self {
             storage: Arc::new(MemStorage::new()),
             live: Arc::new(LiveBroker::new()),
+            write_lock: Arc::new(std::sync::Mutex::new(())),
             #[cfg(feature = "ml")]
             ml: Arc::new(crate::ml::MlRegistry::new()),
             module_invoker: None,
@@ -96,9 +101,25 @@ impl NexusDb {
         Ok(Self {
             storage: Arc::new(RedbStorage::open(path)?),
             live: Arc::new(LiveBroker::new()),
+            write_lock: Arc::new(std::sync::Mutex::new(())),
             #[cfg(feature = "ml")]
             ml: Arc::new(crate::ml::MlRegistry::new()),
             module_invoker: None,
+        })
+    }
+
+    fn needs_write_lock(stmts: &[Statement]) -> bool {
+        stmts.iter().any(|s| {
+            !matches!(
+                s,
+                Statement::Select { .. }
+                    | Statement::InfoForDb
+                    | Statement::InfoForTable(_)
+                    | Statement::Return(_)
+                    | Statement::ShowChanges { .. }
+                    | Statement::LiveSelect { .. }
+                    | Statement::Use { .. }
+            )
         })
     }
 
@@ -454,6 +475,11 @@ impl NexusDb {
         bindings: Vec<(String, Value)>,
     ) -> Result<Vec<Value>> {
         let stmts = parse_surql(surql)?;
+        let _write_guard = if Self::needs_write_lock(&stmts) {
+            Some(self.write_lock.lock().unwrap_or_else(|e| e.into_inner()))
+        } else {
+            None
+        };
         let params: HashMap<String, Value> = bindings.into_iter().collect();
         let mut ctx = ExecContext::new(
             self.storage.as_ref(),

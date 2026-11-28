@@ -154,14 +154,25 @@ pub fn is_already_exists_error(err: &anyhow::Error) -> bool {
 pub struct Database {
     pub inner: NexusDb,
     pub client: DbClient,
+    tx_mutex: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Database {
+    /// Acquire the database-level serialization guard for multi-statement linearizable operations
+    /// (e.g., atomic term-promise + accepted-lock snapshot reads across shared `VoterNode`s).
+    pub async fn lock_tx(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.tx_mutex.lock().await
+    }
+
     /// Open an in-memory `nexus-db` instance (instant startup for tests & ephemeral cells).
     pub fn open_mem() -> Self {
         let inner = NexusDb::open_mem();
         let client = DbClient::new(inner.clone());
-        Self { inner, client }
+        Self {
+            inner,
+            client,
+            tx_mutex: Arc::new(tokio::sync::Mutex::new(())),
+        }
     }
 
     pub async fn init() -> Self {
@@ -255,6 +266,10 @@ impl Database {
             }
         }
 
-        Self { inner, client }
+        Self {
+            inner,
+            client,
+            tx_mutex: Arc::new(tokio::sync::Mutex::new(())),
+        }
     }
 }
