@@ -1842,7 +1842,7 @@ impl<'a> ExecContext<'a> {
                 let id = id_opt.unwrap_or_else(|| Uuid::new_v4().simple().to_string());
                 let key = encode_key(PREFIX_RECORD, &[&self.ns, &self.db, &tb, &id]);
                 if self.get_raw(&key)?.is_some() {
-                    return Err(anyhow!("Record {}:{} already exists", tb, id));
+                    return Err(crate::DbError::AlreadyExists { table: tb, id }.into());
                 }
                 let obj = self.apply_mutation_data(BTreeMap::new(), data, None)?;
                 let (before, saved) = self.save_record(&tb, &id, obj, LiveAction::Create)?;

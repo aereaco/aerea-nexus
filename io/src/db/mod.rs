@@ -138,15 +138,17 @@ impl QueryResponse {
     }
 }
 
-/// Shared duplicate-record error classifier for `nexus-db` `CREATE` (insert-if-absent) paths.
+/// Typed duplicate-record error classifier for `nexus-db` `CREATE` (insert-if-absent) paths.
 ///
-/// Note: `nexus-db` currently returns `anyhow::Error` (`"Record <table>:<id> already exists"`)
-/// rather than a typed error enum; centralizing classification here ensures all consensus,
-/// fencing, and IAM paths handle duplicate conflicts uniformly while propagating genuine storage
-/// or syntax failures.
+/// Downcasts the `anyhow::Error` chain directly to `nexus_db::DbError::AlreadyExists` so genuine
+/// storage/syntax failures and unrelated error messages are never misclassified as duplicates.
 pub fn is_already_exists_error(err: &anyhow::Error) -> bool {
-    let msg = err.to_string().to_ascii_lowercase();
-    msg.contains("already exists") || msg.contains("duplicate") || msg.contains("unique")
+    err.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<nexus_db::DbError>(),
+            Some(nexus_db::DbError::AlreadyExists { .. })
+        )
+    })
 }
 
 pub struct Database {

@@ -48,6 +48,25 @@ use crate::storage::{
 };
 pub use crate::value::Value;
 
+/// Narrow typed error enum for structured database conditions that callers must distinguish
+/// from generic storage or syntax failures without message-substring matching.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DbError {
+    AlreadyExists { table: String, id: String },
+}
+
+impl std::fmt::Display for DbError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AlreadyExists { table, id } => {
+                write!(f, "Record {}:{} already exists", table, id)
+            }
+        }
+    }
+}
+
+impl std::error::Error for DbError {}
+
 pub type ModuleInvoker = Arc<dyn Fn(&str, &str, &[Value]) -> Result<Value> + Send + Sync>;
 
 /// Clean-room, MIT-licensed, ultra-low-footprint SurrealQL-compatible embedded multi-model database.

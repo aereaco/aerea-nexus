@@ -1,6 +1,6 @@
 //! Final Acceptance Gate Regression Suite (Resource Trust, Lease Binding, Legacy/Conflict Fail-Closed)
 
-use nexus_io::db::Database;
+use nexus_io::db::{is_already_exists_error, Database};
 use nexus_io::iam::idp::{NexusIdp, OrgPolicyPatch};
 use nexus_io::mesh::consensus::{
     hash_lease_proposal, hash_membership_change, sign_vote_raw, ConsensusMode, CoordinationGroup,
@@ -165,18 +165,77 @@ async fn p0_resource_trust_crdt_expiry_membership_digest_and_authenticated_bound
         "Voter MUST reject VoteRequest when proposal payload does not match proposal_hash!"
     );
 
-    // 4. Legacy voter locks missing `proposal: None` MUST fail closed on autonomous recovery!
-    let legacy_hash = hash_lease_proposal("pool:us-east", "lse_leg", "gpu:legacy", "node-b", "wl-leg", 1, t0, t0 + 30_000);
-    let legacy_req = VoteRequest {
+    // 4. Production vote API MUST reject proposal-less VoteRequest; legacy on-disk lock MUST NOT
+    //    be upgraded via idempotent retry and MUST fail closed on autonomous recovery!
+    let legacy_prop = LeaseProposal {
+        group_id: "pool:us-east".into(),
+        lease_id: "lse_leg".into(),
+        resource_key: "gpu:legacy".into(),
+        holder_node_id: "node-b".into(),
+        workload_id: "wl-leg".into(),
+        fencing_epoch: 1,
+        issued_at_ms: t0,
+        expires_at_ms: t0 + 30_000,
+    };
+    let legacy_hash = legacy_prop.canonical_digest();
+    let prod_none_req = VoteRequest {
         group_id: "pool:us-east".into(),
         epoch: 1,
         slot: 60,
-        proposal_hash: legacy_hash,
-        proposal: None, // Legacy lock without proposal payload
+        proposal_hash: legacy_hash.clone(),
+        proposal: None,
     };
-    let lv1 = voter_a.cast_vote(&legacy_req).await.unwrap();
-    let lv2 = voter_b.cast_vote(&legacy_req).await.unwrap();
-    let lv3 = voter_c.cast_vote(&legacy_req).await.unwrap();
+    assert!(
+        voter_a.cast_vote(&prod_none_req).await.is_err(),
+        "Production VoterNode::cast_vote MUST reject proposal: None!"
+    );
+
+    // Seed pre-existing legacy on-disk lock (missing `proposal`) directly into voter DB
+    let legacy_db = Arc::new(Database::open_mem());
+    let legacy_voter = VoterNode::new("node-a", sk_a.clone(), legacy_db.clone());
+    legacy_voter.ensure_tables().await.unwrap();
+    let lv1 = sign_vote_raw("pool:us-east", 1, 60, &legacy_hash, "node-a", &sk_a).unwrap();
+    let lv2 = sign_vote_raw("pool:us-east", 1, 60, &legacy_hash, "node-b", &sk_b).unwrap();
+    let lv3 = sign_vote_raw("pool:us-east", 1, 60, &legacy_hash, "node-c", &sk_c).unwrap();
+    let legacy_lock_key = legacy_voter.slot_lock_key("pool:us-east", 1, 60);
+    legacy_db
+        .client
+        .query("CREATE type::record('sys_mesh_voter_lock', $id) CONTENT $l;")
+        .bind(("id", legacy_lock_key))
+        .bind((
+            "l",
+            serde_json::json!({
+                "lock_key": "legacy",
+                "group_id": "pool:us-east",
+                "epoch": 1,
+                "slot": 60,
+                "proposal_hash": legacy_hash,
+                "voter_node_id": "node-a",
+                "signature": lv1.signature,
+                "locked_at_ms": t0,
+            }),
+        ))
+        .await
+        .unwrap();
+    // Retry with matching hash + Some(proposal) MUST be rejected and MUST NOT upgrade the legacy lock!
+    let upgrade_retry = VoteRequest {
+        group_id: "pool:us-east".into(),
+        epoch: 1,
+        slot: 60,
+        proposal_hash: legacy_hash.clone(),
+        proposal: Some(legacy_prop),
+    };
+    assert!(
+        legacy_voter.cast_vote(&upgrade_retry).await.is_err(),
+        "Legacy lock with proposal: None MUST NOT be upgraded or accepted on retry!"
+    );
+    let (_, still_none) = legacy_voter
+        .query_slot_lock("pool:us-east", 1, 60)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(still_none.is_none(), "Legacy lock must remain unmodified on rejected retry");
+
     let mut rec_group = CoordinationGroup::new("pool:us-east", ConsensusMode::CftFastPath, members.clone());
     assert!(
         rec_group
@@ -186,19 +245,19 @@ async fn p0_resource_trust_crdt_expiry_membership_digest_and_authenticated_bound
         "Autonomous recovery MUST fail closed when legacy voter locks lack LeaseProposal!"
     );
 
-    // 5. Conflicting durable decisions in `sys_mesh_decision_log` MUST fail closed!
-    let conflict_db = Arc::new(Database::open_mem());
-    let mut conflict_grp = CoordinationGroup::open_durable(
-        conflict_db.clone(),
-        "pool:conflict",
+    // 5. Invalid/forged AND malformed durable decisions MUST fail closed on boot AND recovery!
+    let forged_db = Arc::new(Database::open_mem());
+    let mut forged_grp = CoordinationGroup::open_durable(
+        forged_db.clone(),
+        "pool:forged",
         ConsensusMode::CftFastPath,
         members.clone(),
     )
     .await
     .unwrap();
-    let l_a = FencedLease {
-        lease_id: "lse_a".into(),
-        group_id: "pool:conflict".into(),
+    let forged_lease = FencedLease {
+        lease_id: "lse_forged".into(),
+        group_id: "pool:forged".into(),
         resource_key: "r1".into(),
         holder_node_id: "node-a".into(),
         workload_id: "w1".into(),
@@ -206,27 +265,173 @@ async fn p0_resource_trust_crdt_expiry_membership_digest_and_authenticated_bound
         issued_at_ms: t0,
         expires_at_ms: t0 + 30_000,
         qc: QuorumCertificate {
-            group_id: "pool:conflict".into(),
+            group_id: "pool:forged".into(),
             epoch: 1,
             slot: 7,
-            proposal_hash: hash_lease_proposal("pool:conflict", "lse_a", "r1", "node-a", "w1", 1, t0, t0 + 30_000),
+            proposal_hash: hash_lease_proposal("pool:forged", "lse_forged", "r1", "node-a", "w1", 1, t0, t0 + 30_000),
             mode: ConsensusMode::CftFastPath,
-            votes: vec![],
+            votes: vec![], // Forged: zero signatures!
         },
     };
-    let l_b = FencedLease {
-        lease_id: "lse_b".into(),
-        holder_node_id: "node-b".into(),
-        ..l_a.clone()
-    };
-    conflict_db.client.query("CREATE type::record('sys_mesh_decision_log', 'corrupt_a') CONTENT $l;").bind(("l", serde_json::to_value(&l_a).unwrap())).await.unwrap();
-    conflict_db.client.query("CREATE type::record('sys_mesh_decision_log', 'corrupt_b') CONTENT $l;").bind(("l", serde_json::to_value(&l_b).unwrap())).await.unwrap();
+    forged_db
+        .client
+        .query("CREATE type::record('sys_mesh_decision_log', 'forged_7') CONTENT $l;")
+        .bind(("l", serde_json::to_value(&forged_lease).unwrap()))
+        .await
+        .unwrap();
     assert!(
-        conflict_grp.recover_and_commit_slot(7, vec![]).await.is_err(),
-        "Conflicting durable decision-log records for slot 7 MUST fail closed!"
+        forged_grp.recover_and_commit_slot(7, vec![]).await.is_err(),
+        "Forged durable decision MUST fail closed on recover_and_commit_slot even with empty voter locks!"
+    );
+    assert!(
+        CoordinationGroup::open_durable(
+            forged_db.clone(),
+            "pool:forged",
+            ConsensusMode::CftFastPath,
+            members.clone(),
+        )
+        .await
+        .is_err(),
+        "Forged durable decision MUST fail closed on open_durable boot!"
     );
 
-    // 6. Membership-transition digest & BFT equivocation
+    let malformed_db = Arc::new(Database::open_mem());
+    let mut malformed_grp = CoordinationGroup::open_durable(
+        malformed_db.clone(),
+        "pool:malformed",
+        ConsensusMode::CftFastPath,
+        members.clone(),
+    )
+    .await
+    .unwrap();
+    malformed_db
+        .client
+        .query("CREATE type::record('sys_mesh_decision_log', 'bad_json') CONTENT $l;")
+        .bind(("l", serde_json::json!({ "group_id": "pool:malformed", "corrupted": true })))
+        .await
+        .unwrap();
+    assert!(
+        malformed_grp.recover_and_commit_slot(1, vec![]).await.is_err(),
+        "Malformed JSON record in sys_mesh_decision_log MUST fail closed on recovery!"
+    );
+    assert!(
+        CoordinationGroup::open_durable(
+            malformed_db.clone(),
+            "pool:malformed",
+            ConsensusMode::CftFastPath,
+            members.clone(),
+        )
+        .await
+        .is_err(),
+        "Malformed JSON record in sys_mesh_decision_log MUST fail closed on open_durable!"
+    );
+
+    // 6. Commit-time expiration check: already-expired lease MUST NOT enter durable decision log!
+    let exp_prop = LeaseProposal {
+        group_id: "pool:us-east".into(),
+        lease_id: "lse_expired_commit".into(),
+        resource_key: "gpu:expired".into(),
+        holder_node_id: "node-b".into(),
+        workload_id: "wl-exp".into(),
+        fencing_epoch: 1,
+        issued_at_ms: t0 - 20_000,
+        expires_at_ms: t0 - 1,
+    };
+    let exp_hash = exp_prop.canonical_digest();
+    let exp_votes = vec![
+        sign_vote_raw("pool:us-east", 1, group.next_slot, &exp_hash, "node-a", &sk_a).unwrap(),
+        sign_vote_raw("pool:us-east", 1, group.next_slot, &exp_hash, "node-b", &sk_b).unwrap(),
+        sign_vote_raw("pool:us-east", 1, group.next_slot, &exp_hash, "node-c", &sk_c).unwrap(),
+    ];
+    assert!(
+        group
+            .commit_exclusive_lease(
+                "lse_expired_commit",
+                "gpu:expired",
+                "node-b",
+                "wl-exp",
+                t0 - 20_000,
+                t0 - 1,
+                t0,
+                exp_votes,
+            )
+            .await
+            .is_err(),
+        "commit_exclusive_lease MUST reject already-expired leases!"
+    );
+
+    // 7. Historical epoch validation & idempotent recovery across membership reconfiguration!
+    // Existing slot 1 decision at epoch 1 MUST remain idempotently recoverable
+    let idemp = group.recover_and_commit_slot(1, vec![]).await.unwrap();
+    assert_eq!(idemp.unwrap().lease_id, dec1.lease.lease_id);
+
+    // Reconfigure from epoch 1 (4 members) -> epoch 2 (3 members: drop node-d)
+    let epoch2_members = vec![members[0].clone(), members[1].clone(), members[2].clone()];
+    let reconf_hash =
+        hash_membership_change("pool:us-east", 2, ConsensusMode::CftFastPath, &epoch2_members).unwrap();
+    let reconf_slot = group.next_slot;
+    let reconf_votes = vec![
+        sign_vote_raw("pool:us-east", 1, reconf_slot, &reconf_hash, "node-a", &sk_a).unwrap(),
+        sign_vote_raw("pool:us-east", 1, reconf_slot, &reconf_hash, "node-b", &sk_b).unwrap(),
+        sign_vote_raw("pool:us-east", 1, reconf_slot, &reconf_hash, "node-c", &sk_c).unwrap(),
+    ];
+    let new_epoch = group
+        .reconfigure_membership_with_quorum(epoch2_members.clone(), reconf_votes)
+        .await
+        .unwrap();
+    assert_eq!(new_epoch, 2);
+
+    // Reboot from durable DB: historical epoch-1 decision MUST validate cleanly against epoch-1 history!
+    let rebooted = CoordinationGroup::open_durable(
+        db_coord.clone(),
+        "pool:us-east",
+        ConsensusMode::CftFastPath,
+        epoch2_members,
+    )
+    .await
+    .unwrap();
+    assert_eq!(rebooted.membership_epoch, 2);
+    assert!(rebooted.membership_history.contains_key(&1));
+    assert!(rebooted.membership_history.contains_key(&2));
+    assert_eq!(
+        rebooted.active_leases.get("gpu:us-east:slot-0").unwrap().lease_id,
+        dec1.lease.lease_id
+    );
+
+    // 8. Typed `nexus_db::DbError::AlreadyExists` survives full query & transaction pipeline!
+    let dup_db = Database::open_mem();
+    dup_db
+        .client
+        .query("DEFINE TABLE IF NOT EXISTS sys_typed_dup SCHEMALESS; CREATE type::record('sys_typed_dup', 'k1') CONTENT { v: 1 };")
+        .await
+        .unwrap();
+    let standalone_err = dup_db
+        .client
+        .query("CREATE type::record('sys_typed_dup', 'k1') CONTENT { v: 2 };")
+        .await
+        .err()
+        .expect("Duplicate standalone CREATE must fail");
+    assert!(
+        is_already_exists_error(&standalone_err),
+        "Typed DbError::AlreadyExists must survive standalone query_scoped!"
+    );
+    let tx_err = dup_db
+        .client
+        .query("BEGIN TRANSACTION; CREATE type::record('sys_typed_dup', 'k1') CONTENT { v: 3 }; COMMIT TRANSACTION;")
+        .await
+        .err()
+        .expect("Duplicate transactional CREATE must fail");
+    assert!(
+        is_already_exists_error(&tx_err),
+        "Typed DbError::AlreadyExists must survive BEGIN/COMMIT transaction!"
+    );
+    let fake_string_err = anyhow::anyhow!("Record sys_typed_dup:k1 already exists");
+    assert!(
+        !is_already_exists_error(&fake_string_err),
+        "is_already_exists_error MUST NOT match untyped string errors!"
+    );
+
+    // 9. Membership-transition digest & BFT equivocation
     let mut swapped_members = members.clone();
     swapped_members[0].ed25519_pubkey = "FAKE_SUBSTITUTED_PUBKEY".into();
     assert_ne!(

@@ -189,12 +189,26 @@ struct DurableVoterLock {
     locked_at_ms: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MembershipEpochConfig {
+    pub mode: ConsensusMode,
+    pub members: HashMap<String, GroupMember>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct DurableMembershipRecord {
     group_id: String,
     mode: ConsensusMode,
     membership_epoch: u64,
     next_slot: u64,
+    members: Vec<GroupMember>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DurableMembershipEpochRecord {
+    group_id: String,
+    membership_epoch: u64,
+    mode: ConsensusMode,
     members: Vec<GroupMember>,
 }
 
@@ -317,6 +331,14 @@ fn slot_decision_key(group_id: &str, epoch: u64, slot: u64) -> String {
     )
 }
 
+fn membership_epoch_key(group_id: &str, membership_epoch: u64) -> String {
+    format!(
+        "{}_e{}",
+        &blake3::hash(group_id.as_bytes()).to_hex().as_str()[..16],
+        membership_epoch
+    )
+}
+
 /// Independent durable voter node backed by its own `nexus-db` instance.
 #[derive(Clone)]
 pub struct VoterNode {
@@ -343,7 +365,7 @@ impl VoterNode {
         Ok(())
     }
 
-    fn slot_lock_key(&self, group_id: &str, epoch: u64, slot: u64) -> String {
+    pub fn slot_lock_key(&self, group_id: &str, epoch: u64, slot: u64) -> String {
         format!(
             "{}_{}_{}_{}",
             &blake3::hash(group_id.as_bytes()).to_hex().as_str()[..12],
@@ -387,25 +409,31 @@ impl VoterNode {
             }))
     }
 
-    /// Verify proposal digest (if supplied), atomically persist durable lock + proposal BEFORE
-    /// returning signature, and never overwrite an existing lock!
+    /// Require canonical `LeaseProposal`, verify its digest, atomically persist durable lock +
+    /// proposal BEFORE returning signature, and never overwrite or upgrade an existing lock!
     pub async fn cast_vote(&self, req: &VoteRequest) -> Result<SignedVote> {
-        if let Some(ref prop) = req.proposal {
-            if prop.group_id != req.group_id {
-                anyhow::bail!(
-                    "Proposal group_id '{}' does not match vote group_id '{}'",
-                    prop.group_id,
-                    req.group_id
-                );
-            }
-            let computed = prop.canonical_digest();
-            if computed != req.proposal_hash {
-                anyhow::bail!(
-                    "Proposal payload digest '{}' does not match claimed proposal_hash '{}'",
-                    computed,
-                    req.proposal_hash
-                );
-            }
+        let req_prop = req.proposal.as_ref().ok_or_else(|| {
+            anyhow!(
+                "Production VoteRequest for ({}, epoch={}, slot={}) requires a canonical LeaseProposal payload",
+                req.group_id,
+                req.epoch,
+                req.slot
+            )
+        })?;
+        if req_prop.group_id != req.group_id {
+            anyhow::bail!(
+                "Proposal group_id '{}' does not match vote group_id '{}'",
+                req_prop.group_id,
+                req.group_id
+            );
+        }
+        let computed = req_prop.canonical_digest();
+        if computed != req.proposal_hash {
+            anyhow::bail!(
+                "Proposal payload digest '{}' does not match claimed proposal_hash '{}'",
+                computed,
+                req.proposal_hash
+            );
         }
 
         self.ensure_tables().await?;
@@ -424,7 +452,7 @@ impl VoterNode {
             epoch: req.epoch,
             slot: req.slot,
             proposal_hash: req.proposal_hash.clone(),
-            proposal: req.proposal.clone(),
+            proposal: Some(req_prop.clone()),
             voter_node_id: self.node_id.clone(),
             signature: vote.signature.clone(),
             locked_at_ms: now_ms(),
@@ -449,21 +477,22 @@ impl VoterNode {
             Err(e) => return Err(anyhow!("Database error persisting voter lock: {}", e)),
         }
 
-        // Existing lock found: require BOTH proposal_hash and canonical proposal contents to match!
+        // Existing lock found: require STRICT equality of BOTH proposal_hash AND canonical proposal!
+        // Legacy locks (`existing_prop == None`) are NEVER upgraded or accepted on retry.
         let (existing_vote, existing_prop) = self
             .query_slot_lock(&req.group_id, req.epoch, req.slot)
             .await?
             .ok_or_else(|| anyhow!("Voter lock reported existing but could not be read back"))?;
 
         if existing_vote.proposal_hash == req.proposal_hash {
-            if let (Some(ref ep), Some(ref rp)) = (&existing_prop, &req.proposal) {
-                if ep != rp {
-                    anyhow::bail!(
-                        "Conflicting proposal payload on node '{}' for matching hash '{}'",
-                        self.node_id,
-                        req.proposal_hash
-                    );
-                }
+            if existing_prop.as_ref() != Some(req_prop) {
+                anyhow::bail!(
+                    "Strict voter-lock mismatch on node '{}' for ({}, epoch={}, slot={}): existing proposal payload does not equal requested proposal (legacy locks cannot be upgraded)",
+                    self.node_id,
+                    req.group_id,
+                    req.epoch,
+                    req.slot
+                );
             }
             return Ok(existing_vote);
         }
@@ -718,6 +747,9 @@ pub struct CoordinationGroup {
     pub next_slot: u64,
     pub max_lease_ttl_ms: u64,
     pub members: HashMap<String, GroupMember>,
+    /// Durable per-epoch membership snapshots so historical decisions validate against their
+    /// original membership epoch even after subsequent reconfigurations.
+    pub membership_history: HashMap<u64, MembershipEpochConfig>,
     pub active_leases: HashMap<String, FencedLease>,
     pub max_fencing_epoch: HashMap<String, u64>,
     seen_votes: HashMap<(u64, u64, String), SignedVote>,
@@ -727,10 +759,18 @@ pub struct CoordinationGroup {
 
 impl CoordinationGroup {
     pub fn new(group_id: impl Into<String>, mode: ConsensusMode, members: Vec<GroupMember>) -> Self {
-        let map = members
+        let map: HashMap<String, GroupMember> = members
             .into_iter()
             .map(|m| (m.node_id.clone(), m))
             .collect();
+        let mut membership_history = HashMap::new();
+        membership_history.insert(
+            1,
+            MembershipEpochConfig {
+                mode,
+                members: map.clone(),
+            },
+        );
         Self {
             group_id: group_id.into(),
             mode,
@@ -738,6 +778,7 @@ impl CoordinationGroup {
             next_slot: 1,
             max_lease_ttl_ms: 300_000,
             members: map,
+            membership_history,
             active_leases: HashMap::new(),
             max_fencing_epoch: HashMap::new(),
             seen_votes: HashMap::new(),
@@ -755,6 +796,7 @@ impl CoordinationGroup {
         let gid = group_id.into();
         let ddl = "\
             DEFINE TABLE IF NOT EXISTS sys_mesh_membership SCHEMALESS;\
+            DEFINE TABLE IF NOT EXISTS sys_mesh_membership_history SCHEMALESS;\
             DEFINE TABLE IF NOT EXISTS sys_mesh_decision_log SCHEMALESS;";
         let _ = db.client.query(ddl).await;
 
@@ -768,10 +810,16 @@ impl CoordinationGroup {
             .bind(("id", gkey))
             .await?;
         let mrows: Vec<serde_json::Value> = mresp.take(0).unwrap_or_default();
-        if let Some(rec) = mrows
-            .first()
-            .and_then(|v| serde_json::from_value::<DurableMembershipRecord>(v.clone()).ok())
-        {
+        if let Some(raw_mem) = mrows.first() {
+            let rec: DurableMembershipRecord = serde_json::from_value(raw_mem.clone())
+                .map_err(|e| anyhow!("Malformed durable membership record for '{}': {}", gid, e))?;
+            if rec.group_id != gid {
+                anyhow::bail!(
+                    "Durable membership record group_id '{}' does not match expected '{}'",
+                    rec.group_id,
+                    gid
+                );
+            }
             group.mode = rec.mode;
             group.membership_epoch = rec.membership_epoch;
             group.next_slot = rec.next_slot;
@@ -780,31 +828,110 @@ impl CoordinationGroup {
                 .into_iter()
                 .map(|m| (m.node_id.clone(), m))
                 .collect();
+            group.membership_history.clear();
         } else {
             let mems: Vec<GroupMember> = group.members.values().cloned().collect();
-            group.persist_membership_record(group.membership_epoch, group.next_slot, &mems).await?;
+            group
+                .persist_membership_and_epoch_history(group.membership_epoch, group.next_slot, &mems)
+                .await?;
         }
 
+        // Load durable membership epoch history (fail closed on malformed rows for this group)
+        let mut hresp = db.client.query("SELECT * FROM sys_mesh_membership_history").await?;
+        let hrows: Vec<serde_json::Value> = hresp.take(0).unwrap_or_default();
+        for v in hrows {
+            if let Some(row_gid) = v.get("group_id").and_then(|g| g.as_str()) {
+                if row_gid != gid {
+                    continue;
+                }
+            }
+            let rec: DurableMembershipEpochRecord = serde_json::from_value(v).map_err(|e| {
+                anyhow!("Malformed durable membership history record for '{}': {}", gid, e)
+            })?;
+            if rec.group_id == gid {
+                let members_map = rec
+                    .members
+                    .into_iter()
+                    .map(|m| (m.node_id.clone(), m))
+                    .collect();
+                group.membership_history.insert(
+                    rec.membership_epoch,
+                    MembershipEpochConfig {
+                        mode: rec.mode,
+                        members: members_map,
+                    },
+                );
+            }
+        }
+        // Ensure current epoch is present in membership_history and persisted
+        if !group.membership_history.contains_key(&group.membership_epoch) {
+            group.membership_history.insert(
+                group.membership_epoch,
+                MembershipEpochConfig {
+                    mode: group.mode,
+                    members: group.members.clone(),
+                },
+            );
+            let mems: Vec<GroupMember> = group.members.values().cloned().collect();
+            group
+                .persist_membership_epoch_snapshot(group.membership_epoch, group.mode, &mems)
+                .await?;
+        }
+
+        // Load & cryptographically validate ALL durable decisions for this group (fail closed!)
         let mut lresp = db.client.query("SELECT * FROM sys_mesh_decision_log").await?;
         let lrows: Vec<serde_json::Value> = lresp.take(0).unwrap_or_default();
         for v in lrows {
-            if let Ok(lease) = serde_json::from_value::<FencedLease>(v) {
-                if lease.group_id == gid {
-                    let cur_max = group.max_fencing_epoch.get(&lease.resource_key).copied().unwrap_or(0);
-                    if lease.fencing_epoch > cur_max {
-                        group.max_fencing_epoch.insert(lease.resource_key.clone(), lease.fencing_epoch);
-                        group.active_leases.insert(lease.resource_key.clone(), lease.clone());
-                    }
-                    if lease.qc.slot >= group.next_slot {
-                        group.next_slot = lease.qc.slot + 1;
-                    }
+            if let Some(row_gid) = v.get("group_id").and_then(|g| g.as_str()) {
+                if row_gid != gid {
+                    continue;
                 }
+            }
+            let lease: FencedLease = serde_json::from_value(v).map_err(|e| {
+                anyhow!(
+                    "Malformed durable decision record in sys_mesh_decision_log during boot of '{}': {}",
+                    gid,
+                    e
+                )
+            })?;
+            group.validate_durable_decision(&lease, None)?;
+            let cur_max = group.max_fencing_epoch.get(&lease.resource_key).copied().unwrap_or(0);
+            if lease.fencing_epoch > cur_max {
+                group.max_fencing_epoch.insert(lease.resource_key.clone(), lease.fencing_epoch);
+                group.active_leases.insert(lease.resource_key.clone(), lease.clone());
+            }
+            if lease.qc.epoch == group.membership_epoch && lease.qc.slot >= group.next_slot {
+                group.next_slot = lease.qc.slot + 1;
             }
         }
         Ok(group)
     }
 
-    async fn persist_membership_record(
+    async fn persist_membership_epoch_snapshot(
+        &self,
+        membership_epoch: u64,
+        mode: ConsensusMode,
+        members: &[GroupMember],
+    ) -> Result<()> {
+        let Some(ref db) = self.db else { return Ok(()) };
+        let hkey = membership_epoch_key(&self.group_id, membership_epoch);
+        let hrec = DurableMembershipEpochRecord {
+            group_id: self.group_id.clone(),
+            membership_epoch,
+            mode,
+            members: members.to_vec(),
+        };
+        let hval = serde_json::to_value(&hrec)?;
+        db.client
+            .query("UPSERT type::record('sys_mesh_membership_history', $hkey) CONTENT $h;")
+            .bind(("hkey", hkey))
+            .bind(("h", hval))
+            .await?
+            .check()?;
+        Ok(())
+    }
+
+    async fn persist_membership_and_epoch_history(
         &self,
         membership_epoch: u64,
         next_slot: u64,
@@ -812,6 +939,7 @@ impl CoordinationGroup {
     ) -> Result<()> {
         let Some(ref db) = self.db else { return Ok(()) };
         let gkey = blake3::hash(self.group_id.as_bytes()).to_hex().to_string();
+        let hkey = membership_epoch_key(&self.group_id, membership_epoch);
         let rec = DurableMembershipRecord {
             group_id: self.group_id.clone(),
             mode: self.mode,
@@ -819,11 +947,25 @@ impl CoordinationGroup {
             next_slot,
             members: members.to_vec(),
         };
+        let hrec = DurableMembershipEpochRecord {
+            group_id: self.group_id.clone(),
+            membership_epoch,
+            mode: self.mode,
+            members: members.to_vec(),
+        };
         let val = serde_json::to_value(&rec)?;
+        let hval = serde_json::to_value(&hrec)?;
         db.client
-            .query("UPSERT type::record('sys_mesh_membership', $id) CONTENT $m;")
-            .bind(("id", gkey))
+            .query(
+                "BEGIN TRANSACTION;\
+                 UPSERT type::record('sys_mesh_membership', $gkey) CONTENT $m;\
+                 UPSERT type::record('sys_mesh_membership_history', $hkey) CONTENT $h;\
+                 COMMIT TRANSACTION;",
+            )
+            .bind(("gkey", gkey))
             .bind(("m", val))
+            .bind(("hkey", hkey))
+            .bind(("h", hval))
             .await?
             .check()?;
         Ok(())
@@ -834,8 +976,8 @@ impl CoordinationGroup {
     ///
     /// Persists the slot decision (`CREATE` insert-if-absent keyed by `(group, epoch, slot)`) AND
     /// membership `next_slot` advancement inside ONE `nexus-db` transaction. If a decision already
-    /// exists for `(group, epoch, slot)`, verifies exact digest match (idempotent) or FAILS CLOSED
-    /// on conflict!
+    /// exists for `(group, epoch, slot)`, validates the existing durable record AND verifies exact
+    /// digest match (idempotent) or FAILS CLOSED on corruption/conflict!
     async fn persist_slot_decision_atomic(&self, lease: &FencedLease, new_next_slot: u64) -> Result<()> {
         let Some(ref db) = self.db else { return Ok(()) };
         let skey = slot_decision_key(&lease.group_id, lease.qc.epoch, lease.qc.slot);
@@ -874,17 +1016,19 @@ impl CoordinationGroup {
             Err(e) => return Err(anyhow!("Database error in atomic slot commit: {}", e)),
         }
 
-        // Slot record already exists in `sys_mesh_decision_log`: verify exact digest match or fail closed!
+        // Slot record already exists in `sys_mesh_decision_log`: validate it AND verify exact digest match!
         let mut resp = db
             .client
             .query("SELECT * FROM type::record('sys_mesh_decision_log', $skey)")
             .bind(("skey", skey))
             .await?;
         let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
-        let existing: FencedLease = rows
+        let raw_existing = rows
             .first()
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
             .ok_or_else(|| anyhow!("Slot decision reported existing but could not be read back"))?;
+        let existing: FencedLease = serde_json::from_value(raw_existing.clone())
+            .map_err(|e| anyhow!("Existing durable slot decision is malformed: {}", e))?;
+        self.validate_durable_decision(&existing, Some(lease.qc.slot))?;
         if existing.canonical_digest() != lease.canonical_digest() {
             anyhow::bail!(
                 "CRITICAL: Conflicting durable decision already committed for ({}, epoch={}, slot={})",
@@ -897,6 +1041,7 @@ impl CoordinationGroup {
     }
 
     /// Read ALL durable decisions in `sys_mesh_decision_log` matching `(self.group_id, self.membership_epoch, slot)`.
+    /// Explicitly fails closed on malformed records rather than silently discarding them!
     async fn read_durable_slot_decisions(&self, slot: u64) -> Result<Vec<FencedLease>> {
         let Some(ref db) = self.db else {
             return Ok(self
@@ -908,11 +1053,95 @@ impl CoordinationGroup {
         };
         let mut resp = db.client.query("SELECT * FROM sys_mesh_decision_log").await?;
         let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
-        Ok(rows
-            .into_iter()
-            .filter_map(|v| serde_json::from_value::<FencedLease>(v).ok())
-            .filter(|l| l.group_id == self.group_id && l.qc.epoch == self.membership_epoch && l.qc.slot == slot)
-            .collect())
+        let mut out = Vec::new();
+        for v in rows {
+            if let Some(row_gid) = v.get("group_id").and_then(|g| g.as_str()) {
+                if row_gid != self.group_id {
+                    continue;
+                }
+            }
+            let lease: FencedLease = serde_json::from_value(v).map_err(|e| {
+                anyhow!(
+                    "Malformed durable decision record in sys_mesh_decision_log for '{}': {}",
+                    self.group_id,
+                    e
+                )
+            })?;
+            if lease.group_id == self.group_id
+                && lease.qc.epoch == self.membership_epoch
+                && lease.qc.slot == slot
+            {
+                out.push(lease);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Shared durable decision validator used by `open_durable()`, `recover_and_commit_slot()`,
+    /// and `persist_slot_decision_atomic()`.
+    ///
+    /// Verifies group, fencing epoch, validity bounds, slot agreement, durable membership epoch
+    /// configuration (supporting historical membership epochs), authorized holder, Ed25519 quorum
+    /// signatures, and canonical `NEXUS-LEASE-PROPOSAL-v2` digest binding.
+    pub fn validate_durable_decision(
+        &self,
+        lease: &FencedLease,
+        expected_slot: Option<u64>,
+    ) -> Result<()> {
+        if lease.group_id != self.group_id {
+            anyhow::bail!(
+                "Durable decision group_id '{}' does not match '{}'",
+                lease.group_id,
+                self.group_id
+            );
+        }
+        if lease.fencing_epoch == 0 {
+            anyhow::bail!("Durable decision '{}' has invalid fencing_epoch 0", lease.lease_id);
+        }
+        if lease.expires_at_ms <= lease.issued_at_ms {
+            anyhow::bail!("Durable decision '{}' has invalid validity interval", lease.lease_id);
+        }
+        if lease.expires_at_ms - lease.issued_at_ms > self.max_lease_ttl_ms {
+            anyhow::bail!(
+                "Durable decision '{}' duration exceeds group max_lease_ttl_ms",
+                lease.lease_id
+            );
+        }
+        if let Some(slot) = expected_slot {
+            if lease.qc.slot != slot {
+                anyhow::bail!(
+                    "Durable decision QC slot {} does not match expected slot {}",
+                    lease.qc.slot,
+                    slot
+                );
+            }
+        }
+        let epoch_cfg = self.membership_history.get(&lease.qc.epoch).ok_or_else(|| {
+            anyhow!(
+                "No durable membership configuration available for ({}, epoch={}) to validate decision '{}'",
+                self.group_id,
+                lease.qc.epoch,
+                lease.lease_id
+            )
+        })?;
+        if !epoch_cfg.members.contains_key(&lease.holder_node_id) {
+            anyhow::bail!(
+                "Durable decision holder '{}' was not an authorized member in epoch {}",
+                lease.holder_node_id,
+                lease.qc.epoch
+            );
+        }
+        self.verify_qc_for_epoch(&lease.qc, epoch_cfg, lease.qc.epoch)?;
+        let expected_digest = lease.canonical_digest();
+        if lease.qc.proposal_hash != expected_digest {
+            anyhow::bail!(
+                "Durable decision '{}' QC proposal_hash '{}' does not match canonical lease digest '{}'",
+                lease.lease_id,
+                lease.qc.proposal_hash,
+                expected_digest
+            );
+        }
+        Ok(())
     }
 
     pub fn quorum_size(&self) -> usize {
@@ -931,10 +1160,11 @@ impl CoordinationGroup {
         slot: u64,
         locked_entries: Vec<(SignedVote, Option<LeaseProposal>)>,
     ) -> Result<Option<FencedLease>> {
-        // 1. Reconcile complete durable decision log for this slot
+        // 1. Reconcile & cryptographically validate complete durable decision log for this slot
         let durable_decisions = self.read_durable_slot_decisions(slot).await?;
         let mut distinct_durable_digests = HashSet::new();
         for d in &durable_decisions {
+            self.validate_durable_decision(d, Some(slot))?;
             distinct_durable_digests.insert(d.canonical_digest());
         }
         if distinct_durable_digests.len() > 1 {
@@ -1088,15 +1318,23 @@ impl CoordinationGroup {
         self.verify_qc(&qc)?;
 
         let new_next_slot = self.next_slot + 1;
-        self.persist_membership_record(next_epoch, new_next_slot, &new_members)
+        self.persist_membership_and_epoch_history(next_epoch, new_next_slot, &new_members)
             .await?;
 
         self.membership_epoch = next_epoch;
         self.next_slot = new_next_slot;
-        self.members = new_members
+        let new_map: HashMap<String, GroupMember> = new_members
             .into_iter()
             .map(|m| (m.node_id.clone(), m))
             .collect();
+        self.membership_history.insert(
+            next_epoch,
+            MembershipEpochConfig {
+                mode: self.mode,
+                members: new_map.clone(),
+            },
+        );
+        self.members = new_map;
         Ok(self.membership_epoch)
     }
 
@@ -1146,12 +1384,25 @@ impl CoordinationGroup {
     }
 
     pub fn verify_qc(&self, qc: &QuorumCertificate) -> Result<()> {
-        if qc.group_id != self.group_id || qc.mode != self.mode || qc.epoch != self.membership_epoch {
+        let current_cfg = MembershipEpochConfig {
+            mode: self.mode,
+            members: self.members.clone(),
+        };
+        self.verify_qc_for_epoch(qc, &current_cfg, self.membership_epoch)
+    }
+
+    pub fn verify_qc_for_epoch(
+        &self,
+        qc: &QuorumCertificate,
+        config: &MembershipEpochConfig,
+        expected_epoch: u64,
+    ) -> Result<()> {
+        if qc.group_id != self.group_id || qc.mode != config.mode || qc.epoch != expected_epoch {
             anyhow::bail!(
                 "QC mismatch: expected (group={}, epoch={}, mode={:?}), got (group={}, epoch={}, mode={:?})",
                 self.group_id,
-                self.membership_epoch,
-                self.mode,
+                expected_epoch,
+                config.mode,
                 qc.group_id,
                 qc.epoch,
                 qc.mode
@@ -1162,21 +1413,21 @@ impl CoordinationGroup {
             if v.group_id != qc.group_id || v.epoch != qc.epoch || v.slot != qc.slot || v.proposal_hash != qc.proposal_hash {
                 anyhow::bail!("QC contains mismatched vote");
             }
-            let member = self
+            let member = config
                 .members
                 .get(&v.voter_node_id)
-                .ok_or_else(|| anyhow!("QC voter '{}' not in group", v.voter_node_id))?;
+                .ok_or_else(|| anyhow!("QC voter '{}' not in group for epoch {}", v.voter_node_id, expected_epoch))?;
             let payload = canonical_vote_payload(&v.group_id, v.epoch, v.slot, &v.proposal_hash, &v.voter_node_id);
             if !nexus_db::auth::ed25519_verify(&member.ed25519_pubkey, &payload, &v.signature) {
                 anyhow::bail!("QC contains invalid signature from '{}'", v.voter_node_id);
             }
             unique_voters.insert(v.voter_node_id.clone());
         }
-        let required = self.quorum_size();
+        let required = config.mode.quorum_size(config.members.len());
         if unique_voters.len() < required {
             anyhow::bail!(
                 "Insufficient quorum for {:?}: got {} valid votes, need {}",
-                self.mode,
+                config.mode,
                 unique_voters.len(),
                 required
             );
@@ -1204,6 +1455,14 @@ impl CoordinationGroup {
         }
         if expires_at_ms - issued_at_ms > self.max_lease_ttl_ms {
             anyhow::bail!("Requested lease duration exceeds group max_lease_ttl_ms");
+        }
+        if now >= expires_at_ms {
+            anyhow::bail!(
+                "Cannot commit already-expired lease '{}' (expires_at_ms={} <= now={})",
+                lease_id,
+                expires_at_ms,
+                now
+            );
         }
         if let Some(existing) = self.active_leases.get(resource_key) {
             if existing.expires_at_ms > now && existing.holder_node_id != holder_node_id {
