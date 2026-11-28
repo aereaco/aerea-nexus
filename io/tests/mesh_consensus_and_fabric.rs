@@ -5,9 +5,9 @@ use nexus_io::iam::idp::{NexusIdp, OrgPolicyPatch};
 use nexus_io::mesh::consensus::{
     hash_genesis_config, hash_lease_proposal, hash_membership_change, sign_vote_raw,
     sign_vote_raw_in_term, verify_term_certificate_and_adoption, AcceptedSlotLock, ConsensusMode,
-    CoordinationGroup, FencedLease, FencedResourceGuard, GroupMember, LeaseProposal,
-    MembershipEpochConfig, MembershipTransitionProposal, PrepareTermRequest, QuorumCertificate,
-    SlotProposal, TermCertificate, VoteRequest, VoterNode,
+    CoordinationGroup, FencedLease, FencedResourceGuard, GenesisAnchorError, GroupMember,
+    LeaseProposal, MembershipEpochConfig, MembershipTransitionProposal, PrepareTermRequest,
+    QuorumCertificate, SlotProposal, TermCertificate, VoteRequest, VoterNode,
 };
 use nexus_io::mesh::resources::{
     schedule_and_lease_workload, GpuCapability, NodeAdvertisement, ReservationLedger,
@@ -1341,15 +1341,35 @@ async fn milestone2_durable_terms_adoption_epoch_install_and_contiguous_takeover
     for v in [&voter_a, &voter_b, &voter_c] {
         v.install_membership_epoch(&mdec, &ep1_cfg).await.unwrap();
     }
-    // Unanchored direct `install_membership_epoch` on brand-new D MUST fail!
+    // Unanchored direct `install_membership_epoch` AND uninitialized `install_membership_chain_from_genesis` MUST fail!
     assert!(
         voter_d.install_membership_epoch(&mdec, &ep1_cfg).await.is_err(),
         "New voter D MUST reject unanchored install_membership_epoch!"
     );
+    let missing_anchor_err = voter_d
+        .install_membership_chain_from_genesis(
+            "pool:m2",
+            ConsensusMode::CftFastPath,
+            epoch1_members.clone(),
+            &[mdec.clone()],
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            missing_anchor_err.downcast_ref::<GenesisAnchorError>(),
+            Some(GenesisAnchorError::MissingTrustedGenesisAnchor { .. })
+        ),
+        "Uninitialized voter MUST fail with typed MissingTrustedGenesisAnchor!"
+    );
+    // Independently provision trusted genesis anchor on D, then verify & install chain!
+    voter_d
+        .set_trusted_genesis_anchor("pool:m2", m2_genesis_digest)
+        .await
+        .unwrap();
     voter_d
         .install_membership_chain_from_genesis(
             "pool:m2",
-            &m2_genesis_digest,
             ConsensusMode::CftFastPath,
             epoch1_members.clone(),
             &[mdec],
@@ -1702,26 +1722,55 @@ async fn milestone2_1_atomic_cas_dual_quorum_trusted_genesis_and_strict_promises
         members: old_members.iter().cloned().map(|m| (m.node_id.clone(), m)).collect(),
     };
 
-    // Genesis substitution test: valid transition chain rooted in a DIFFERENT genesis MUST be rejected!
+    // Genesis substitution test:
+    // (a) Completely uninitialized voter F receiving fake genesis + chain MUST fail with MissingTrustedGenesisAnchor!
     let fake_genesis_members = vec![gm[5].clone(), gm[6].clone(), gm[7].clone()];
-    assert!(
+    let uninit_err = part_voters[5]
+        .install_membership_chain_from_genesis(
+            "pool:m21",
+            ConsensusMode::CftFastPath,
+            fake_genesis_members.clone(),
+            &[],
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        uninit_err.downcast_ref::<GenesisAnchorError>(),
+        Some(GenesisAnchorError::MissingTrustedGenesisAnchor { .. })
+    ));
+    // (b) Provision trusted genesis anchor on F, G, H -> cannot overwrite with a different digest,
+    //     and substituted fake genesis chain MUST fail with AnchorMismatch!
+    for v in &part_voters[5..8] {
+        v.set_trusted_genesis_anchor("pool:m21", genesis_digest.clone())
+            .await
+            .unwrap();
+    }
+    let fake_digest = hash_genesis_config("pool:m21", ConsensusMode::CftFastPath, &fake_genesis_members).unwrap();
+    assert!(matches!(
+        part_voters[5]
+            .set_trusted_genesis_anchor("pool:m21", fake_digest)
+            .await
+            .unwrap_err()
+            .downcast_ref::<GenesisAnchorError>(),
+        Some(GenesisAnchorError::AnchorMismatch { .. })
+    ));
+    assert!(matches!(
         part_voters[5]
             .install_membership_chain_from_genesis(
                 "pool:m21",
-                &genesis_digest,
                 ConsensusMode::CftFastPath,
                 fake_genesis_members,
                 &[],
             )
             .await
-            .is_err(),
-        "Genesis substitution MUST be rejected against trusted genesis anchor!"
-    );
+            .unwrap_err()
+            .downcast_ref::<GenesisAnchorError>(),
+        Some(GenesisAnchorError::AnchorMismatch { .. })
+    ));
     // Bootstrap new members F, G, H with the genuine trusted genesis anchor + verified transition!
     for v in &part_voters[5..8] {
         v.install_membership_chain_from_genesis(
             "pool:m21",
-            &genesis_digest,
             ConsensusMode::CftFastPath,
             old_members.clone(),
             &[mdec.clone()],
@@ -1851,4 +1900,166 @@ async fn milestone2_1_atomic_cas_dual_quorum_trusted_genesis_and_strict_promises
         verify_term_certificate_and_adoption(&forged_vote_cert, &old_cfg, 1).is_err(),
         "Forged embedded SignedVote signature in AcceptedSlotLock MUST fail closed!"
     );
+
+    // 6. Milestone 2.2: Crash after membership vote & durable barrier acceptance ->
+    //    Reopened on-disk voter MUST still reject old-epoch S+1!
+    let barrier_dir = std::env::temp_dir().join(format!("nexus_m22_barrier_{}", uuid::Uuid::new_v4().simple()));
+    let lp_s2_after_m = LeaseProposal {
+        lease_id: "lse_post_transition_s2".into(),
+        ..lp0.clone()
+    };
+    {
+        let bdb = Arc::new(Database::init_in(&barrier_dir).await);
+        let vb_a = VoterNode::new("node-a", keys[0].clone(), bdb);
+        let vb_b = VoterNode::new("node-b", keys[1].clone(), Arc::new(Database::open_mem()));
+        let vb_c = VoterNode::new("node-c", keys[2].clone(), Arc::new(Database::open_mem()));
+        for v in [&vb_a, &vb_b, &vb_c] {
+            v.install_genesis_epoch("pool:m22", ConsensusMode::CftFastPath, old_members[0..3].to_vec())
+                .await
+                .unwrap();
+        }
+        let pb_a = vb_a.prepare_term(&PrepareTermRequest { group_id: "pool:m22".into(), epoch: 1, term: 1, leader_id: "c1".into(), from_slot: 1 }).await.unwrap();
+        let pb_b = vb_b.prepare_term(&PrepareTermRequest { group_id: "pool:m22".into(), epoch: 1, term: 1, leader_id: "c1".into(), from_slot: 1 }).await.unwrap();
+        let cert_b1 = TermCertificate {
+            group_id: "pool:m22".into(),
+            epoch: 1,
+            term: 1,
+            leader_id: "c1".into(),
+            from_slot: 1,
+            mode: ConsensusMode::CftFastPath,
+            promises: vec![pb_a, pb_b],
+        };
+        let mb_prop = MembershipTransitionProposal::new(
+            "pool:m22",
+            1,
+            2,
+            1,
+            ConsensusMode::CftFastPath,
+            vec![gm[0].clone(), gm[1].clone()],
+        )
+        .unwrap();
+        // Accept membership transition at slot 1 -> atomically persists lock + durable barrier `epoch_barriers[1] = 1`!
+        let _ = vb_a
+            .cast_vote(&VoteRequest::for_membership(mb_prop).unwrap().with_term(1, "c1", cert_b1.clone()))
+            .await
+            .unwrap();
+        // Drop & reopen voter from disk to prove barrier survives crash/restart!
+        drop(vb_a);
+        let bdb_reopened = Arc::new(Database::init_in(&barrier_dir).await);
+        let vb_a_reopened = VoterNode::new("node-a", keys[0].clone(), bdb_reopened);
+        let post_s2_req = VoteRequest::for_lease(1, 2, LeaseProposal { group_id: "pool:m22".into(), ..lp_s2_after_m.clone() })
+            .with_term(1, "c1", cert_b1);
+        assert!(
+            vb_a_reopened.cast_vote(&post_s2_req).await.is_err(),
+            "Reopened voter MUST still enforce durable old-epoch barrier and reject slot S+1!"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&barrier_dir);
+
+    // 7. Milestone 2.2: Unresolved old-epoch S+1 lock preservation, receipt validation,
+    //    activation fail-closed, AND barrier-synchronized S+1 race during activation!
+    let unres_db_dir = std::env::temp_dir().join(format!("nexus_m22_unres_{}", uuid::Uuid::new_v4().simple()));
+    {
+        let udb_c = Arc::new(Database::init_in(&unres_db_dir).await);
+        let vu_a = VoterNode::new("node-a", keys[0].clone(), Arc::new(Database::open_mem()));
+        let vu_b = VoterNode::new("node-b", keys[1].clone(), Arc::new(Database::open_mem()));
+        let vu_c = VoterNode::new("node-c", keys[2].clone(), udb_c.clone());
+        let u_old_members = old_members[0..3].to_vec();
+        let u_old_cfg = MembershipEpochConfig {
+            mode: ConsensusMode::CftFastPath,
+            members: u_old_members.iter().cloned().map(|m| (m.node_id.clone(), m)).collect(),
+        };
+        for v in [&vu_a, &vu_b, &vu_c] {
+            v.install_genesis_epoch("pool:m22-u", ConsensusMode::CftFastPath, u_old_members.clone())
+                .await
+                .unwrap();
+        }
+        let pu_a = vu_a.prepare_term(&PrepareTermRequest { group_id: "pool:m22-u".into(), epoch: 1, term: 1, leader_id: "c1".into(), from_slot: 1 }).await.unwrap();
+        let pu_b = vu_b.prepare_term(&PrepareTermRequest { group_id: "pool:m22-u".into(), epoch: 1, term: 1, leader_id: "c1".into(), from_slot: 1 }).await.unwrap();
+        let pu_c = vu_c.prepare_term(&PrepareTermRequest { group_id: "pool:m22-u".into(), epoch: 1, term: 1, leader_id: "c1".into(), from_slot: 1 }).await.unwrap();
+        let cert_u1 = TermCertificate {
+            group_id: "pool:m22-u".into(),
+            epoch: 1,
+            term: 1,
+            leader_id: "c1".into(),
+            from_slot: 1,
+            mode: ConsensusMode::CftFastPath,
+            promises: vec![pu_a, pu_b, pu_c],
+        };
+        // A & B accept membership transition at slot 1; meanwhile C (before learning of slot 1)
+        // accepts an old-epoch lease vote at slot 2 (S+1)!
+        let mu_prop = MembershipTransitionProposal::new(
+            "pool:m22-u",
+            1,
+            2,
+            1,
+            ConsensusMode::CftFastPath,
+            vec![gm[0].clone(), gm[1].clone()],
+        )
+        .unwrap();
+        let mu_req = VoteRequest::for_membership(mu_prop.clone()).unwrap().with_term(1, "c1", cert_u1.clone());
+        let mv_a = vu_a.cast_vote(&mu_req).await.unwrap();
+        let mv_b = vu_b.cast_vote(&mu_req).await.unwrap();
+        let mut u_grp = CoordinationGroup::open_durable(
+            Arc::new(Database::open_mem()),
+            "pool:m22-u",
+            ConsensusMode::CftFastPath,
+            u_old_members.clone(),
+        )
+        .await
+        .unwrap();
+        let mu_dec = u_grp.reconfigure_membership_with_quorum(&mu_prop, vec![mv_a, mv_b]).await.unwrap();
+
+        let s2_prop = LeaseProposal {
+            group_id: "pool:m22-u".into(),
+            lease_id: "lse_unresolved_s2".into(),
+            ..lp0.clone()
+        };
+        let _ = vu_c
+            .cast_vote(&VoteRequest::for_lease(1, 2, s2_prop.clone()).with_term(1, "c1", cert_u1.clone()))
+            .await
+            .unwrap();
+
+        // Install transition at slot 1 on C -> receipt MUST preserve the validated slot-2 lock,
+        // NOT advance min_active_epoch to 2, AND install the durable barrier for slot > 1!
+        let receipt_c = vu_c.install_membership_epoch(&mu_dec, &u_old_cfg).await.unwrap();
+        assert_eq!(receipt_c.min_active_epoch, 1, "Voter with unresolved S+1 lock must not activate epoch 2!");
+        assert_eq!(receipt_c.post_transition_old_locks.len(), 1);
+        assert_eq!(receipt_c.post_transition_old_locks[0].slot, 2);
+        assert_eq!(receipt_c.post_transition_old_locks[0].proposal_hash, s2_prop.canonical_digest());
+
+        // Activation across (A, B, C) MUST FAIL CLOSED because C reported an unresolved S+1 lock!
+        assert!(
+            u_grp
+                .activate_membership_transition(&mu_dec, &u_old_cfg, &[vu_a, vu_b, vu_c.clone()])
+                .await
+                .is_err(),
+            "activate_membership_transition MUST fail closed when any old voter has an unresolved S+1 lock!"
+        );
+
+        // Restart voter C from disk -> unresolved slot-2 lock is STILL preserved for recovery,
+        // AND further old-epoch slot-3 votes are fenced by the durable barrier!
+        drop(vu_c);
+        drop(udb_c);
+        let udb_c_reopened = Arc::new(Database::init_in(&unres_db_dir).await);
+        let vu_c_reopened = VoterNode::new("node-c", keys[2].clone(), udb_c_reopened);
+        let (preserved_vote, preserved_prop) = vu_c_reopened
+            .query_slot_lock("pool:m22-u", 1, 2)
+            .await
+            .unwrap()
+            .expect("Unresolved S+1 lock MUST be preserved across restart for recovery!");
+        assert_eq!(preserved_vote.proposal_hash, s2_prop.canonical_digest());
+        assert_eq!(preserved_prop, Some(SlotProposal::Lease(s2_prop)));
+        assert!(
+            vu_c_reopened
+                .cast_vote(
+                    &VoteRequest::for_lease(1, 3, LeaseProposal { group_id: "pool:m22-u".into(), lease_id: "lse_s3".into(), ..lp0 })
+                        .with_term(1, "c1", cert_u1)
+                )
+                .await
+                .is_err(),
+            "Durable barrier on C MUST reject further old-epoch votes (slot 3) after restart!"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&unres_db_dir);
 }

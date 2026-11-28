@@ -211,7 +211,9 @@ async fn run_voter_child() {
                         members: prev_members.into_iter().map(|m| (m.node_id.clone(), m)).collect(),
                     };
                     match voter_c.install_membership_epoch(&decision, &prev_cfg).await {
-                        Ok(min_active_epoch) => VoterRpcResp::EpochInstalled { min_active_epoch },
+                        Ok(receipt) => VoterRpcResp::EpochInstalled {
+                            min_active_epoch: receipt.min_active_epoch,
+                        },
                         Err(e) => VoterRpcResp::Err { message: e.to_string() },
                     }
                 }

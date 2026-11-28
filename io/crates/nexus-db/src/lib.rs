@@ -509,6 +509,11 @@ impl NexusDb {
         auth: crate::auth::AuthContext,
     ) -> Result<Vec<Value>> {
         let stmts = parse_surql(surql)?;
+        let _write_guard = if Self::needs_write_lock(&stmts) {
+            Some(self.write_lock.lock().unwrap_or_else(|e| e.into_inner()))
+        } else {
+            None
+        };
         let params: HashMap<String, Value> = bindings.into_iter().collect();
         let mut ctx = ExecContext::new(
             self.storage.as_ref(),
@@ -537,6 +542,11 @@ impl NexusDb {
         bindings: Vec<(String, Value)>,
     ) -> Result<Vec<StatementOutcome>> {
         let stmts = parse_surql(surql)?;
+        let _write_guard = if Self::needs_write_lock(&stmts) {
+            Some(self.write_lock.lock().unwrap_or_else(|e| e.into_inner()))
+        } else {
+            None
+        };
         let params: HashMap<String, Value> = bindings.into_iter().collect();
         let mut ctx = ExecContext::new(
             self.storage.as_ref(),
@@ -566,6 +576,11 @@ impl NexusDb {
         auth: crate::auth::AuthContext,
     ) -> Result<Vec<StatementOutcome>> {
         let stmts = parse_surql(surql)?;
+        let _write_guard = if Self::needs_write_lock(&stmts) {
+            Some(self.write_lock.lock().unwrap_or_else(|e| e.into_inner()))
+        } else {
+            None
+        };
         let params: HashMap<String, Value> = bindings.into_iter().collect();
         let mut ctx = ExecContext::new(
             self.storage.as_ref(),

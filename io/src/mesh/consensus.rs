@@ -324,6 +324,56 @@ pub enum SlotRecoveryAction {
     FillGapNoOp(NoOpProposal),
 }
 
+/// Typed genesis-anchor trust errors returned when a voter lacks an independently provisioned
+/// trust anchor or when a supplied genesis configuration contradicts its pinned anchor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GenesisAnchorError {
+    MissingTrustedGenesisAnchor {
+        voter_node_id: String,
+        group_id: String,
+    },
+    AnchorMismatch {
+        voter_node_id: String,
+        group_id: String,
+    },
+}
+
+impl std::fmt::Display for GenesisAnchorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingTrustedGenesisAnchor {
+                voter_node_id,
+                group_id,
+            } => write!(
+                f,
+                "Voter '{}' has no independently provisioned trusted genesis anchor for '{}'",
+                voter_node_id, group_id
+            ),
+            Self::AnchorMismatch {
+                voter_node_id,
+                group_id,
+            } => write!(
+                f,
+                "Supplied genesis configuration disagrees with voter '{}' pinned trusted genesis anchor for '{}'",
+                voter_node_id, group_id
+            ),
+        }
+    }
+}
+
+impl std::error::Error for GenesisAnchorError {}
+
+/// Verifiable receipt returned by `VoterNode::install_membership_epoch()`, distinguishing
+/// old-epoch barrier installation from new-epoch activation and preserving any unresolved
+/// post-transition old-epoch accepted locks for recovery.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EpochInstallReceipt {
+    pub voter_node_id: String,
+    pub min_active_epoch: u64,
+    pub barrier_slot: u64,
+    pub post_transition_old_locks: Vec<AcceptedSlotLock>,
+}
+
 /// Summary of an autonomous multi-slot coordinator takeover & catch-up.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TakeoverReport {
@@ -610,6 +660,10 @@ struct DurableVoterTermState {
     min_active_epoch: u64,
     #[serde(default)]
     trusted_genesis_digest: Option<String>,
+    /// Durable per-epoch log barrier: once a membership transition at `(epoch, slot)` is accepted
+    /// or installed, this voter refuses all further votes in `epoch` for `slot > barrier_slot`.
+    #[serde(default)]
+    epoch_barriers: HashMap<u64, u64>,
     #[serde(default)]
     installed_epochs: HashMap<u64, MembershipEpochConfig>,
 }
@@ -1162,16 +1216,17 @@ impl VoterNode {
                 promised_leader_id: None,
                 min_active_epoch: 1,
                 trusted_genesis_digest: None,
+                epoch_barriers: HashMap::new(),
                 installed_epochs: HashMap::new(),
             },
         };
         if let Some(ref existing) = state.trusted_genesis_digest {
             if existing != &digest {
-                anyhow::bail!(
-                    "Conflicting trusted genesis anchor on voter '{}' for '{}'",
-                    self.node_id,
-                    group_id
-                );
+                return Err(GenesisAnchorError::AnchorMismatch {
+                    voter_node_id: self.node_id.clone(),
+                    group_id: group_id.to_string(),
+                }
+                .into());
             }
             return Ok(());
         }
@@ -1179,8 +1234,8 @@ impl VoterNode {
         self.persist_term_state(&state).await
     }
 
-    /// Durably install the genesis epoch-1 membership configuration on this voter so it can
-    /// independently verify Phase-1 `TermCertificate`s and enforce epoch fencing.
+    /// Explicitly provision and install the genesis epoch-1 membership configuration on this voter
+    /// so it can independently verify Phase-1 `TermCertificate`s and enforce epoch fencing.
     pub async fn install_genesis_epoch(
         &self,
         group_id: &str,
@@ -1204,15 +1259,17 @@ impl VoterNode {
                 promised_leader_id: None,
                 min_active_epoch: 1,
                 trusted_genesis_digest: Some(genesis_digest.clone()),
+                epoch_barriers: HashMap::new(),
                 installed_epochs: HashMap::new(),
             },
         };
         if let Some(ref pinned) = state.trusted_genesis_digest {
             if pinned != &genesis_digest {
-                anyhow::bail!(
-                    "Genesis configuration does not match voter '{}' pinned trusted genesis anchor!",
-                    self.node_id
-                );
+                return Err(GenesisAnchorError::AnchorMismatch {
+                    voter_node_id: self.node_id.clone(),
+                    group_id: group_id.to_string(),
+                }
+                .into());
             }
         } else {
             state.trusted_genesis_digest = Some(genesis_digest.clone());
@@ -1235,25 +1292,40 @@ impl VoterNode {
         Ok(genesis_digest)
     }
 
-    /// Bootstrap a newly admitted voter exclusively from a trusted genesis anchor + complete
-    /// sequential transition chain (`1 -> 2 -> ... -> N`), rejecting substituted genesis configs,
-    /// skipped epochs, or invalid transition QCs!
+    /// Verify and install a membership-transition chain (`1 -> 2 -> ... -> N`) on a newly admitted
+    /// voter strictly against its **independently provisioned** local `trusted_genesis_digest`
+    /// (established via `set_trusted_genesis_anchor()` or `install_genesis_epoch()`).
+    ///
+    /// Never creates or replaces a trust anchor from caller-supplied chain data; returns typed
+    /// `GenesisAnchorError::MissingTrustedGenesisAnchor` on an uninitialized voter!
     pub async fn install_membership_chain_from_genesis(
         &self,
         group_id: &str,
-        expected_genesis_digest: &str,
         genesis_mode: ConsensusMode,
         genesis_members: Vec<GroupMember>,
         transitions: &[MembershipTransitionDecision],
     ) -> Result<u64> {
+        let pinned = {
+            let _tx = self.db.lock_tx().await;
+            let state = self.load_term_state(group_id).await?;
+            match state.and_then(|s| s.trusted_genesis_digest) {
+                Some(d) => d,
+                None => {
+                    return Err(GenesisAnchorError::MissingTrustedGenesisAnchor {
+                        voter_node_id: self.node_id.clone(),
+                        group_id: group_id.to_string(),
+                    }
+                    .into());
+                }
+            }
+        };
         let computed = hash_genesis_config(group_id, genesis_mode, &genesis_members)?;
-        if computed != expected_genesis_digest {
-            anyhow::bail!(
-                "Genesis substitution rejected on voter '{}': supplied genesis digest '{}' != trusted anchor '{}'",
-                self.node_id,
-                computed,
-                expected_genesis_digest
-            );
+        if computed != pinned {
+            return Err(GenesisAnchorError::AnchorMismatch {
+                voter_node_id: self.node_id.clone(),
+                group_id: group_id.to_string(),
+            }
+            .into());
         }
         let _ = self
             .install_genesis_epoch(group_id, genesis_mode, genesis_members.clone())
@@ -1279,7 +1351,15 @@ impl VoterNode {
                     cur_epoch + 1
                 );
             }
-            cur_epoch = self.install_membership_epoch(dec, &prev_cfg).await?;
+            let receipt = self.install_membership_epoch(dec, &prev_cfg).await?;
+            if !receipt.post_transition_old_locks.is_empty() {
+                anyhow::bail!(
+                    "Bootstrap chain installation on '{}' blocked by {} unresolved post-transition old-epoch locks",
+                    self.node_id,
+                    receipt.post_transition_old_locks.len()
+                );
+            }
+            cur_epoch = receipt.min_active_epoch;
             prev_cfg = MembershipEpochConfig {
                 mode: dec.proposal.mode,
                 members: dec
@@ -1297,13 +1377,15 @@ impl VoterNode {
     /// Explicit, idempotent, durable membership-epoch installation for voters that ALREADY hold
     /// a locally verified predecessor epoch (`prop.prev_epoch`).
     ///
-    /// Rejects any unanchored caller-supplied `prev_cfg` that is not already installed on this
-    /// voter — new voters MUST bootstrap via `install_membership_chain_from_genesis()`!
+    /// Atomically installs the old-epoch barrier (`epoch_barriers[prev_epoch] = prop.slot`),
+    /// inspects & validates EVERY durable lock at `(prev_epoch, slot > prop.slot)` without
+    /// deleting or overwriting them, and only advances `min_active_epoch` when no unresolved
+    /// post-transition old-epoch locks exist!
     pub async fn install_membership_epoch(
         &self,
         decision: &MembershipTransitionDecision,
         prev_cfg: &MembershipEpochConfig,
-    ) -> Result<u64> {
+    ) -> Result<EpochInstallReceipt> {
         let _tx = self.db.lock_tx().await;
         let prop = &decision.proposal;
         if prop.next_epoch != prop.prev_epoch.saturating_add(1) {
@@ -1323,7 +1405,7 @@ impl VoterNode {
 
         let mut state = self.load_term_state(&prop.group_id).await?.ok_or_else(|| {
             anyhow!(
-                "Voter '{}' has no trusted genesis/predecessor anchor for '{}'; use install_membership_chain_from_genesis()",
+                "Voter '{}' has no trusted genesis/predecessor anchor for '{}'; provision anchor and use install_membership_chain_from_genesis()",
                 self.node_id,
                 prop.group_id
             )
@@ -1395,30 +1477,137 @@ impl VoterNode {
             );
         }
 
-        let new_cfg = MembershipEpochConfig {
-            mode: prop.mode,
-            members: prop
-                .new_members
-                .iter()
-                .cloned()
-                .map(|m| (m.node_id.clone(), m))
-                .collect(),
-        };
-
-        if let Some(existing_next) = state.installed_epochs.get(&prop.next_epoch) {
-            if existing_next != &new_cfg {
+        // Inspect & cryptographically validate ALL pre-existing durable locks at
+        // `(prop.group_id, self.node_id, epoch == prop.prev_epoch, slot > prop.slot)`.
+        // NEVER delete or overwrite them; preserve complete evidence for recovery!
+        let mut lresp = self
+            .db
+            .client
+            .query("SELECT * FROM sys_mesh_voter_lock")
+            .await?;
+        let lrows: Vec<serde_json::Value> = lresp.take(0).unwrap_or_default();
+        let mut post_transition_old_locks = Vec::new();
+        for raw in lrows {
+            if let Some(gid) = raw.get("group_id").and_then(|v| v.as_str()) {
+                if gid != prop.group_id {
+                    continue;
+                }
+            }
+            if let Some(vid) = raw.get("voter_node_id").and_then(|v| v.as_str()) {
+                if vid != self.node_id {
+                    continue;
+                }
+            }
+            let lock: DurableVoterLock = serde_json::from_value(raw).map_err(|e| {
+                anyhow!(
+                    "Corrupt durable voter lock on '{}' during epoch installation: {}",
+                    self.node_id,
+                    e
+                )
+            })?;
+            if lock.group_id != prop.group_id
+                || lock.voter_node_id != self.node_id
+                || lock.epoch != prop.prev_epoch
+                || lock.slot <= prop.slot
+            {
+                continue;
+            }
+            let expected_lk = self.slot_lock_key(&lock.group_id, lock.epoch, lock.slot);
+            if lock.lock_key != expected_lk {
+                anyhow::bail!("Misbound post-transition lock_key on '{}'", self.node_id);
+            }
+            let lock_prop = lock.proposal.ok_or_else(|| {
+                anyhow!(
+                    "Incomplete post-transition old-epoch lock on '{}' at slot {} (missing SlotProposal)",
+                    self.node_id,
+                    lock.slot
+                )
+            })?;
+            let computed = lock_prop.validate_for_vote(&lock.group_id, lock.epoch, lock.slot)?;
+            if computed != lock.proposal_hash {
                 anyhow::bail!(
-                    "Conflicting epoch {} configuration already installed on voter '{}'",
-                    prop.next_epoch,
-                    self.node_id
+                    "Tampered post-transition old-epoch lock on '{}' at slot {}",
+                    self.node_id,
+                    lock.slot
                 );
             }
-            return Ok(state.min_active_epoch);
+            if let Some(self_member) = prev_cfg.members.get(&self.node_id) {
+                let vpayload = canonical_vote_payload_for_term(
+                    &lock.group_id,
+                    lock.epoch,
+                    lock.accepted_term,
+                    lock.slot,
+                    &lock.proposal_hash,
+                    &lock.voter_node_id,
+                );
+                if !nexus_db::auth::ed25519_verify(&self_member.ed25519_pubkey, &vpayload, &lock.signature) {
+                    anyhow::bail!(
+                        "Invalid Ed25519 signature on post-transition old-epoch lock at slot {}",
+                        lock.slot
+                    );
+                }
+            }
+            let vote = SignedVote {
+                group_id: lock.group_id,
+                epoch: lock.epoch,
+                term: lock.accepted_term,
+                slot: lock.slot,
+                proposal_hash: lock.proposal_hash.clone(),
+                voter_node_id: lock.voter_node_id,
+                signature: lock.signature,
+            };
+            post_transition_old_locks.push(AcceptedSlotLock {
+                epoch: lock.epoch,
+                slot: lock.slot,
+                accepted_term: lock.accepted_term,
+                proposal_hash: lock.proposal_hash,
+                proposal: lock_prop,
+                vote,
+            });
         }
-        state.installed_epochs.insert(prop.next_epoch, new_cfg);
-        state.min_active_epoch = state.min_active_epoch.max(prop.next_epoch);
+        post_transition_old_locks.sort_by_key(|l| (l.slot, l.accepted_term));
+
+        // Always persist the durable old-epoch barrier (`epoch_barriers[prev_epoch] <= prop.slot`)
+        // so NO further old-epoch votes beyond `prop.slot` can ever be accepted!
+        state
+            .epoch_barriers
+            .entry(prop.prev_epoch)
+            .and_modify(|b| *b = (*b).min(prop.slot))
+            .or_insert(prop.slot);
+
+        // Only advance `min_active_epoch` & install `next_epoch` if NO unresolved post-transition
+        // old-epoch locks exist on this voter!
+        if post_transition_old_locks.is_empty() {
+            let new_cfg = MembershipEpochConfig {
+                mode: prop.mode,
+                members: prop
+                    .new_members
+                    .iter()
+                    .cloned()
+                    .map(|m| (m.node_id.clone(), m))
+                    .collect(),
+            };
+            if let Some(existing_next) = state.installed_epochs.get(&prop.next_epoch) {
+                if existing_next != &new_cfg {
+                    anyhow::bail!(
+                        "Conflicting epoch {} configuration already installed on voter '{}'",
+                        prop.next_epoch,
+                        self.node_id
+                    );
+                }
+            } else {
+                state.installed_epochs.insert(prop.next_epoch, new_cfg);
+            }
+            state.min_active_epoch = state.min_active_epoch.max(prop.next_epoch);
+        }
+
         self.persist_term_state(&state).await?;
-        Ok(state.min_active_epoch)
+        Ok(EpochInstallReceipt {
+            voter_node_id: self.node_id.clone(),
+            min_active_epoch: state.min_active_epoch,
+            barrier_slot: prop.slot,
+            post_transition_old_locks,
+        })
     }
 
     /// Atomic Phase-1 durable term promise + linearizable accepted-lock snapshot:
@@ -1709,6 +1898,18 @@ impl VoterNode {
                     state.min_active_epoch
                 );
             }
+            if let Some(&barrier_slot) = state.epoch_barriers.get(&req.epoch) {
+                if req.slot > barrier_slot {
+                    anyhow::bail!(
+                        "Durable old-epoch log barrier at slot {} on voter '{}' fences vote for ({}, epoch={}, slot={})",
+                        barrier_slot,
+                        self.node_id,
+                        req.group_id,
+                        req.epoch,
+                        req.slot
+                    );
+                }
+            }
             let epoch_cfg = state.installed_epochs.get(&req.epoch).ok_or_else(|| {
                 anyhow!(
                     "Voter '{}' has not installed membership configuration for epoch {}",
@@ -1771,6 +1972,18 @@ impl VoterNode {
                     state.min_active_epoch
                 );
             }
+            if let Some(&barrier_slot) = state.epoch_barriers.get(&req.epoch) {
+                if req.slot > barrier_slot {
+                    anyhow::bail!(
+                        "Durable old-epoch log barrier at slot {} on voter '{}' fences vote for ({}, epoch={}, slot={})",
+                        barrier_slot,
+                        self.node_id,
+                        req.group_id,
+                        req.epoch,
+                        req.slot
+                    );
+                }
+            }
             if state.promised_term > 0 {
                 anyhow::bail!(
                     "Unfenced term-0 VoteRequest rejected on voter '{}' (promised_term={})",
@@ -1804,13 +2017,46 @@ impl VoterNode {
         };
         let val = serde_json::to_value(&lock_rec)?;
 
-        let create_res = self
-            .db
-            .client
-            .query("CREATE type::record('sys_mesh_voter_lock', $id) CONTENT $l;")
-            .bind(("id", lock_key.clone()))
-            .bind(("l", val.clone()))
-            .await;
+        // When accepting a `SlotProposal::Membership`, persist BOTH the durable vote lock AND the
+        // durable old-epoch barrier (`epoch_barriers[req.epoch] <= req.slot`) atomically inside
+        // ONE `nexus-db` transaction so there is ZERO crash window between acceptance and fencing!
+        let barrier_state_update: Option<(String, serde_json::Value)> =
+            if matches!(req_prop, SlotProposal::Membership(_)) {
+                if let Some(mut ts) = term_state_opt.clone() {
+                    ts.epoch_barriers
+                        .entry(req.epoch)
+                        .and_modify(|b| *b = (*b).min(req.slot))
+                        .or_insert(req.slot);
+                    Some((ts.term_key.clone(), serde_json::to_value(&ts)?))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+        let create_res = if let Some((ref tid, ref ts_val)) = barrier_state_update {
+            self.db
+                .client
+                .query(
+                    "BEGIN TRANSACTION;\
+                     CREATE type::record('sys_mesh_voter_lock', $id) CONTENT $l;\
+                     UPSERT type::record('sys_mesh_voter_term', $tid) CONTENT $ts;\
+                     COMMIT TRANSACTION;",
+                )
+                .bind(("id", lock_key.clone()))
+                .bind(("l", val.clone()))
+                .bind(("tid", tid.clone()))
+                .bind(("ts", ts_val.clone()))
+                .await
+        } else {
+            self.db
+                .client
+                .query("CREATE type::record('sys_mesh_voter_lock', $id) CONTENT $l;")
+                .bind(("id", lock_key.clone()))
+                .bind(("l", val.clone()))
+                .await
+        };
 
         match create_res {
             Ok(resp) => match resp.check() {
@@ -1860,6 +2106,15 @@ impl VoterNode {
                 .await?;
             let updated_rows: Vec<serde_json::Value> = upd.take(0).unwrap_or_default();
             if !updated_rows.is_empty() {
+                if let Some((tid, ts_val)) = barrier_state_update {
+                    self.db
+                        .client
+                        .query("UPSERT type::record('sys_mesh_voter_term', $tid) CONTENT $ts;")
+                        .bind(("tid", tid))
+                        .bind(("ts", ts_val))
+                        .await?
+                        .check()?;
+                }
                 return Ok(vote);
             }
             // Conditional UPDATE lost a race (or encountered a legacy payload-less lock):
@@ -3666,6 +3921,7 @@ impl CoordinationGroup {
         let mut fenced_old = HashSet::new();
         let mut activated_new = HashSet::new();
         let mut failed_voters = HashSet::new();
+        let mut unresolved_post_transition: Vec<(String, Vec<u64>)> = Vec::new();
 
         for v in voters {
             let in_old = prev_cfg.members.contains_key(&v.node_id);
@@ -3674,18 +3930,40 @@ impl CoordinationGroup {
                 continue;
             }
             match v.install_membership_epoch(mdec, prev_cfg).await {
-                Ok(min_ep) if min_ep >= mdec.proposal.next_epoch => {
-                    if in_old {
-                        fenced_old.insert(v.node_id.clone());
+                Ok(receipt) => {
+                    if !receipt.post_transition_old_locks.is_empty() {
+                        let slots: Vec<u64> = receipt
+                            .post_transition_old_locks
+                            .iter()
+                            .map(|l| l.slot)
+                            .collect();
+                        unresolved_post_transition.push((v.node_id.clone(), slots));
+                        continue;
                     }
-                    if in_new {
-                        activated_new.insert(v.node_id.clone());
+                    if receipt.min_active_epoch >= mdec.proposal.next_epoch {
+                        if in_old {
+                            fenced_old.insert(v.node_id.clone());
+                        }
+                        if in_new {
+                            activated_new.insert(v.node_id.clone());
+                        }
+                    } else {
+                        failed_voters.insert(v.node_id.clone());
                     }
                 }
-                Ok(_) | Err(_) => {
+                Err(_) => {
                     failed_voters.insert(v.node_id.clone());
                 }
             }
+        }
+
+        if !unresolved_post_transition.is_empty() {
+            anyhow::bail!(
+                "Membership transition to epoch {} (slot={}) BLOCKED: unresolved post-transition old-epoch accepted locks exist on voters {:?} — must recover/reconcile before activation!",
+                mdec.proposal.next_epoch,
+                mdec.proposal.slot,
+                unresolved_post_transition
+            );
         }
 
         let req_old = prev_cfg.mode.quorum_size(prev_cfg.members.len());
