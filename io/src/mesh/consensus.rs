@@ -625,7 +625,7 @@ impl VoterNode {
             .db
             .client
             .query("SELECT * FROM type::record('sys_mesh_voter_lock', $id)")
-            .bind(("id", lock_key))
+            .bind(("id", lock_key.clone()))
             .await?;
         let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
         let Some(raw) = rows.first() else {
@@ -641,6 +641,26 @@ impl VoterNode {
                 e
             )
         })?;
+        if existing.lock_key != lock_key
+            || existing.group_id != group_id
+            || existing.epoch != epoch
+            || existing.slot != slot
+            || existing.voter_node_id != self.node_id
+        {
+            anyhow::bail!(
+                "Misbound durable voter lock on '{}': lookup=(key={}, group={}, epoch={}, slot={}), stored=(key={}, group={}, epoch={}, slot={}, voter={})",
+                self.node_id,
+                lock_key,
+                group_id,
+                epoch,
+                slot,
+                existing.lock_key,
+                existing.group_id,
+                existing.epoch,
+                existing.slot,
+                existing.voter_node_id
+            );
+        }
         Ok(Some((
             SignedVote {
                 group_id: existing.group_id,
@@ -1881,7 +1901,17 @@ impl CoordinationGroup {
         let mut proposals_by_hash: HashMap<String, SlotProposal> = HashMap::new();
         for (v, prop_opt) in locked_entries {
             if v.group_id != self.group_id || v.epoch != self.membership_epoch || v.slot != slot {
-                continue;
+                anyhow::bail!(
+                    "Unexpected voter lock identity in slot {} recovery: expected ({}, epoch={}, slot={}), got ({}, epoch={}, slot={}) from '{}'",
+                    slot,
+                    self.group_id,
+                    self.membership_epoch,
+                    slot,
+                    v.group_id,
+                    v.epoch,
+                    v.slot,
+                    v.voter_node_id
+                );
             }
             let Some(ref p) = prop_opt else {
                 anyhow::bail!(

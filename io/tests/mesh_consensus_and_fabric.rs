@@ -201,11 +201,11 @@ async fn p0_resource_trust_crdt_expiry_membership_digest_and_authenticated_bound
     legacy_db
         .client
         .query("CREATE type::record('sys_mesh_voter_lock', $id) CONTENT $l;")
-        .bind(("id", legacy_lock_key))
+        .bind(("id", legacy_lock_key.clone()))
         .bind((
             "l",
             serde_json::json!({
-                "lock_key": "legacy",
+                "lock_key": legacy_lock_key,
                 "group_id": "pool:us-east",
                 "epoch": 1,
                 "slot": 60,
@@ -792,6 +792,52 @@ async fn p0_resource_trust_crdt_expiry_membership_digest_and_authenticated_bound
     assert!(
         legacy_voter.query_slot_lock("pool:us-east", 1, 98).await.unwrap().is_none(),
         "Absent durable voter lock must still return Ok(None)!"
+    );
+
+    // 7i-2. Milestone 1.2: Misbound lock_key, group_id, epoch, slot, or voter_node_id MUST fail closed
+    //       in query_slot_lock(), AND unexpected lock identity MUST fail closed in recover_and_commit_slot()!
+    let misbound_cases = [
+        ("wrong_lock_key", 101u64, "WRONG_KEY", "pool:us-east", 1u64, 101u64, "node-a"),
+        ("wrong_group", 102, "", "pool:other", 1, 102, "node-a"),
+        ("wrong_epoch", 103, "", "pool:us-east", 9, 103, "node-a"),
+        ("wrong_slot", 104, "", "pool:us-east", 1, 999, "node-a"),
+        ("wrong_voter", 105, "", "pool:us-east", 1, 105, "node-b"),
+    ];
+    for (label, lookup_slot, override_key, stored_gid, stored_ep, stored_slot, stored_voter) in misbound_cases {
+        let lk = legacy_voter.slot_lock_key("pool:us-east", 1, lookup_slot);
+        let stored_lk = if override_key.is_empty() { lk.clone() } else { override_key.to_string() };
+        legacy_db
+            .client
+            .query("CREATE type::record('sys_mesh_voter_lock', $id) CONTENT $l;")
+            .bind(("id", lk))
+            .bind((
+                "l",
+                serde_json::json!({
+                    "lock_key": stored_lk,
+                    "group_id": stored_gid,
+                    "epoch": stored_ep,
+                    "slot": stored_slot,
+                    "proposal_hash": mix_hash,
+                    "voter_node_id": stored_voter,
+                    "signature": "sig",
+                    "locked_at_ms": t0,
+                }),
+            ))
+            .await
+            .unwrap();
+        assert!(
+            legacy_voter.query_slot_lock("pool:us-east", 1, lookup_slot).await.is_err(),
+            "query_slot_lock MUST fail closed on misbound case '{}'!",
+            label
+        );
+    }
+    let wrong_slot_vote = sign_vote_raw("pool:us-east", 1, 999, &mix_hash, "node-a", &sk_a).unwrap();
+    assert!(
+        rec_group
+            .recover_and_commit_slot(62, vec![(wrong_slot_vote, None)])
+            .await
+            .is_err(),
+        "recover_and_commit_slot MUST fail closed on unexpected (group/epoch/slot) entry!"
     );
 
     // 7j. Milestone 1.1: Genesis guard rejects pre-existing same-group OR ambiguous decision-log rows,
