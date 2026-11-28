@@ -1240,6 +1240,14 @@
     "category": "Apps"
   },
   {
+    "id": "maturity-matrix",
+    "route": "/maturity-matrix",
+    "path": "/_pages/docs/maturity-matrix.md",
+    "title": "Aerea-Nexus Per-Capability Maturity Matrix",
+    "parent": null,
+    "category": "Docs"
+  },
+  {
     "id": "admin",
     "route": "",
     "path": "/_internal/admin-console.html",
