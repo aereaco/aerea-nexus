@@ -3,11 +3,13 @@
 use nexus_io::db::{is_already_exists_error, Database};
 use nexus_io::iam::idp::{NexusIdp, OrgPolicyPatch};
 use nexus_io::mesh::consensus::{
-    hash_genesis_config, hash_lease_proposal, hash_membership_change, sign_vote_raw,
-    sign_vote_raw_in_term, verify_term_certificate_and_adoption, AcceptedSlotLock, ConsensusMode,
-    CoordinationGroup, FencedLease, FencedResourceGuard, GenesisAnchorError, GroupMember,
-    LeaseProposal, MembershipEpochConfig, MembershipTransitionProposal, PrepareTermRequest,
-    QuorumCertificate, SlotProposal, TermCertificate, VoteRequest, VoterNode,
+    canonical_epoch_receipt_payload, hash_genesis_config, hash_lease_proposal,
+    hash_membership_change, sign_vote_raw, sign_vote_raw_in_term,
+    verify_term_certificate_and_adoption, AcceptedSlotLock, ConsensusMode, CoordinationGroup,
+    FencedLease, FencedResourceGuard, GenesisAnchorError, GenesisProvisioningOrder, GroupMember,
+    LeaseProposal, MembershipEpochConfig, MembershipTransitionDecision,
+    MembershipTransitionProposal, PrepareTermRequest, QuorumCertificate, SlotProposal,
+    TermCertificate, VoteRequest, VoterNode,
 };
 use nexus_io::mesh::resources::{
     schedule_and_lease_workload, GpuCapability, NodeAdvertisement, ReservationLedger,
@@ -2176,4 +2178,201 @@ async fn milestone2_1_atomic_cas_dual_quorum_trusted_genesis_and_strict_promises
         );
     }
     let _ = std::fs::remove_dir_all(&repl_dir);
+
+    // 9. Milestone 2.2.2: Adversarial signed EpochInstallReceipt & local operator provisioning tests!
+    //    (a) Forged epoch, altered barrier, stripped lock list, wrong voter key, cross-group receipt,
+    //        cross-transition replay, mismatched embedded vote, duplicated lock, and forged mdec QC!
+    let mut good_receipts = Vec::new();
+    for v in &part_voters[0..3] {
+        good_receipts.push(v.install_membership_epoch(&mdec, &old_cfg).await.unwrap());
+    }
+    for v in &part_voters[5..8] {
+        good_receipts.push(v.install_membership_epoch(&mdec, &old_cfg).await.unwrap());
+    }
+    assert!(grp.verify_activation_receipts(&mdec, &old_cfg, &good_receipts).is_ok());
+
+    // Forged min_active_epoch
+    let mut r_forged_ep = good_receipts.clone();
+    r_forged_ep[0].min_active_epoch = 99;
+    assert!(grp.verify_activation_receipts(&mdec, &old_cfg, &r_forged_ep).is_err());
+
+    // Altered barrier_slot
+    let mut r_bad_bar = good_receipts.clone();
+    r_bad_bar[0].barrier_slot = 99;
+    assert!(grp.verify_activation_receipts(&mdec, &old_cfg, &r_bad_bar).is_err());
+
+    // Wrong voter signing key (sign node-a receipt with node-b's secret key!)
+    let mut r_wrong_key = good_receipts.clone();
+    let wk_payload = canonical_epoch_receipt_payload(
+        &r_wrong_key[0].group_id,
+        &r_wrong_key[0].transition_digest,
+        &r_wrong_key[0].voter_node_id,
+        r_wrong_key[0].min_active_epoch,
+        r_wrong_key[0].barrier_slot,
+        &r_wrong_key[0].post_transition_old_locks,
+    )
+    .unwrap();
+    r_wrong_key[0].signature = nexus_db::auth::ed25519_sign(&keys[1], &wk_payload).unwrap();
+    assert!(grp.verify_activation_receipts(&mdec, &old_cfg, &r_wrong_key).is_err());
+
+    // Valid member signature but for a DIFFERENT group_id -> REJECTED!
+    let mut r_wrong_grp = good_receipts.clone();
+    r_wrong_grp[0].group_id = "pool:other-group".into();
+    let wg_payload = canonical_epoch_receipt_payload(
+        "pool:other-group",
+        &r_wrong_grp[0].transition_digest,
+        &r_wrong_grp[0].voter_node_id,
+        r_wrong_grp[0].min_active_epoch,
+        r_wrong_grp[0].barrier_slot,
+        &r_wrong_grp[0].post_transition_old_locks,
+    )
+    .unwrap();
+    r_wrong_grp[0].signature = nexus_db::auth::ed25519_sign(&keys[0], &wg_payload).unwrap();
+    assert!(grp.verify_activation_receipts(&mdec, &old_cfg, &r_wrong_grp).is_err());
+
+    // Cross-transition replay (different transition_digest, validly signed by node-a) -> REJECTED!
+    let mut r_replay = good_receipts.clone();
+    r_replay[0].transition_digest = "deadbeef".into();
+    let rp_payload = canonical_epoch_receipt_payload(
+        &r_replay[0].group_id,
+        "deadbeef",
+        &r_replay[0].voter_node_id,
+        r_replay[0].min_active_epoch,
+        r_replay[0].barrier_slot,
+        &r_replay[0].post_transition_old_locks,
+    )
+    .unwrap();
+    r_replay[0].signature = nexus_db::auth::ed25519_sign(&keys[0], &rp_payload).unwrap();
+    assert!(grp.verify_activation_receipts(&mdec, &old_cfg, &r_replay).is_err());
+
+    // Valid receipt signature with mismatched embedded SignedVote -> REJECTED!
+    let lp_mis = LeaseProposal {
+        group_id: "pool:m21".into(),
+        lease_id: "lse_mis".into(),
+        resource_key: "gpu:0".into(),
+        holder_node_id: "node-a".into(),
+        workload_id: "wl-mis".into(),
+        fencing_epoch: 1,
+        issued_at_ms: t0,
+        expires_at_ms: t0 + 60_000,
+    };
+    let bad_embedded_lock = AcceptedSlotLock {
+        epoch: 1,
+        slot: 2,
+        accepted_term: 1,
+        proposal_hash: lp_mis.canonical_digest(),
+        proposal: SlotProposal::Lease(lp_mis.clone()),
+        vote: sign_vote_raw_in_term("pool:m21", 1, 1, 2, &lp_mis.canonical_digest(), "node-b", &keys[1]).unwrap(), // wrong voter!
+    };
+    assert!(
+        canonical_epoch_receipt_payload(
+            "pool:m21",
+            &mdec.canonical_digest().unwrap(),
+            "node-a",
+            1,
+            1,
+            &[bad_embedded_lock.clone()],
+        )
+        .is_err(),
+        "Mismatched embedded SignedVote MUST be rejected in canonical_epoch_receipt_payload!"
+    );
+
+    // Duplicated lock entry in receipt -> REJECTED!
+    let valid_embedded_lock = AcceptedSlotLock {
+        epoch: 1,
+        slot: 2,
+        accepted_term: 1,
+        proposal_hash: lp_mis.canonical_digest(),
+        proposal: SlotProposal::Lease(lp_mis.clone()),
+        vote: sign_vote_raw_in_term("pool:m21", 1, 1, 2, &lp_mis.canonical_digest(), "node-a", &keys[0]).unwrap(),
+    };
+    assert!(
+        canonical_epoch_receipt_payload(
+            "pool:m21",
+            &mdec.canonical_digest().unwrap(),
+            "node-a",
+            1,
+            1,
+            &[valid_embedded_lock.clone(), valid_embedded_lock],
+        )
+        .is_err(),
+        "Duplicated lock entry MUST be rejected in canonical_epoch_receipt_payload!"
+    );
+
+    // Self-contained mdec QC check: forged mdec (empty QC) MUST be rejected by verify_activation_receipts!
+    let forged_mdec = MembershipTransitionDecision {
+        proposal: mdec.proposal.clone(),
+        qc: QuorumCertificate {
+            votes: vec![],
+            ..mdec.qc.clone()
+        },
+    };
+    assert!(
+        grp.verify_activation_receipts(&forged_mdec, &old_cfg, &good_receipts)
+            .is_err(),
+        "verify_activation_receipts MUST independently verify mdec QC and reject forged mdec!"
+    );
+
+    // (b) Locally pinned operator provisioning: unauthorized operator, key revocation, AND crash/restart audit!
+    let (op1_sk, op1_pk) = nexus_db::auth::ed25519_generate_keypair();
+    let (op2_sk, op2_pk) = nexus_db::auth::ed25519_generate_keypair();
+    let prov_dir = std::env::temp_dir().join(format!("nexus_m222_prov_{}", uuid::Uuid::new_v4().simple()));
+    let order_op1 = GenesisProvisioningOrder::new_signed(
+        "pool:m222-prov",
+        ConsensusMode::CftFastPath,
+        old_members[0..3].to_vec(),
+        "op-primary",
+        t0,
+        &op1_sk,
+    )
+    .unwrap();
+    let order_op2_unauth = GenesisProvisioningOrder::new_signed(
+        "pool:m222-prov",
+        ConsensusMode::CftFastPath,
+        old_members[0..3].to_vec(),
+        "op-other",
+        t0,
+        &op2_sk,
+    )
+    .unwrap();
+    {
+        let pdb = Arc::new(Database::init_in(&prov_dir).await);
+        // Voter with NO authorized operators fails closed!
+        let v_no_ops = VoterNode::new("node-a", keys[0].clone(), pdb.clone());
+        assert!(v_no_ops.provision_genesis_signed(&order_op1).await.is_err());
+
+        // Voter authorizing ONLY `op-primary` rejects `op-other`, accepts `op-primary` idempotently!
+        let mut ops1 = std::collections::HashMap::new();
+        ops1.insert("op-primary".to_string(), op1_pk.clone());
+        let v_ops1 = VoterNode::new("node-a", keys[0].clone(), pdb.clone()).with_authorized_operators(ops1);
+        assert!(v_ops1.provision_genesis_signed(&order_op2_unauth).await.is_err());
+        let gd = v_ops1.provision_genesis_signed(&order_op1).await.unwrap();
+        let gd_idemp = v_ops1.provision_genesis_signed(&order_op1).await.unwrap();
+        assert_eq!(gd, gd_idemp);
+    }
+    // Crash & restart voter from disk with rotated/revoked operator key (`op-primary` rotated to `op2_pk`):
+    // 1. Old `op1_sk` order MUST now be rejected (revocation enforced!).
+    // 2. Durable genesis anchor, order digest, and operator identity MUST survive restart!
+    {
+        let pdb_reopened = Arc::new(Database::init_in(&prov_dir).await);
+        let mut ops_rotated = std::collections::HashMap::new();
+        ops_rotated.insert("op-primary".to_string(), op2_pk); // op1_pk revoked!
+        let v_rotated = VoterNode::new("node-a", keys[0].clone(), pdb_reopened).with_authorized_operators(ops_rotated);
+        assert!(
+            v_rotated.provision_genesis_signed(&order_op1).await.is_err(),
+            "Revoked operator key MUST be rejected after key rotation!"
+        );
+        let (persisted_gd, persisted_od, persisted_op) = v_rotated
+            .genesis_audit_info("pool:m222-prov")
+            .await
+            .unwrap()
+            .expect("Provisioned genesis anchor & audit info MUST survive restart!");
+        assert_eq!(
+            persisted_gd,
+            hash_genesis_config("pool:m222-prov", ConsensusMode::CftFastPath, &old_members[0..3]).unwrap()
+        );
+        assert_eq!(persisted_od, Some(order_op1.order_digest().unwrap()));
+        assert_eq!(persisted_op, Some("op-primary".to_string()));
+    }
+    let _ = std::fs::remove_dir_all(&prov_dir);
 }

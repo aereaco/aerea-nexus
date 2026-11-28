@@ -19,11 +19,13 @@
 use nexus_io::db::Database;
 use nexus_io::mesh::consensus::{
     ConsensusMode, CoordinationGroup, DurableSlotDecision, EpochInstallReceipt, FencedLease,
-    FencedResourceGuard, GroupMember, LeaseProposal, MembershipEpochConfig,
-    MembershipTransitionDecision, MembershipTransitionProposal, PrepareTermRequest, SignedVote,
-    SlotProposal, TermCertificate, TermPromise, VoteRequest, VoterNode,
+    FencedResourceGuard, GenesisProvisioningOrder, GroupMember, LeaseProposal,
+    MembershipEpochConfig, MembershipTransitionDecision, MembershipTransitionProposal,
+    PrepareTermRequest, SignedVote, SlotProposal, TermCertificate, TermPromise, VoteRequest,
+    VoterNode,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
@@ -36,12 +38,9 @@ use tokio::sync::Mutex;
 enum VoterRpcReq {
     Vote(VoteRequest),
     PrepareTerm(PrepareTermRequest),
-    /// Authenticated administrative genesis provisioning (strictly separate from membership installation!).
+    /// Authenticated administrative genesis provisioning (verified against locally pinned operator key).
     AdminProvisionGenesis {
-        admin_token: String,
-        group_id: String,
-        mode: ConsensusMode,
-        members: Vec<GroupMember>,
+        order: GenesisProvisioningOrder,
     },
     InstallMembershipEpoch {
         decision: MembershipTransitionDecision,
@@ -175,7 +174,19 @@ async fn run_voter_child() {
     };
 
     let db = Arc::new(Database::init_in(data_dir.join("db")).await);
-    let voter = VoterNode::new(node_id, sk, db.clone()).with_legacy_term_zero_compat();
+    // Locally pin authorized bootstrap operator public key from deployment env (NO default fallback!).
+    let mut authorized_ops = HashMap::new();
+    if let (Ok(op_id), Ok(op_pk)) = (
+        std::env::var("NEXUS_PROVISION_OPERATOR_ID"),
+        std::env::var("NEXUS_PROVISION_OPERATOR_PUBKEY"),
+    ) {
+        if !op_id.is_empty() && !op_pk.is_empty() {
+            authorized_ops.insert(op_id, op_pk);
+        }
+    }
+    let voter = VoterNode::new(node_id, sk, db.clone())
+        .with_authorized_operators(authorized_ops)
+        .with_legacy_term_zero_compat();
     let guard = FencedResourceGuard::new(db.clone());
     voter.ensure_tables().await.unwrap();
     guard.ensure_tables().await.unwrap();
@@ -186,14 +197,10 @@ async fn run_voter_child() {
     use std::io::Write as _;
     std::io::stdout().flush().unwrap();
 
-    let expected_admin_token = std::env::var("NEXUS_BOOTSTRAP_ADMIN_TOKEN")
-        .unwrap_or_else(|_| "nexus-bootstrap-admin-secret-v1".to_string());
-
     loop {
         let Ok((socket, _)) = listener.accept().await else { break };
         let voter_c = voter.clone();
         let guard_c = guard.clone();
-        let admin_tok = expected_admin_token.clone();
         tokio::spawn(async move {
             let (read_half, mut write_half) = socket.into_split();
             let mut reader = BufReader::new(read_half);
@@ -210,21 +217,10 @@ async fn run_voter_child() {
                     Ok(promise) => VoterRpcResp::PromiseOk { promise },
                     Err(e) => VoterRpcResp::Err { message: e.to_string() },
                 },
-                Ok(VoterRpcReq::AdminProvisionGenesis {
-                    admin_token,
-                    group_id,
-                    mode,
-                    members,
-                }) => {
-                    if admin_token != admin_tok {
-                        VoterRpcResp::Err {
-                            message: "Unauthorized: invalid administrative bootstrap credential".into(),
-                        }
-                    } else {
-                        match voter_c.install_genesis_epoch(&group_id, mode, members).await {
-                            Ok(genesis_digest) => VoterRpcResp::GenesisProvisioned { genesis_digest },
-                            Err(e) => VoterRpcResp::Err { message: e.to_string() },
-                        }
+                Ok(VoterRpcReq::AdminProvisionGenesis { order }) => {
+                    match voter_c.provision_genesis_signed(&order).await {
+                        Ok(genesis_digest) => VoterRpcResp::GenesisProvisioned { genesis_digest },
+                        Err(e) => VoterRpcResp::Err { message: e.to_string() },
                     }
                 }
                 Ok(VoterRpcReq::InstallMembershipEpoch { decision, prev_members }) => {
@@ -451,7 +447,7 @@ async fn run_coordinator_child() {
     }
 }
 
-fn spawn_voter(node_id: &str, data_dir: &PathBuf) -> (Child, String, String) {
+fn spawn_voter(node_id: &str, data_dir: &PathBuf, op_id: &str, op_pk: &str) -> (Child, String, String) {
     let exe = std::env::current_exe().unwrap();
     let mut child = Command::new(exe)
         .arg("--exact")
@@ -460,6 +456,8 @@ fn spawn_voter(node_id: &str, data_dir: &PathBuf) -> (Child, String, String) {
         .env("NEXUS_CHILD_ROLE", "voter")
         .env("NEXUS_CHILD_NODE_ID", node_id)
         .env("NEXUS_CHILD_DATA_DIR", data_dir)
+        .env("NEXUS_PROVISION_OPERATOR_ID", op_id)
+        .env("NEXUS_PROVISION_OPERATOR_PUBKEY", op_pk)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -522,10 +520,13 @@ async fn five_process_autonomous_standby_recovery_and_host_clock_fencing() {
         _ => {}
     }
 
+    let (op_sk, op_pk) = nexus_db::auth::ed25519_generate_keypair();
+    let (rogue_sk, _rogue_pk) = nexus_db::auth::ed25519_generate_keypair();
+
     let base_dir = std::env::temp_dir().join(format!("nexus_5proc_auto_{}", uuid::Uuid::new_v4().simple()));
-    let (mut v1, v_addr1, pk1) = spawn_voter("node-1", &base_dir.join("v1"));
-    let (mut v2, v_addr2, pk2) = spawn_voter("node-2", &base_dir.join("v2"));
-    let (mut v3, v_addr3, pk3) = spawn_voter("node-3", &base_dir.join("v3"));
+    let (mut v1, v_addr1, pk1) = spawn_voter("node-1", &base_dir.join("v1"), "op-bootstrap", &op_pk);
+    let (mut v2, v_addr2, pk2) = spawn_voter("node-2", &base_dir.join("v2"), "op-bootstrap", &op_pk);
+    let (mut v3, v_addr3, pk3) = spawn_voter("node-3", &base_dir.join("v3"), "op-bootstrap", &op_pk);
     let all_voters = vec![v_addr1.clone(), v_addr2.clone(), v_addr3.clone()];
 
     let members = vec![
@@ -795,21 +796,20 @@ async fn five_process_autonomous_standby_recovery_and_host_clock_fencing() {
         other => panic!("Restarted coord-3 failed to reconstruct verified epoch 2 chain: {:?}", other),
     }
 
-    // 6. Milestone 2 & 2.2.1: Authenticated genesis provisioning, full EpochInstallReceipt over TCP,
-    //    removed-member fencing, same-term leader conflict rejection, and stale-term fencing!
-    let admin_token = "nexus-bootstrap-admin-secret-v1".to_string();
-    // Unauthenticated genesis provisioning MUST be rejected!
+    // 6. Milestone 2.2.2: Operator-signed genesis provisioning (locally pinned key), signed
+    //    EpochInstallReceipt over TCP, forged receipt rejection, removed-member & stale-term fencing!
+    // Rogue / unauthorized operator signature MUST be rejected!
+    let rogue_order = GenesisProvisioningOrder::new_signed(
+        "pool:mp",
+        ConsensusMode::CftFastPath,
+        members.clone(),
+        "op-rogue",
+        now,
+        &rogue_sk,
+    )
+    .unwrap();
     assert!(matches!(
-        send_voter_rpc(
-            &v_addr1,
-            &VoterRpcReq::AdminProvisionGenesis {
-                admin_token: "WRONG_TOKEN".into(),
-                group_id: "pool:mp".into(),
-                mode: ConsensusMode::CftFastPath,
-                members: members.clone(),
-            },
-        )
-        .await,
+        send_voter_rpc(&v_addr1, &VoterRpcReq::AdminProvisionGenesis { order: rogue_order }).await,
         VoterRpcResp::Err { .. }
     ));
     // Unprovisioned voter MUST reject `InstallMembershipEpoch` (cannot establish its own anchor!)
@@ -825,38 +825,46 @@ async fn five_process_autonomous_standby_recovery_and_host_clock_fencing() {
         VoterRpcResp::Err { .. }
     ));
 
-    // Explicitly provision trusted genesis on v1, v2, v3 with authenticated admin credential
+    // Explicitly provision trusted genesis on v1, v2, v3 with locally authorized operator signature
     // (idempotent on exact repeat; rejects conflicting replacement!)
+    let valid_order = GenesisProvisioningOrder::new_signed(
+        "pool:mp",
+        ConsensusMode::CftFastPath,
+        members.clone(),
+        "op-bootstrap",
+        now,
+        &op_sk,
+    )
+    .unwrap();
     for addr in [&v_addr1, &v_addr2, &v_addr3] {
         assert!(matches!(
             send_voter_rpc(
                 addr,
-                &VoterRpcReq::AdminProvisionGenesis {
-                    admin_token: admin_token.clone(),
-                    group_id: "pool:mp".into(),
-                    mode: ConsensusMode::CftFastPath,
-                    members: members.clone(),
-                },
+                &VoterRpcReq::AdminProvisionGenesis { order: valid_order.clone() },
             )
             .await,
             VoterRpcResp::GenesisProvisioned { .. }
         ));
     }
+    let conflicting_order = GenesisProvisioningOrder::new_signed(
+        "pool:mp",
+        ConsensusMode::CftFastPath,
+        epoch2_members.clone(),
+        "op-bootstrap",
+        now + 1,
+        &op_sk,
+    )
+    .unwrap();
     assert!(matches!(
         send_voter_rpc(
             &v_addr1,
-            &VoterRpcReq::AdminProvisionGenesis {
-                admin_token: admin_token.clone(),
-                group_id: "pool:mp".into(),
-                mode: ConsensusMode::CftFastPath,
-                members: epoch2_members.clone(), // Conflicting genesis replacement!
-            },
+            &VoterRpcReq::AdminProvisionGenesis { order: conflicting_order },
         )
         .await,
         VoterRpcResp::Err { .. }
     ));
 
-    // Install epoch 2 on v1, v2, v3 over TCP -> collect FULL EpochInstallReceipts & verify via shared verifier!
+    // Install epoch 2 on v1, v2, v3 over TCP -> collect SIGNED EpochInstallReceipts & verify via shared verifier!
     let mut tcp_receipts = Vec::new();
     for addr in [&v_addr1, &v_addr2, &v_addr3] {
         match send_voter_rpc(
@@ -869,12 +877,13 @@ async fn five_process_autonomous_standby_recovery_and_host_clock_fencing() {
         .await
         {
             VoterRpcResp::EpochInstalled { receipt } => {
+                assert_eq!(receipt.group_id, "pool:mp");
                 assert_eq!(receipt.min_active_epoch, 2);
                 assert_eq!(receipt.barrier_slot, 3);
                 assert!(receipt.post_transition_old_locks.is_empty());
                 tcp_receipts.push(receipt);
             }
-            other => panic!("Expected full EpochInstallReceipt over TCP, got {:?}", other),
+            other => panic!("Expected signed EpochInstallReceipt over TCP, got {:?}", other),
         }
     }
     let mp_verifier = CoordinationGroup::new("pool:mp", ConsensusMode::CftFastPath, members.clone());
@@ -886,24 +895,39 @@ async fn five_process_autonomous_standby_recovery_and_host_clock_fencing() {
         .verify_activation_receipts(&recovered_mdec, &mp_prev_cfg, &tcp_receipts)
         .unwrap();
     assert!(pending.is_empty());
-    // Duplicate receipt MUST be rejected by shared verifier!
+
+    // Adversarial forged receipt checks over TCP-collected receipts!
+    let mut forged_epoch_receipts = tcp_receipts.clone();
+    forged_epoch_receipts[0].min_active_epoch = 99;
+    assert!(mp_verifier
+        .verify_activation_receipts(&recovered_mdec, &mp_prev_cfg, &forged_epoch_receipts)
+        .is_err());
+    let mut forged_barrier_receipts = tcp_receipts.clone();
+    forged_barrier_receipts[0].barrier_slot = 99;
+    assert!(mp_verifier
+        .verify_activation_receipts(&recovered_mdec, &mp_prev_cfg, &forged_barrier_receipts)
+        .is_err());
     let dup_receipts = vec![tcp_receipts[0].clone(), tcp_receipts[0].clone()];
     assert!(mp_verifier
         .verify_activation_receipts(&recovered_mdec, &mp_prev_cfg, &dup_receipts)
         .is_err());
 
-    // 7. Milestone 2.2.1: Remote unresolved S+1 lock over TCP blocks activation EVEN WHEN
+    // 7. Milestone 2.2.2: Remote unresolved S+1 lock over TCP blocks activation EVEN WHEN
     //    remaining voters (v1, v2) satisfy BOTH old (2/3) and new (2/2) quorum counts!
+    let unres_order = GenesisProvisioningOrder::new_signed(
+        "pool:mp-unres",
+        ConsensusMode::CftFastPath,
+        members.clone(),
+        "op-bootstrap",
+        now,
+        &op_sk,
+    )
+    .unwrap();
     for addr in [&v_addr1, &v_addr2, &v_addr3] {
         assert!(matches!(
             send_voter_rpc(
                 addr,
-                &VoterRpcReq::AdminProvisionGenesis {
-                    admin_token: admin_token.clone(),
-                    group_id: "pool:mp-unres".into(),
-                    mode: ConsensusMode::CftFastPath,
-                    members: members.clone(),
-                },
+                &VoterRpcReq::AdminProvisionGenesis { order: unres_order.clone() },
             )
             .await,
             VoterRpcResp::GenesisProvisioned { .. }

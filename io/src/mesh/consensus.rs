@@ -363,15 +363,169 @@ impl std::fmt::Display for GenesisAnchorError {
 
 impl std::error::Error for GenesisAnchorError {}
 
-/// Verifiable receipt returned by `VoterNode::install_membership_epoch()`, distinguishing
-/// old-epoch barrier installation from new-epoch activation and preserving any unresolved
-/// post-transition old-epoch accepted locks for recovery.
+/// Verifiable, voter-signed receipt returned by `VoterNode::install_membership_epoch()`,
+/// cryptographically binding group, transition digest, voter identity, minimum active epoch,
+/// durable barrier slot, and a canonical digest of all unresolved post-transition old-epoch locks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EpochInstallReceipt {
+    pub group_id: String,
+    pub transition_digest: String,
     pub voter_node_id: String,
     pub min_active_epoch: u64,
     pub barrier_slot: u64,
     pub post_transition_old_locks: Vec<AcceptedSlotLock>,
+    pub signature: String,
+}
+
+/// Auditable, operator-signed genesis provisioning order (`NEXUS-GENESIS-PROVISION-v1`).
+///
+/// Verified exclusively against operator public keys locally pinned on the `VoterNode`
+/// (`with_authorized_operators`), never against caller-supplied keys.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenesisProvisioningOrder {
+    pub group_id: String,
+    pub mode: ConsensusMode,
+    pub members: Vec<GroupMember>,
+    pub operator_id: String,
+    pub issued_at_ms: u64,
+    pub signature: String,
+}
+
+impl GenesisProvisioningOrder {
+    pub fn new_signed(
+        group_id: impl Into<String>,
+        mode: ConsensusMode,
+        members: Vec<GroupMember>,
+        operator_id: impl Into<String>,
+        issued_at_ms: u64,
+        operator_sk_b64: &str,
+    ) -> Result<Self> {
+        let mut sorted = members;
+        sorted.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+        let mut order = Self {
+            group_id: group_id.into(),
+            mode,
+            members: sorted,
+            operator_id: operator_id.into(),
+            issued_at_ms,
+            signature: String::new(),
+        };
+        let payload = order.canonical_payload()?;
+        order.signature = nexus_db::auth::ed25519_sign(operator_sk_b64, &payload)?;
+        Ok(order)
+    }
+
+    pub fn canonical_payload(&self) -> Result<Vec<u8>> {
+        if self.operator_id.is_empty() {
+            anyhow::bail!("GenesisProvisioningOrder requires non-empty operator_id");
+        }
+        let genesis_digest = hash_genesis_config(&self.group_id, self.mode, &self.members)?;
+        let mut out = Vec::with_capacity(256);
+        out.extend_from_slice(b"NEXUS-GENESIS-PROVISION-v1");
+        for field in [
+            self.group_id.as_bytes(),
+            self.mode.canonical_tag().as_bytes(),
+            genesis_digest.as_bytes(),
+            self.operator_id.as_bytes(),
+        ] {
+            out.extend_from_slice(&(field.len() as u32).to_be_bytes());
+            out.extend_from_slice(field);
+        }
+        out.extend_from_slice(&self.issued_at_ms.to_be_bytes());
+        Ok(out)
+    }
+
+    pub fn order_digest(&self) -> Result<String> {
+        let payload = self.canonical_payload()?;
+        Ok(blake3::hash(&payload).to_hex().to_string())
+    }
+}
+
+/// Canonical domain-separated signing payload for `EpochInstallReceipt` (`NEXUS-EPOCH-RECEIPT-v1`).
+///
+/// Sorts `post_transition_old_locks` deterministically by `(epoch, slot, accepted_term, voter_node_id)`
+/// and rejects duplicate or internally inconsistent lock entries rather than normalizing them silently.
+pub fn canonical_epoch_receipt_payload(
+    group_id: &str,
+    transition_digest: &str,
+    voter_node_id: &str,
+    min_active_epoch: u64,
+    barrier_slot: u64,
+    post_transition_old_locks: &[AcceptedSlotLock],
+) -> Result<Vec<u8>> {
+    let mut sorted = post_transition_old_locks.to_vec();
+    sorted.sort_by(|a, b| {
+        (a.epoch, a.slot, a.accepted_term, a.vote.voter_node_id.as_str()).cmp(&(
+            b.epoch,
+            b.slot,
+            b.accepted_term,
+            b.vote.voter_node_id.as_str(),
+        ))
+    });
+
+    let mut seen_keys = HashSet::new();
+    let mut lock_hasher = blake3::Hasher::new();
+    lock_hasher.update(b"NEXUS-EPOCH-RECEIPT-LOCKS-v1");
+    lock_hasher.update(&(sorted.len() as u32).to_be_bytes());
+    for lock in &sorted {
+        if !seen_keys.insert((lock.epoch, lock.slot, lock.vote.voter_node_id.clone())) {
+            anyhow::bail!(
+                "Duplicate AcceptedSlotLock ({}, slot={}, voter={}) in EpochInstallReceipt",
+                lock.epoch,
+                lock.slot,
+                lock.vote.voter_node_id
+            );
+        }
+        let prop_digest = lock.proposal.validate_for_vote(group_id, lock.epoch, lock.slot)?;
+        if prop_digest != lock.proposal_hash {
+            anyhow::bail!(
+                "Inconsistent AcceptedSlotLock proposal digest at slot {} in EpochInstallReceipt",
+                lock.slot
+            );
+        }
+        let v = &lock.vote;
+        if v.group_id != group_id
+            || v.epoch != lock.epoch
+            || v.term != lock.accepted_term
+            || v.slot != lock.slot
+            || v.proposal_hash != lock.proposal_hash
+            || v.voter_node_id != voter_node_id
+        {
+            anyhow::bail!(
+                "Inconsistent embedded SignedVote at slot {} in EpochInstallReceipt",
+                lock.slot
+            );
+        }
+        lock_hasher.update(&lock.epoch.to_be_bytes());
+        lock_hasher.update(&lock.slot.to_be_bytes());
+        lock_hasher.update(&lock.accepted_term.to_be_bytes());
+        push_len_prefixed(&mut lock_hasher, lock.proposal_hash.as_bytes());
+        push_len_prefixed(&mut lock_hasher, prop_digest.as_bytes());
+        push_len_prefixed(&mut lock_hasher, v.group_id.as_bytes());
+        lock_hasher.update(&v.epoch.to_be_bytes());
+        lock_hasher.update(&v.term.to_be_bytes());
+        lock_hasher.update(&v.slot.to_be_bytes());
+        push_len_prefixed(&mut lock_hasher, v.voter_node_id.as_bytes());
+        push_len_prefixed(&mut lock_hasher, v.proposal_hash.as_bytes());
+        push_len_prefixed(&mut lock_hasher, v.signature.as_bytes());
+    }
+    let locks_digest = lock_hasher.finalize();
+
+    let mut out = Vec::with_capacity(256);
+    out.extend_from_slice(b"NEXUS-EPOCH-RECEIPT-v1");
+    for field in [
+        group_id.as_bytes(),
+        transition_digest.as_bytes(),
+        voter_node_id.as_bytes(),
+    ] {
+        out.extend_from_slice(&(field.len() as u32).to_be_bytes());
+        out.extend_from_slice(field);
+    }
+    out.extend_from_slice(&min_active_epoch.to_be_bytes());
+    out.extend_from_slice(&barrier_slot.to_be_bytes());
+    out.extend_from_slice(&(sorted.len() as u32).to_be_bytes());
+    out.extend_from_slice(locks_digest.as_bytes());
+    Ok(out)
 }
 
 /// Summary of an autonomous multi-slot coordinator takeover & catch-up.
@@ -660,6 +814,10 @@ struct DurableVoterTermState {
     min_active_epoch: u64,
     #[serde(default)]
     trusted_genesis_digest: Option<String>,
+    #[serde(default)]
+    provisioned_order_digest: Option<String>,
+    #[serde(default)]
+    provisioned_by_operator: Option<String>,
     /// Durable per-epoch log barrier: once a membership transition at `(epoch, slot)` is accepted
     /// or installed, this voter refuses all further votes in `epoch` for `slot > barrier_slot`.
     #[serde(default)]
@@ -1111,6 +1269,9 @@ pub struct VoterNode {
     pub node_id: String,
     pub ed25519_sk_b64: String,
     db: Arc<Database>,
+    /// Locally configured operator public keys (`operator_id -> ed25519_pubkey`) authorized to
+    /// sign `GenesisProvisioningOrder`s for this voter. Never supplied by remote RPC callers.
+    authorized_operators: HashMap<String, String>,
     /// Production voters default to `false` (strictly requiring installed membership config and
     /// `term >= 1` + verifiable `TermCertificate`). Legacy Milestone-1 `term == 0` compatibility
     /// must be explicitly opted into via `with_legacy_term_zero_compat()`.
@@ -1123,8 +1284,16 @@ impl VoterNode {
             node_id: node_id.into(),
             ed25519_sk_b64: ed25519_sk_b64.into(),
             db,
+            authorized_operators: HashMap::new(),
             allow_legacy_term_zero: false,
         }
+    }
+
+    /// Locally pin authorized bootstrap operator public keys (`operator_id -> ed25519_pubkey`)
+    /// at voter deployment/startup time.
+    pub fn with_authorized_operators(mut self, operators: HashMap<String, String>) -> Self {
+        self.authorized_operators = operators;
+        self
     }
 
     /// Explicit opt-in for legacy Milestone-1 `term == 0` compatibility tests only.
@@ -1216,6 +1385,8 @@ impl VoterNode {
                 promised_leader_id: None,
                 min_active_epoch: 1,
                 trusted_genesis_digest: None,
+                provisioned_order_digest: None,
+                provisioned_by_operator: None,
                 epoch_barriers: HashMap::new(),
                 installed_epochs: HashMap::new(),
             },
@@ -1232,6 +1403,67 @@ impl VoterNode {
         }
         state.trusted_genesis_digest = Some(digest);
         self.persist_term_state(&state).await
+    }
+
+    /// Production administrative genesis provisioning: verifies `order` exclusively against
+    /// operator public keys locally pinned on this `VoterNode` (`with_authorized_operators`),
+    /// enforces deterministic member validation, idempotency on exact repeat, rejects conflicting
+    /// genesis replacements, and durably records the accepted order digest and operator identity.
+    pub async fn provision_genesis_signed(&self, order: &GenesisProvisioningOrder) -> Result<String> {
+        if self.authorized_operators.is_empty() {
+            anyhow::bail!(
+                "Voter '{}' has no locally authorized bootstrap operators configured; failing closed",
+                self.node_id
+            );
+        }
+        let op_pubkey = self
+            .authorized_operators
+            .get(&order.operator_id)
+            .ok_or_else(|| {
+                anyhow!(
+                    "Operator '{}' is not authorized on voter '{}' for genesis provisioning",
+                    order.operator_id,
+                    self.node_id
+                )
+            })?;
+        let payload = order.canonical_payload()?;
+        if !nexus_db::auth::ed25519_verify(op_pubkey, &payload, &order.signature) {
+            anyhow::bail!(
+                "Invalid Ed25519 signature from operator '{}' on GenesisProvisioningOrder",
+                order.operator_id
+            );
+        }
+        let order_digest = order.order_digest()?;
+        let genesis_digest = self
+            .install_genesis_epoch(&order.group_id, order.mode, order.members.clone())
+            .await?;
+
+        let _tx = self.db.lock_tx().await;
+        if let Some(mut state) = self.load_term_state(&order.group_id).await? {
+            if state.provisioned_order_digest.is_none() {
+                state.provisioned_order_digest = Some(order_digest);
+                state.provisioned_by_operator = Some(order.operator_id.clone());
+                self.persist_term_state(&state).await?;
+            }
+        }
+        Ok(genesis_digest)
+    }
+
+    /// Read the durable genesis anchor & operator provisioning audit trail for `group_id`.
+    pub async fn genesis_audit_info(
+        &self,
+        group_id: &str,
+    ) -> Result<Option<(String, Option<String>, Option<String>)>> {
+        let Some(state) = self.load_term_state(group_id).await? else {
+            return Ok(None);
+        };
+        Ok(state.trusted_genesis_digest.map(|gd| {
+            (
+                gd,
+                state.provisioned_order_digest,
+                state.provisioned_by_operator,
+            )
+        }))
     }
 
     /// Explicitly provision and install the genesis epoch-1 membership configuration on this voter
@@ -1259,6 +1491,8 @@ impl VoterNode {
                 promised_leader_id: None,
                 min_active_epoch: 1,
                 trusted_genesis_digest: Some(genesis_digest.clone()),
+                provisioned_order_digest: None,
+                provisioned_by_operator: None,
                 epoch_barriers: HashMap::new(),
                 installed_epochs: HashMap::new(),
             },
@@ -1602,11 +1836,25 @@ impl VoterNode {
         }
 
         self.persist_term_state(&state).await?;
+
+        // Sign the receipt ONLY AFTER durable persistence succeeds!
+        let receipt_payload = canonical_epoch_receipt_payload(
+            &prop.group_id,
+            &expected_digest,
+            &self.node_id,
+            state.min_active_epoch,
+            prop.slot,
+            &post_transition_old_locks,
+        )?;
+        let signature = nexus_db::auth::ed25519_sign(&self.ed25519_sk_b64, &receipt_payload)?;
         Ok(EpochInstallReceipt {
+            group_id: prop.group_id.clone(),
+            transition_digest: expected_digest,
             voter_node_id: self.node_id.clone(),
             min_active_epoch: state.min_active_epoch,
             barrier_slot: prop.slot,
             post_transition_old_locks,
+            signature,
         })
     }
 
@@ -3945,11 +4193,21 @@ impl CoordinationGroup {
         prev_cfg: &MembershipEpochConfig,
         receipts: &[EpochInstallReceipt],
     ) -> Result<Vec<String>> {
-        let new_member_ids: HashSet<&str> = mdec
+        // Self-contained decision verification: verify BOTH the transition proposal AND its
+        // predecessor-epoch QuorumCertificate before trusting any receipt!
+        self.validate_membership_transition_against_prev(
+            mdec,
+            prev_cfg,
+            mdec.proposal.prev_epoch,
+            None,
+        )?;
+        let expected_transition_digest = mdec.canonical_digest()?;
+
+        let new_members_map: HashMap<&str, &GroupMember> = mdec
             .proposal
             .new_members
             .iter()
-            .map(|m| m.node_id.as_str())
+            .map(|m| (m.node_id.as_str(), m))
             .collect();
         let mut seen_voters = HashSet::new();
         let mut fenced_old = HashSet::new();
@@ -3964,14 +4222,31 @@ impl CoordinationGroup {
                     mdec.proposal.next_epoch
                 );
             }
-            let in_old = prev_cfg.members.contains_key(&receipt.voter_node_id);
-            let in_new = new_member_ids.contains(receipt.voter_node_id.as_str());
-            if !in_old && !in_new {
+            if receipt.group_id != mdec.proposal.group_id {
                 anyhow::bail!(
-                    "Unauthorized EpochInstallReceipt from non-member voter '{}'",
-                    receipt.voter_node_id
+                    "EpochInstallReceipt group_id '{}' does not match expected '{}'",
+                    receipt.group_id,
+                    mdec.proposal.group_id
                 );
             }
+            if receipt.transition_digest != expected_transition_digest {
+                anyhow::bail!(
+                    "EpochInstallReceipt from '{}' has transition_digest '{}' != expected '{}' (cross-transition replay rejected)",
+                    receipt.voter_node_id,
+                    receipt.transition_digest,
+                    expected_transition_digest
+                );
+            }
+            let old_member_opt = prev_cfg.members.get(&receipt.voter_node_id);
+            let new_member_opt = new_members_map.get(receipt.voter_node_id.as_str()).copied();
+            let in_old = old_member_opt.is_some();
+            let in_new = new_member_opt.is_some();
+            let signer_member = old_member_opt.or(new_member_opt).ok_or_else(|| {
+                anyhow!(
+                    "Unauthorized EpochInstallReceipt from non-member voter '{}'",
+                    receipt.voter_node_id
+                )
+            })?;
             if receipt.barrier_slot != mdec.proposal.slot {
                 anyhow::bail!(
                     "EpochInstallReceipt from '{}' has barrier_slot {} != expected transition slot {}",
@@ -3981,8 +4256,37 @@ impl CoordinationGroup {
                 );
             }
 
-            // Cryptographically validate every reported unresolved post-transition old-epoch lock!
+            // Authenticate the receipt signature over `NEXUS-EPOCH-RECEIPT-v1` (which also rejects
+            // duplicate or internally inconsistent lock metadata)!
+            let receipt_payload = canonical_epoch_receipt_payload(
+                &receipt.group_id,
+                &receipt.transition_digest,
+                &receipt.voter_node_id,
+                receipt.min_active_epoch,
+                receipt.barrier_slot,
+                &receipt.post_transition_old_locks,
+            )?;
+            if !nexus_db::auth::ed25519_verify(
+                &signer_member.ed25519_pubkey,
+                &receipt_payload,
+                &receipt.signature,
+            ) {
+                anyhow::bail!(
+                    "Invalid Ed25519 signature on EpochInstallReceipt from voter '{}'",
+                    receipt.voter_node_id
+                );
+            }
+
+            // Independently validate every embedded unresolved post-transition old-epoch lock!
+            let mut seen_lock_slots = HashSet::new();
             for lock in &receipt.post_transition_old_locks {
+                if !seen_lock_slots.insert(lock.slot) {
+                    anyhow::bail!(
+                        "Duplicate post_transition_old_lock slot {} in receipt from '{}'",
+                        lock.slot,
+                        receipt.voter_node_id
+                    );
+                }
                 if lock.epoch != mdec.proposal.prev_epoch || lock.slot <= mdec.proposal.slot {
                     anyhow::bail!(
                         "Malformed post_transition_old_lock from '{}': (epoch={}, slot={}) invalid for transition (prev_epoch={}, slot={})",
@@ -4095,7 +4399,7 @@ impl CoordinationGroup {
 
         let mut pending_removed = Vec::new();
         for old_id in prev_cfg.members.keys() {
-            if !new_member_ids.contains(old_id.as_str()) && !fenced_old.contains(old_id) {
+            if !new_members_map.contains_key(old_id.as_str()) && !fenced_old.contains(old_id) {
                 pending_removed.push(old_id.clone());
             }
         }
