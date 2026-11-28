@@ -19,8 +19,9 @@
 use nexus_io::db::Database;
 use nexus_io::mesh::consensus::{
     ConsensusMode, CoordinationGroup, DurableSlotDecision, FencedLease, FencedResourceGuard,
-    GroupMember, LeaseProposal, MembershipTransitionDecision, MembershipTransitionProposal,
-    SignedVote, SlotProposal, VoteRequest, VoterNode,
+    GroupMember, LeaseProposal, MembershipEpochConfig, MembershipTransitionDecision,
+    MembershipTransitionProposal, PrepareTermRequest, SignedVote, SlotProposal, TermPromise,
+    VoteRequest, VoterNode,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -34,6 +35,11 @@ use tokio::sync::Mutex;
 #[serde(tag = "op", rename_all = "snake_case")]
 enum VoterRpcReq {
     Vote(VoteRequest),
+    PrepareTerm(PrepareTermRequest),
+    InstallMembershipEpoch {
+        decision: MembershipTransitionDecision,
+        prev_members: Vec<GroupMember>,
+    },
     QueryLock {
         group_id: String,
         epoch: u64,
@@ -56,6 +62,8 @@ enum VoterRpcReq {
 #[serde(tag = "status", rename_all = "snake_case")]
 enum VoterRpcResp {
     VoteOk { vote: SignedVote },
+    PromiseOk { promise: TermPromise },
+    EpochInstalled { min_active_epoch: u64 },
     LockFound { entry: Option<(SignedVote, Option<SlotProposal>)> },
     ExecOk { accepted_epoch: u64 },
     Err { message: String },
@@ -186,6 +194,20 @@ async fn run_voter_child() {
                     Ok(vote) => VoterRpcResp::VoteOk { vote },
                     Err(e) => VoterRpcResp::Err { message: e.to_string() },
                 },
+                Ok(VoterRpcReq::PrepareTerm(preq)) => match voter_c.prepare_term(&preq).await {
+                    Ok(promise) => VoterRpcResp::PromiseOk { promise },
+                    Err(e) => VoterRpcResp::Err { message: e.to_string() },
+                },
+                Ok(VoterRpcReq::InstallMembershipEpoch { decision, prev_members }) => {
+                    let prev_cfg = MembershipEpochConfig {
+                        mode: decision.proposal.mode,
+                        members: prev_members.into_iter().map(|m| (m.node_id.clone(), m)).collect(),
+                    };
+                    match voter_c.install_membership_epoch(&decision, &prev_cfg).await {
+                        Ok(min_active_epoch) => VoterRpcResp::EpochInstalled { min_active_epoch },
+                        Err(e) => VoterRpcResp::Err { message: e.to_string() },
+                    }
+                }
                 Ok(VoterRpcReq::QueryLock { group_id, epoch, slot }) => {
                     match voter_c.query_slot_lock(&group_id, epoch, slot).await {
                         Ok(entry) => VoterRpcResp::LockFound { entry },
@@ -372,6 +394,7 @@ async fn run_coordinator_child() {
                         Ok(Some(DurableSlotDecision::Membership(decision))) => {
                             CoordRpcResp::CommittedMembership { decision }
                         }
+                        Ok(Some(DurableSlotDecision::NoOp(_))) => CoordRpcResp::Ok,
                         Ok(None) => CoordRpcResp::Err { message: "No quorum found for slot".into() },
                         Err(e) => CoordRpcResp::Err { message: e.to_string() },
                     }
@@ -741,6 +764,88 @@ async fn five_process_autonomous_standby_recovery_and_host_clock_fencing() {
         } => {}
         other => panic!("Restarted coord-3 failed to reconstruct verified epoch 2 chain: {:?}", other),
     }
+
+    // 6. Milestone 2: Multi-process TCP epoch installation, removed-member fencing,
+    //    same-term leader conflict rejection, and stale-term coordinator fencing!
+    for addr in [&v_addr1, &v_addr2, &v_addr3] {
+        assert!(matches!(
+            send_voter_rpc(
+                addr,
+                &VoterRpcReq::InstallMembershipEpoch {
+                    decision: recovered_mdec.clone(),
+                    prev_members: members.clone(),
+                },
+            )
+            .await,
+            VoterRpcResp::EpochInstalled { min_active_epoch: 2 }
+        ));
+    }
+
+    // Removed member `node-3` MUST reject BOTH stale epoch 1 AND new epoch 2 over TCP!
+    let stale_e1_prep = PrepareTermRequest {
+        group_id: "pool:mp".into(),
+        epoch: 1,
+        term: 1,
+        leader_id: "old-coord".into(),
+        from_slot: 1,
+    };
+    assert!(matches!(
+        send_voter_rpc(&v_addr3, &VoterRpcReq::PrepareTerm(stale_e1_prep.clone())).await,
+        VoterRpcResp::Err { .. }
+    ));
+    let e2_t1_prep = PrepareTermRequest {
+        group_id: "pool:mp".into(),
+        epoch: 2,
+        term: 1,
+        leader_id: "coord-3".into(),
+        from_slot: 4,
+    };
+    assert!(matches!(
+        send_voter_rpc(&v_addr3, &VoterRpcReq::PrepareTerm(e2_t1_prep.clone())).await,
+        VoterRpcResp::Err { .. }
+    ));
+
+    // Active epoch-2 voters (`v1`, `v2`) promise term 1 to `coord-3`, reject rival leader in term 1,
+    // and once term 2 is promised to `coord-4`, fence reconnecting `coord-3` (term 1)!
+    assert!(matches!(
+        send_voter_rpc(&v_addr1, &VoterRpcReq::PrepareTerm(e2_t1_prep.clone())).await,
+        VoterRpcResp::PromiseOk { .. }
+    ));
+    assert!(matches!(
+        send_voter_rpc(&v_addr2, &VoterRpcReq::PrepareTerm(e2_t1_prep.clone())).await,
+        VoterRpcResp::PromiseOk { .. }
+    ));
+    let rival_t1_prep = PrepareTermRequest {
+        leader_id: "coord-rival".into(),
+        ..e2_t1_prep.clone()
+    };
+    assert!(matches!(
+        send_voter_rpc(&v_addr1, &VoterRpcReq::PrepareTerm(rival_t1_prep)).await,
+        VoterRpcResp::Err { .. }
+    ));
+    let e2_t2_prep = PrepareTermRequest {
+        term: 2,
+        leader_id: "coord-4".into(),
+        ..e2_t1_prep.clone()
+    };
+    assert!(matches!(
+        send_voter_rpc(&v_addr1, &VoterRpcReq::PrepareTerm(e2_t2_prep.clone())).await,
+        VoterRpcResp::PromiseOk { .. }
+    ));
+    assert!(matches!(
+        send_voter_rpc(&v_addr2, &VoterRpcReq::PrepareTerm(e2_t2_prep)).await,
+        VoterRpcResp::PromiseOk { .. }
+    ));
+    // Reconnecting stale term-1 `coord-3` is rejected by independent TCP voters!
+    assert!(matches!(
+        send_voter_rpc(&v_addr1, &VoterRpcReq::PrepareTerm(e2_t1_prep)).await,
+        VoterRpcResp::Err { .. }
+    ));
+    // And stale epoch-1 request is rejected by active epoch-2 voter `v1`!
+    assert!(matches!(
+        send_voter_rpc(&v_addr1, &VoterRpcReq::PrepareTerm(stale_e1_prep)).await,
+        VoterRpcResp::Err { .. }
+    ));
 
     let _ = coord3_restarted.kill();
     let _ = coord3_restarted.wait();

@@ -3,9 +3,10 @@
 use nexus_io::db::{is_already_exists_error, Database};
 use nexus_io::iam::idp::{NexusIdp, OrgPolicyPatch};
 use nexus_io::mesh::consensus::{
-    hash_lease_proposal, hash_membership_change, sign_vote_raw, ConsensusMode, CoordinationGroup,
-    DurableSlotDecision, FencedLease, FencedResourceGuard, GroupMember, LeaseProposal,
-    MembershipTransitionProposal, QuorumCertificate, SlotProposal, VoteRequest, VoterNode,
+    hash_lease_proposal, hash_membership_change, sign_vote_raw, verify_term_certificate_and_adoption,
+    AcceptedSlotLock, ConsensusMode, CoordinationGroup, FencedLease, FencedResourceGuard,
+    GroupMember, LeaseProposal, MembershipEpochConfig, MembershipTransitionProposal,
+    PrepareTermRequest, QuorumCertificate, SlotProposal, TermCertificate, VoteRequest, VoterNode,
 };
 use nexus_io::mesh::resources::{
     schedule_and_lease_workload, GpuCapability, NodeAdvertisement, ReservationLedger,
@@ -159,6 +160,9 @@ async fn p0_resource_trust_crdt_expiry_membership_digest_and_authenticated_bound
         slot: 50,
         proposal_hash: "0000000000000000000000000000000000000000000000000000000000000000".into(),
         proposal: Some(SlotProposal::Lease(bad_prop)),
+        term: 0,
+        leader_id: None,
+        term_cert: None,
     };
     assert!(
         voter_a.cast_vote(&tampered_vote_req).await.is_err(),
@@ -184,6 +188,9 @@ async fn p0_resource_trust_crdt_expiry_membership_digest_and_authenticated_bound
         slot: 60,
         proposal_hash: legacy_hash.clone(),
         proposal: None,
+        term: 0,
+        leader_id: None,
+        term_cert: None,
     };
     assert!(
         voter_a.cast_vote(&prod_none_req).await.is_err(),
@@ -224,6 +231,9 @@ async fn p0_resource_trust_crdt_expiry_membership_digest_and_authenticated_bound
         slot: 60,
         proposal_hash: legacy_hash.clone(),
         proposal: Some(SlotProposal::Lease(legacy_prop)),
+        term: 0,
+        leader_id: None,
+        term_cert: None,
     };
     assert!(
         legacy_voter.cast_vote(&upgrade_retry).await.is_err(),
@@ -267,6 +277,7 @@ async fn p0_resource_trust_crdt_expiry_membership_digest_and_authenticated_bound
         qc: QuorumCertificate {
             group_id: "pool:forged".into(),
             epoch: 1,
+            term: 0,
             slot: 7,
             proposal_hash: hash_lease_proposal("pool:forged", "lse_forged", "r1", "node-a", "w1", 1, t0, t0 + 30_000),
             mode: ConsensusMode::CftFastPath,
@@ -1045,4 +1056,309 @@ async fn p0_resource_trust_crdt_expiry_membership_digest_and_authenticated_bound
     assert!(bft_group.record_and_verify_vote(&v2).unwrap().is_some());
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
+}
+
+#[tokio::test]
+async fn milestone2_durable_terms_adoption_epoch_install_and_contiguous_takeover() {
+    let db_idp = Arc::new(Database::open_mem());
+    let idp = NexusIdp::new(db_idp.clone());
+    let org = idp
+        .create_org("root", "m2-org", "Milestone 2 Org", None, None, OrgPolicyPatch::default())
+        .await
+        .unwrap();
+    let (id_a, sk_a) = idp.create_identity("m2-a", None).await.unwrap();
+    let (id_b, sk_b) = idp.create_identity("m2-b", None).await.unwrap();
+    let (id_c, sk_c) = idp.create_identity("m2-c", None).await.unwrap();
+    let (id_d, sk_d) = idp.create_identity("m2-d", None).await.unwrap();
+
+    let m_a = GroupMember { node_id: "node-a".into(), identity_id: id_a.identity_id, org_id: org.org_id.clone(), ed25519_pubkey: id_a.active_pubkey };
+    let m_b = GroupMember { node_id: "node-b".into(), identity_id: id_b.identity_id, org_id: org.org_id.clone(), ed25519_pubkey: id_b.active_pubkey };
+    let m_c = GroupMember { node_id: "node-c".into(), identity_id: id_c.identity_id, org_id: org.org_id.clone(), ed25519_pubkey: id_c.active_pubkey };
+    let m_d = GroupMember { node_id: "node-d".into(), identity_id: id_d.identity_id, org_id: org.org_id.clone(), ed25519_pubkey: id_d.active_pubkey };
+
+    let epoch1_members = vec![m_a.clone(), m_b.clone(), m_c.clone()];
+    let voter_a = VoterNode::new("node-a", sk_a.clone(), Arc::new(Database::open_mem()));
+    let voter_b = VoterNode::new("node-b", sk_b.clone(), Arc::new(Database::open_mem()));
+    let voter_c = VoterNode::new("node-c", sk_c.clone(), Arc::new(Database::open_mem()));
+    let voter_d = VoterNode::new("node-d", sk_d.clone(), Arc::new(Database::open_mem()));
+    for v in [&voter_a, &voter_b, &voter_c] {
+        v.install_genesis_epoch("pool:m2", ConsensusMode::CftFastPath, epoch1_members.clone())
+            .await
+            .unwrap();
+    }
+
+    let t0 = CoordinationGroup::now_ms();
+
+    // 1 & 2. Same-term prepare retry (same leader -> idempotent OK; different leader -> REJECTED!)
+    let prep1 = PrepareTermRequest {
+        group_id: "pool:m2".into(),
+        epoch: 1,
+        term: 1,
+        leader_id: "coord-1".into(),
+        from_slot: 1,
+    };
+    let p1_a = voter_a.prepare_term(&prep1).await.unwrap();
+    let p1_a_retry = voter_a.prepare_term(&prep1).await.unwrap();
+    assert_eq!(p1_a.signature, p1_a_retry.signature, "Same-leader prepare retry must be idempotent!");
+
+    let prep1_rival = PrepareTermRequest {
+        leader_id: "coord-rival".into(),
+        ..prep1.clone()
+    };
+    assert!(
+        voter_a.prepare_term(&prep1_rival).await.is_err(),
+        "Same-term prepare from different leader MUST be rejected!"
+    );
+
+    // 9. Competing standbys in same term: at most ONE can obtain a valid quorum!
+    // voter_a already promised coord-1; voter_b promises coord-rival; voter_c promises coord-1 -> coord-1 gets 2/3, rival gets 1/3!
+    let _p1_b_rival = voter_b.prepare_term(&prep1_rival).await.unwrap();
+    let p1_c = voter_c.prepare_term(&prep1).await.unwrap();
+    let coord1_db = Arc::new(Database::open_mem());
+    let coord1 = CoordinationGroup::open_durable(
+        coord1_db.clone(),
+        "pool:m2",
+        ConsensusMode::CftFastPath,
+        epoch1_members.clone(),
+    )
+    .await
+    .unwrap();
+    let (cert_t1, _) = coord1
+        .plan_takeover_from_promises("coord-1", 1, 1, vec![p1_a, p1_c])
+        .unwrap();
+    assert!(
+        coord1
+            .plan_takeover_from_promises("coord-rival", 1, 1, vec![_p1_b_rival])
+            .is_err(),
+        "Competing standby with only 1/3 promises MUST fail quorum!"
+    );
+
+    // 3. Higher-term vote WITHOUT Phase-1 TermCertificate -> REJECTED!
+    let lp_s1 = LeaseProposal {
+        group_id: "pool:m2".into(),
+        lease_id: "lse_s1".into(),
+        resource_key: "gpu:m2:0".into(),
+        holder_node_id: "node-a".into(),
+        workload_id: "wl-1".into(),
+        fencing_epoch: 1,
+        issued_at_ms: t0,
+        expires_at_ms: t0 + 120_000,
+    };
+    let no_cert_req = VoteRequest {
+        group_id: "pool:m2".into(),
+        epoch: 1,
+        slot: 1,
+        proposal_hash: lp_s1.canonical_digest(),
+        proposal: Some(SlotProposal::Lease(lp_s1.clone())),
+        term: 1,
+        leader_id: Some("coord-1".into()),
+        term_cert: None,
+    };
+    assert!(
+        voter_a.cast_vote(&no_cert_req).await.is_err(),
+        "Higher-term vote WITHOUT Phase-1 TermCertificate MUST be rejected!"
+    );
+
+    // Accept slot 1 AND slot 3 (leaving slot 2 as an unaccepted GAP!) in term 1 on voter_a & voter_c
+    let s1_req = VoteRequest::for_lease(1, 1, lp_s1.clone()).with_term(1, "coord-1", cert_t1.clone());
+    let _ = voter_a.cast_vote(&s1_req).await.unwrap();
+    let _ = voter_c.cast_vote(&s1_req).await.unwrap();
+
+    let lp_s3 = LeaseProposal {
+        group_id: "pool:m2".into(),
+        lease_id: "lse_s3".into(),
+        resource_key: "gpu:m2:1".into(),
+        holder_node_id: "node-b".into(),
+        workload_id: "wl-3".into(),
+        fencing_epoch: 1,
+        issued_at_ms: t0,
+        expires_at_ms: t0 + 120_000,
+    };
+    let s3_req = VoteRequest::for_lease(1, 3, lp_s3.clone()).with_term(1, "coord-1", cert_t1.clone());
+    let _ = voter_a.cast_vote(&s3_req).await.unwrap();
+    let _ = voter_c.cast_vote(&s3_req).await.unwrap();
+
+    // 4. Higher-term vote with CONFLICTING adopted value -> REJECTED by voter!
+    let prep2 = PrepareTermRequest {
+        group_id: "pool:m2".into(),
+        epoch: 1,
+        term: 2,
+        leader_id: "coord-2".into(),
+        from_slot: 1,
+    };
+    let p2_a = voter_a.prepare_term(&prep2).await.unwrap();
+    let p2_b = voter_b.prepare_term(&prep2).await.unwrap();
+    let p2_c = voter_c.prepare_term(&prep2).await.unwrap();
+    let (cert_t2, _) = coord1
+        .plan_takeover_from_promises("coord-2", 2, 1, vec![p2_a.clone(), p2_b.clone(), p2_c.clone()])
+        .unwrap();
+    let conflicting_s1 = LeaseProposal {
+        lease_id: "lse_s1_evil".into(),
+        holder_node_id: "node-c".into(),
+        ..lp_s1.clone()
+    };
+    let bad_adopt_req = VoteRequest::for_lease(1, 1, conflicting_s1)
+        .with_term(2, "coord-2", cert_t2.clone());
+    assert!(
+        voter_a.cast_vote(&bad_adopt_req).await.is_err(),
+        "Voter MUST reject higher-term vote that conflicts with adopted value from TermCertificate!"
+    );
+
+    // 10. Old coordinator (term 1) reconnects after term 2 takeover -> CANNOT obtain votes!
+    assert!(
+        voter_a.cast_vote(&s1_req).await.is_err(),
+        "Old term-1 coordinator MUST be fenced at voter after term-2 promise!"
+    );
+
+    // 5. Two conflicting values with equal highest accepted_term -> takeover FAILS CLOSED!
+    let mut conflict_p_a = p2_a.clone();
+    let mut conflict_p_b = p2_b.clone();
+    let alt_lp = LeaseProposal { lease_id: "lse_alt_conflict".into(), ..lp_s1.clone() };
+    let alt_vote = sign_vote_raw("pool:m2", 1, 1, &alt_lp.canonical_digest(), "node-b", &sk_b).unwrap();
+    conflict_p_b.accepted_locks = vec![AcceptedSlotLock {
+        epoch: 1,
+        slot: 1,
+        accepted_term: 1, // Equal highest accepted_term=1, conflicting proposal!
+        proposal_hash: alt_lp.canonical_digest(),
+        proposal: SlotProposal::Lease(alt_lp),
+        vote: alt_vote,
+    }];
+    // Re-sign conflict_p_b legitimately as node-b to prove the adoption verifier catches equal-term conflicts!
+    let conflict_payload = nexus_io::mesh::consensus::canonical_promise_payload(
+        &conflict_p_b.group_id,
+        conflict_p_b.epoch,
+        conflict_p_b.term,
+        &conflict_p_b.leader_id,
+        conflict_p_b.from_slot,
+        &conflict_p_b.voter_node_id,
+        conflict_p_b.min_active_epoch,
+        &conflict_p_b.accepted_locks,
+    );
+    conflict_p_b.signature = nexus_db::auth::ed25519_sign(&sk_b, &conflict_payload).unwrap();
+    let conflict_cert = TermCertificate {
+        group_id: "pool:m2".into(),
+        epoch: 1,
+        term: 2,
+        leader_id: "coord-2".into(),
+        from_slot: 1,
+        mode: ConsensusMode::CftFastPath,
+        promises: vec![conflict_p_a.clone(), conflict_p_b],
+    };
+    let ep1_cfg = MembershipEpochConfig {
+        mode: ConsensusMode::CftFastPath,
+        members: epoch1_members.iter().cloned().map(|m| (m.node_id.clone(), m)).collect(),
+    };
+    assert!(
+        verify_term_certificate_and_adoption(&conflict_cert, &ep1_cfg, 1).is_err(),
+        "Two conflicting proposals with equal highest accepted_term MUST fail closed!"
+    );
+    let _ = &mut conflict_p_a;
+
+    // 6 & 11. Contiguous multi-slot takeover with GAP at slot 2 + crash/restart resume!
+    let standby_db_dir = std::env::temp_dir().join(format!("nexus_m2_standby_{}", uuid::Uuid::new_v4().simple()));
+    let standby_db = Arc::new(Database::init_in(&standby_db_dir).await);
+    let mut coord2 = CoordinationGroup::open_durable(
+        standby_db.clone(),
+        "pool:m2",
+        ConsensusMode::CftFastPath,
+        epoch1_members.clone(),
+    )
+    .await
+    .unwrap();
+    let report = coord2
+        .execute_takeover_catch_up("coord-2", 3, &[voter_a.clone(), voter_b.clone(), voter_c.clone()])
+        .await
+        .unwrap();
+    assert_eq!(report.term, 3);
+    assert_eq!(report.next_slot, 4);
+    assert_eq!(report.recovered_slots, vec![1, 3]);
+    assert_eq!(report.filled_gaps, vec![2], "Gap slot 2 MUST be filled with durable NoOp!");
+
+    // Crash/restart coord-2 from disk -> contiguous verified prefix (slots 1, 2=NoOp, 3) survives!
+    drop(coord2);
+    drop(standby_db);
+    let standby_db_reopened = Arc::new(Database::init_in(&standby_db_dir).await);
+    let mut coord2_restarted = CoordinationGroup::open_durable(
+        standby_db_reopened,
+        "pool:m2",
+        ConsensusMode::CftFastPath,
+        epoch1_members.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(coord2_restarted.next_slot, 4);
+    assert_eq!(coord2_restarted.current_term, 3);
+    assert_eq!(coord2_restarted.active_leases.get("gpu:m2:0").unwrap().lease_id, "lse_s1");
+    assert_eq!(coord2_restarted.active_leases.get("gpu:m2:1").unwrap().lease_id, "lse_s3");
+
+    // 7 & 8. Membership transition (drop node-c, admit node-d) ->
+    //        New member D CANNOT vote in epoch 2 until installing transition certificate;
+    //        Removed member C rejects BOTH old epoch 1 AND new epoch 2 after installation!
+    let epoch2_members = vec![m_a.clone(), m_b.clone(), m_d.clone()];
+    let m_prop = MembershipTransitionProposal::new(
+        "pool:m2",
+        1,
+        2,
+        4,
+        ConsensusMode::CftFastPath,
+        epoch2_members.clone(),
+    )
+    .unwrap();
+    let report_t4 = coord2_restarted
+        .execute_takeover_catch_up("coord-2", 4, &[voter_a.clone(), voter_b.clone(), voter_c.clone()])
+        .await
+        .unwrap();
+    let cert_t4 = coord2_restarted.active_term_cert.clone().unwrap();
+    assert_eq!(report_t4.term, 4);
+
+    let m_req = VoteRequest::for_membership(m_prop.clone())
+        .unwrap()
+        .with_term(4, "coord-2", cert_t4);
+    let mv_a = voter_a.cast_vote(&m_req).await.unwrap();
+    let mv_b = voter_b.cast_vote(&m_req).await.unwrap();
+    let mdec = coord2_restarted
+        .reconfigure_membership_with_quorum(&m_prop, vec![mv_a, mv_b])
+        .await
+        .unwrap();
+
+    // New member D has NOT installed epoch 2 yet -> prepare_term in epoch 2 MUST fail!
+    let prep_e2_t5 = PrepareTermRequest {
+        group_id: "pool:m2".into(),
+        epoch: 2,
+        term: 5,
+        leader_id: "coord-2".into(),
+        from_slot: 5,
+    };
+    assert!(
+        voter_d.prepare_term(&prep_e2_t5).await.is_err(),
+        "New member D MUST NOT participate in epoch 2 before installing transition certificate!"
+    );
+
+    // Install verified transition certificate on A, B, C (removed), and D (newly admitted)!
+    for v in [&voter_a, &voter_b, &voter_c, &voter_d] {
+        v.install_membership_epoch(&mdec, &ep1_cfg).await.unwrap();
+    }
+
+    // Now D CAN participate in epoch 2!
+    let p5_d = voter_d.prepare_term(&prep_e2_t5).await.unwrap();
+    assert_eq!(p5_d.min_active_epoch, 2);
+
+    // Removed member C MUST reject BOTH old epoch 1 AND new epoch 2!
+    let stale_e1_prep = PrepareTermRequest {
+        group_id: "pool:m2".into(),
+        epoch: 1,
+        term: 6,
+        leader_id: "old-coord".into(),
+        from_slot: 1,
+    };
+    assert!(
+        voter_c.prepare_term(&stale_e1_prep).await.is_err(),
+        "Removed member C MUST reject old epoch 1!"
+    );
+    assert!(
+        voter_c.prepare_term(&prep_e2_t5).await.is_err(),
+        "Removed member C MUST reject new epoch 2!"
+    );
+
+    let _ = std::fs::remove_dir_all(&standby_db_dir);
 }

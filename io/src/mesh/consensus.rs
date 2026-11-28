@@ -176,6 +176,29 @@ impl MembershipTransitionProposal {
     }
 }
 
+/// Canonical protocol-defined NoOp proposal (`NEXUS-NOOP-PROPOSAL-v2`) used during multi-slot
+/// takeover catch-up to establish an explicit, verifiable disposition for unaccepted gap slots
+/// rather than silently skipping them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoOpProposal {
+    pub group_id: String,
+    pub epoch: u64,
+    pub slot: u64,
+    pub reason: String,
+}
+
+impl NoOpProposal {
+    pub fn canonical_digest(&self) -> String {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"NEXUS-NOOP-PROPOSAL-v2");
+        push_len_prefixed(&mut hasher, self.group_id.as_bytes());
+        hasher.update(&self.epoch.to_be_bytes());
+        hasher.update(&self.slot.to_be_bytes());
+        push_len_prefixed(&mut hasher, self.reason.as_bytes());
+        hasher.finalize().to_hex().to_string()
+    }
+}
+
 /// Unified canonical slot proposal used across `VoteRequest`, `DurableVoterLock`, QC verification,
 /// autonomous recovery, and durable slot persistence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -183,6 +206,7 @@ impl MembershipTransitionProposal {
 pub enum SlotProposal {
     Lease(LeaseProposal),
     Membership(MembershipTransitionProposal),
+    NoOp(NoOpProposal),
 }
 
 impl SlotProposal {
@@ -190,6 +214,7 @@ impl SlotProposal {
         match self {
             Self::Lease(p) => &p.group_id,
             Self::Membership(p) => &p.group_id,
+            Self::NoOp(p) => &p.group_id,
         }
     }
 
@@ -197,6 +222,7 @@ impl SlotProposal {
         match self {
             Self::Lease(p) => Ok(p.canonical_digest()),
             Self::Membership(p) => p.canonical_digest(),
+            Self::NoOp(p) => Ok(p.canonical_digest()),
         }
     }
 
@@ -208,25 +234,104 @@ impl SlotProposal {
                 group_id
             );
         }
-        if let Self::Membership(m) = self {
-            if m.prev_epoch != epoch || m.next_epoch != epoch.saturating_add(1) {
-                anyhow::bail!(
-                    "Membership transition epoch ({} -> {}) does not match vote epoch {}",
-                    m.prev_epoch,
-                    m.next_epoch,
-                    epoch
-                );
+        match self {
+            Self::Lease(_) => {}
+            Self::Membership(m) => {
+                if m.prev_epoch != epoch || m.next_epoch != epoch.saturating_add(1) {
+                    anyhow::bail!(
+                        "Membership transition epoch ({} -> {}) does not match vote epoch {}",
+                        m.prev_epoch,
+                        m.next_epoch,
+                        epoch
+                    );
+                }
+                if m.slot != slot {
+                    anyhow::bail!(
+                        "Membership transition slot {} does not match vote slot {}",
+                        m.slot,
+                        slot
+                    );
+                }
             }
-            if m.slot != slot {
-                anyhow::bail!(
-                    "Membership transition slot {} does not match vote slot {}",
-                    m.slot,
-                    slot
-                );
+            Self::NoOp(n) => {
+                if n.epoch != epoch || n.slot != slot {
+                    anyhow::bail!(
+                        "NoOp proposal (epoch={}, slot={}) does not match vote (epoch={}, slot={})",
+                        n.epoch,
+                        n.slot,
+                        epoch,
+                        slot
+                    );
+                }
             }
         }
         self.canonical_digest()
     }
+}
+
+/// Phase-1 prepare request sent by a candidate coordinator to establish a durable monotonic term.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrepareTermRequest {
+    pub group_id: String,
+    pub epoch: u64,
+    pub term: u64,
+    pub leader_id: String,
+    pub from_slot: u64,
+}
+
+/// Durable accepted lock reported by a voter inside its signed `TermPromise`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcceptedSlotLock {
+    pub epoch: u64,
+    pub slot: u64,
+    pub accepted_term: u64,
+    pub proposal_hash: String,
+    pub proposal: SlotProposal,
+    pub vote: SignedVote,
+}
+
+/// Cryptographically signed voter promise for `(group_id, epoch, term, leader_id)`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TermPromise {
+    pub group_id: String,
+    pub epoch: u64,
+    pub term: u64,
+    pub leader_id: String,
+    pub from_slot: u64,
+    pub voter_node_id: String,
+    pub min_active_epoch: u64,
+    pub accepted_locks: Vec<AcceptedSlotLock>,
+    pub signature: String,
+}
+
+/// Quorum certificate of signed `TermPromise`s proving a coordinator's authority in `term` AND
+/// enabling voters to independently verify Paxos value adoption before signing higher-term votes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TermCertificate {
+    pub group_id: String,
+    pub epoch: u64,
+    pub term: u64,
+    pub leader_id: String,
+    pub from_slot: u64,
+    pub mode: ConsensusMode,
+    pub promises: Vec<TermPromise>,
+}
+
+/// Recovery action planned for a single slot in the contiguous takeover prefix.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SlotRecoveryAction {
+    Adopt(SlotProposal),
+    FillGapNoOp(NoOpProposal),
+}
+
+/// Summary of an autonomous multi-slot coordinator takeover & catch-up.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TakeoverReport {
+    pub term: u64,
+    pub membership_epoch: u64,
+    pub next_slot: u64,
+    pub recovered_slots: Vec<u64>,
+    pub filled_gaps: Vec<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -238,6 +343,14 @@ pub struct VoteRequest {
     /// Canonical slot proposal persisted atomically with the voter's durable lock for recovery.
     #[serde(default)]
     pub proposal: Option<SlotProposal>,
+    /// Coordinator term (`>= 1` for term-fenced votes; `0` for legacy Milestone-1 compatibility).
+    #[serde(default)]
+    pub term: u64,
+    #[serde(default)]
+    pub leader_id: Option<String>,
+    /// Verifiable Phase-1 quorum certificate required for all term-fenced votes (`term >= 1`).
+    #[serde(default)]
+    pub term_cert: Option<TermCertificate>,
 }
 
 impl VoteRequest {
@@ -249,6 +362,9 @@ impl VoteRequest {
             slot,
             proposal_hash,
             proposal: Some(SlotProposal::Lease(proposal)),
+            term: 0,
+            leader_id: None,
+            term_cert: None,
         }
     }
 
@@ -260,7 +376,36 @@ impl VoteRequest {
             slot: proposal.slot,
             proposal_hash,
             proposal: Some(SlotProposal::Membership(proposal)),
+            term: 0,
+            leader_id: None,
+            term_cert: None,
         })
+    }
+
+    pub fn for_noop(proposal: NoOpProposal) -> Self {
+        let proposal_hash = proposal.canonical_digest();
+        Self {
+            group_id: proposal.group_id.clone(),
+            epoch: proposal.epoch,
+            slot: proposal.slot,
+            proposal_hash,
+            proposal: Some(SlotProposal::NoOp(proposal)),
+            term: 0,
+            leader_id: None,
+            term_cert: None,
+        }
+    }
+
+    pub fn with_term(
+        mut self,
+        term: u64,
+        leader_id: impl Into<String>,
+        term_cert: TermCertificate,
+    ) -> Self {
+        self.term = term;
+        self.leader_id = Some(leader_id.into());
+        self.term_cert = Some(term_cert);
+        self
     }
 }
 
@@ -268,6 +413,8 @@ impl VoteRequest {
 pub struct SignedVote {
     pub group_id: String,
     pub epoch: u64,
+    #[serde(default)]
+    pub term: u64,
     pub slot: u64,
     pub proposal_hash: String,
     pub voter_node_id: String,
@@ -278,6 +425,8 @@ pub struct SignedVote {
 pub struct QuorumCertificate {
     pub group_id: String,
     pub epoch: u64,
+    #[serde(default)]
+    pub term: u64,
     pub slot: u64,
     pub proposal_hash: String,
     pub mode: ConsensusMode,
@@ -340,12 +489,26 @@ impl MembershipTransitionDecision {
     }
 }
 
+/// Verifiable durable NoOp decision persisted when filling an unaccepted gap slot during takeover.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoOpDecision {
+    pub proposal: NoOpProposal,
+    pub qc: QuorumCertificate,
+}
+
+impl NoOpDecision {
+    pub fn canonical_digest(&self) -> String {
+        self.proposal.canonical_digest()
+    }
+}
+
 /// Type-aware durable slot decision persisted in `sys_mesh_decision_log`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "decision_kind", rename_all = "snake_case")]
 pub enum DurableSlotDecision {
     Lease(FencedLease),
     Membership(MembershipTransitionDecision),
+    NoOp(NoOpDecision),
 }
 
 impl DurableSlotDecision {
@@ -353,6 +516,7 @@ impl DurableSlotDecision {
         match self {
             Self::Lease(l) => &l.group_id,
             Self::Membership(m) => &m.proposal.group_id,
+            Self::NoOp(n) => &n.proposal.group_id,
         }
     }
 
@@ -360,6 +524,7 @@ impl DurableSlotDecision {
         match self {
             Self::Lease(l) => &l.qc,
             Self::Membership(m) => &m.qc,
+            Self::NoOp(n) => &n.qc,
         }
     }
 
@@ -367,20 +532,28 @@ impl DurableSlotDecision {
         match self {
             Self::Lease(l) => Ok(l.canonical_digest()),
             Self::Membership(m) => m.canonical_digest(),
+            Self::NoOp(n) => Ok(n.canonical_digest()),
         }
     }
 
     pub fn as_lease(&self) -> Option<&FencedLease> {
         match self {
             Self::Lease(l) => Some(l),
-            Self::Membership(_) => None,
+            Self::Membership(_) | Self::NoOp(_) => None,
         }
     }
 
     pub fn as_membership(&self) -> Option<&MembershipTransitionDecision> {
         match self {
             Self::Membership(m) => Some(m),
-            Self::Lease(_) => None,
+            Self::Lease(_) | Self::NoOp(_) => None,
+        }
+    }
+
+    pub fn as_noop(&self) -> Option<&NoOpDecision> {
+        match self {
+            Self::NoOp(n) => Some(n),
+            Self::Lease(_) | Self::Membership(_) => None,
         }
     }
 }
@@ -411,6 +584,8 @@ struct DurableVoterLock {
     lock_key: String,
     group_id: String,
     epoch: u64,
+    #[serde(default)]
+    accepted_term: u64,
     slot: u64,
     proposal_hash: String,
     #[serde(default)]
@@ -418,6 +593,19 @@ struct DurableVoterLock {
     voter_node_id: String,
     signature: String,
     locked_at_ms: u64,
+}
+
+/// Durable per-voter term promise & authorized membership epoch high-water mark.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DurableVoterTermState {
+    term_key: String,
+    group_id: String,
+    voter_node_id: String,
+    promised_term: u64,
+    promised_leader_id: Option<String>,
+    min_active_epoch: u64,
+    #[serde(default)]
+    installed_epochs: HashMap<u64, MembershipEpochConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -431,6 +619,8 @@ struct DurableMembershipRecord {
     group_id: String,
     mode: ConsensusMode,
     membership_epoch: u64,
+    #[serde(default)]
+    current_term: u64,
     next_slot: u64,
     members: Vec<GroupMember>,
 }
@@ -469,15 +659,191 @@ pub fn canonical_vote_payload(
     proposal_hash: &str,
     voter_node_id: &str,
 ) -> Vec<u8> {
-    let mut out = Vec::with_capacity(128);
-    out.extend_from_slice(b"NEXUS-CONSENSUS-VOTE-v1");
+    canonical_vote_payload_for_term(group_id, epoch, 0, slot, proposal_hash, voter_node_id)
+}
+
+pub fn canonical_vote_payload_for_term(
+    group_id: &str,
+    epoch: u64,
+    term: u64,
+    slot: u64,
+    proposal_hash: &str,
+    voter_node_id: &str,
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(140);
+    if term == 0 {
+        out.extend_from_slice(b"NEXUS-CONSENSUS-VOTE-v1");
+    } else {
+        out.extend_from_slice(b"NEXUS-CONSENSUS-VOTE-v2");
+    }
     for field in [group_id.as_bytes(), proposal_hash.as_bytes(), voter_node_id.as_bytes()] {
         out.extend_from_slice(&(field.len() as u32).to_be_bytes());
         out.extend_from_slice(field);
     }
     out.extend_from_slice(&epoch.to_be_bytes());
+    if term > 0 {
+        out.extend_from_slice(&term.to_be_bytes());
+    }
     out.extend_from_slice(&slot.to_be_bytes());
     out
+}
+
+pub fn canonical_promise_payload(
+    group_id: &str,
+    epoch: u64,
+    term: u64,
+    leader_id: &str,
+    from_slot: u64,
+    voter_node_id: &str,
+    min_active_epoch: u64,
+    accepted_locks: &[AcceptedSlotLock],
+) -> Vec<u8> {
+    let mut sorted = accepted_locks.to_vec();
+    sorted.sort_by_key(|l| (l.slot, l.accepted_term, l.epoch));
+    let mut out = Vec::with_capacity(256);
+    out.extend_from_slice(b"NEXUS-TERM-PROMISE-v1");
+    for field in [group_id.as_bytes(), leader_id.as_bytes(), voter_node_id.as_bytes()] {
+        out.extend_from_slice(&(field.len() as u32).to_be_bytes());
+        out.extend_from_slice(field);
+    }
+    out.extend_from_slice(&epoch.to_be_bytes());
+    out.extend_from_slice(&term.to_be_bytes());
+    out.extend_from_slice(&from_slot.to_be_bytes());
+    out.extend_from_slice(&min_active_epoch.to_be_bytes());
+    out.extend_from_slice(&(sorted.len() as u32).to_be_bytes());
+    for l in &sorted {
+        out.extend_from_slice(&l.epoch.to_be_bytes());
+        out.extend_from_slice(&l.slot.to_be_bytes());
+        out.extend_from_slice(&l.accepted_term.to_be_bytes());
+        let ph = l.proposal_hash.as_bytes();
+        out.extend_from_slice(&(ph.len() as u32).to_be_bytes());
+        out.extend_from_slice(ph);
+    }
+    out
+}
+
+/// Pure, shared Phase-1 `TermCertificate` & Paxos value-adoption verifier used by BOTH voters
+/// (`VoterNode::cast_vote`) and coordinators (`CoordinationGroup::plan_takeover_from_promises`).
+///
+/// Protocol invariant:
+/// - Verifies a quorum of authorized `epoch_cfg.members` signed `NEXUS-TERM-PROMISE-v1` for
+///   `(cert.group_id, cert.epoch, cert.term, cert.leader_id, cert.from_slot)`.
+/// - For `slot`: selects the unique proposal with the highest `accepted_term` across all promises.
+/// - Fails closed if two conflicting proposals share the highest `accepted_term`.
+/// - Returns `Ok(Some(adopted))` if an accepted value exists for `slot`, or `Ok(None)` if no
+///   promise in the quorum reported an accepted value for `slot`.
+pub fn verify_term_certificate_and_adoption(
+    cert: &TermCertificate,
+    epoch_cfg: &MembershipEpochConfig,
+    slot: u64,
+) -> Result<Option<SlotProposal>> {
+    if cert.term == 0 || cert.leader_id.is_empty() {
+        anyhow::bail!("TermCertificate requires term >= 1 and non-empty leader_id");
+    }
+    if cert.mode != epoch_cfg.mode {
+        anyhow::bail!(
+            "TermCertificate mode {:?} does not match epoch config mode {:?}",
+            cert.mode,
+            epoch_cfg.mode
+        );
+    }
+    if slot < cert.from_slot {
+        anyhow::bail!(
+            "Slot {} is below TermCertificate from_slot {}",
+            slot,
+            cert.from_slot
+        );
+    }
+
+    let mut unique_voters = HashSet::new();
+    let mut best_term: Option<u64> = None;
+    let mut best_proposal: Option<(String, SlotProposal)> = None;
+
+    for p in &cert.promises {
+        if p.group_id != cert.group_id
+            || p.epoch != cert.epoch
+            || p.term != cert.term
+            || p.leader_id != cert.leader_id
+            || p.from_slot != cert.from_slot
+        {
+            anyhow::bail!(
+                "TermPromise from '{}' does not match TermCertificate header",
+                p.voter_node_id
+            );
+        }
+        let member = epoch_cfg.members.get(&p.voter_node_id).ok_or_else(|| {
+            anyhow!(
+                "TermPromise voter '{}' is not an authorized member for epoch {}",
+                p.voter_node_id,
+                cert.epoch
+            )
+        })?;
+        let payload = canonical_promise_payload(
+            &p.group_id,
+            p.epoch,
+            p.term,
+            &p.leader_id,
+            p.from_slot,
+            &p.voter_node_id,
+            p.min_active_epoch,
+            &p.accepted_locks,
+        );
+        if !nexus_db::auth::ed25519_verify(&member.ed25519_pubkey, &payload, &p.signature) {
+            anyhow::bail!("Invalid Ed25519 signature on TermPromise from '{}'", p.voter_node_id);
+        }
+        unique_voters.insert(p.voter_node_id.clone());
+
+        for lock in &p.accepted_locks {
+            if lock.slot != slot {
+                continue;
+            }
+            if lock.epoch != cert.epoch {
+                continue;
+            }
+            let computed = lock.proposal.validate_for_vote(&cert.group_id, lock.epoch, lock.slot)?;
+            if computed != lock.proposal_hash {
+                anyhow::bail!(
+                    "Tampered AcceptedSlotLock in TermPromise from '{}' at slot {}",
+                    p.voter_node_id,
+                    slot
+                );
+            }
+            match best_term {
+                None => {
+                    best_term = Some(lock.accepted_term);
+                    best_proposal = Some((lock.proposal_hash.clone(), lock.proposal.clone()));
+                }
+                Some(bt) if lock.accepted_term > bt => {
+                    best_term = Some(lock.accepted_term);
+                    best_proposal = Some((lock.proposal_hash.clone(), lock.proposal.clone()));
+                }
+                Some(bt) if lock.accepted_term == bt => {
+                    if let Some((ref bh, ref bp)) = best_proposal {
+                        if bh != &lock.proposal_hash || bp != &lock.proposal {
+                            anyhow::bail!(
+                                "CRITICAL: Conflicting accepted proposals share equal highest accepted_term {} at slot {} — takeover fails closed!",
+                                bt,
+                                slot
+                            );
+                        }
+                    }
+                }
+                Some(_) => {}
+            }
+        }
+    }
+
+    let required = epoch_cfg.mode.quorum_size(epoch_cfg.members.len());
+    if unique_voters.len() < required {
+        anyhow::bail!(
+            "Insufficient TermCertificate quorum for {:?}: got {} valid promises, need {}",
+            epoch_cfg.mode,
+            unique_voters.len(),
+            required
+        );
+    }
+
+    Ok(best_proposal.map(|(_, prop)| prop))
 }
 
 pub fn sign_vote_raw(
@@ -488,11 +854,25 @@ pub fn sign_vote_raw(
     voter_node_id: &str,
     voter_sk_b64: &str,
 ) -> Result<SignedVote> {
-    let payload = canonical_vote_payload(group_id, epoch, slot, proposal_hash, voter_node_id);
+    sign_vote_raw_in_term(group_id, epoch, 0, slot, proposal_hash, voter_node_id, voter_sk_b64)
+}
+
+pub fn sign_vote_raw_in_term(
+    group_id: &str,
+    epoch: u64,
+    term: u64,
+    slot: u64,
+    proposal_hash: &str,
+    voter_node_id: &str,
+    voter_sk_b64: &str,
+) -> Result<SignedVote> {
+    let payload =
+        canonical_vote_payload_for_term(group_id, epoch, term, slot, proposal_hash, voter_node_id);
     let sig = nexus_db::auth::ed25519_sign(voter_sk_b64, &payload)?;
     Ok(SignedVote {
         group_id: group_id.to_string(),
         epoch,
+        term,
         slot,
         proposal_hash: proposal_hash.to_string(),
         voter_node_id: voter_node_id.to_string(),
@@ -594,9 +974,398 @@ impl VoterNode {
         let _ = self
             .db
             .client
-            .query("DEFINE TABLE IF NOT EXISTS sys_mesh_voter_lock SCHEMALESS;")
+            .query(
+                "DEFINE TABLE IF NOT EXISTS sys_mesh_voter_lock SCHEMALESS;\
+                 DEFINE TABLE IF NOT EXISTS sys_mesh_voter_term SCHEMALESS;",
+            )
             .await;
         Ok(())
+    }
+
+    fn term_state_key(&self, group_id: &str) -> String {
+        format!(
+            "{}_{}",
+            &blake3::hash(group_id.as_bytes()).to_hex().as_str()[..16],
+            self.node_id
+        )
+    }
+
+    async fn load_term_state(&self, group_id: &str) -> Result<Option<DurableVoterTermState>> {
+        self.ensure_tables().await?;
+        let tkey = self.term_state_key(group_id);
+        let mut resp = self
+            .db
+            .client
+            .query("SELECT * FROM type::record('sys_mesh_voter_term', $id)")
+            .bind(("id", tkey.clone()))
+            .await?;
+        let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+        let Some(raw) = rows.first() else {
+            return Ok(None);
+        };
+        let state: DurableVoterTermState = serde_json::from_value(raw.clone()).map_err(|e| {
+            anyhow!(
+                "Corrupt durable voter term state on '{}' for '{}': {}",
+                self.node_id,
+                group_id,
+                e
+            )
+        })?;
+        if state.term_key != tkey || state.group_id != group_id || state.voter_node_id != self.node_id {
+            anyhow::bail!(
+                "Misbound durable voter term state on '{}' for '{}'",
+                self.node_id,
+                group_id
+            );
+        }
+        Ok(Some(state))
+    }
+
+    async fn persist_term_state(&self, state: &DurableVoterTermState) -> Result<()> {
+        self.ensure_tables().await?;
+        let val = serde_json::to_value(state)?;
+        self.db
+            .client
+            .query("UPSERT type::record('sys_mesh_voter_term', $id) CONTENT $s;")
+            .bind(("id", state.term_key.clone()))
+            .bind(("s", val))
+            .await?
+            .check()?;
+        Ok(())
+    }
+
+    /// Durably install the genesis epoch-1 membership configuration on this voter so it can
+    /// independently verify Phase-1 `TermCertificate`s and enforce epoch fencing.
+    pub async fn install_genesis_epoch(
+        &self,
+        group_id: &str,
+        mode: ConsensusMode,
+        members: Vec<GroupMember>,
+    ) -> Result<()> {
+        let mut map = HashMap::new();
+        for m in members {
+            map.insert(m.node_id.clone(), m);
+        }
+        let cfg = MembershipEpochConfig { mode, members: map };
+        let mut state = match self.load_term_state(group_id).await? {
+            Some(s) => s,
+            None => DurableVoterTermState {
+                term_key: self.term_state_key(group_id),
+                group_id: group_id.to_string(),
+                voter_node_id: self.node_id.clone(),
+                promised_term: 0,
+                promised_leader_id: None,
+                min_active_epoch: 1,
+                installed_epochs: HashMap::new(),
+            },
+        };
+        if let Some(existing) = state.installed_epochs.get(&1) {
+            if existing != &cfg {
+                anyhow::bail!(
+                    "Conflicting genesis epoch-1 configuration on voter '{}' for '{}'",
+                    self.node_id,
+                    group_id
+                );
+            }
+            return Ok(());
+        }
+        state.installed_epochs.insert(1, cfg);
+        if state.min_active_epoch == 0 {
+            state.min_active_epoch = 1;
+        }
+        self.persist_term_state(&state).await
+    }
+
+    /// Explicit, idempotent, durable membership-epoch installation for BOTH existing voters AND
+    /// newly admitted voters (as well as removed voters to fence old-epoch requests).
+    ///
+    /// Independently verifies `decision.qc` against `prev_cfg` before advancing `min_active_epoch`.
+    pub async fn install_membership_epoch(
+        &self,
+        decision: &MembershipTransitionDecision,
+        prev_cfg: &MembershipEpochConfig,
+    ) -> Result<u64> {
+        let prop = &decision.proposal;
+        if prop.next_epoch != prop.prev_epoch.saturating_add(1) {
+            anyhow::bail!(
+                "Invalid membership epoch transition ({} -> {})",
+                prop.prev_epoch,
+                prop.next_epoch
+            );
+        }
+        if prop.mode != prev_cfg.mode {
+            anyhow::bail!(
+                "Membership transition mode {:?} disagrees with predecessor mode {:?}",
+                prop.mode,
+                prev_cfg.mode
+            );
+        }
+        let expected_digest = prop.canonical_digest()?;
+        if decision.qc.group_id != prop.group_id
+            || decision.qc.epoch != prop.prev_epoch
+            || decision.qc.slot != prop.slot
+            || decision.qc.mode != prev_cfg.mode
+            || decision.qc.proposal_hash != expected_digest
+        {
+            anyhow::bail!("MembershipTransitionDecision QC header/digest mismatch");
+        }
+        let mut unique_voters = HashSet::new();
+        for v in &decision.qc.votes {
+            if v.group_id != decision.qc.group_id
+                || v.epoch != decision.qc.epoch
+                || v.term != decision.qc.term
+                || v.slot != decision.qc.slot
+                || v.proposal_hash != decision.qc.proposal_hash
+            {
+                anyhow::bail!("MembershipTransitionDecision QC contains mismatched vote");
+            }
+            let member = prev_cfg.members.get(&v.voter_node_id).ok_or_else(|| {
+                anyhow!(
+                    "MembershipTransitionDecision voter '{}' not authorized in epoch {}",
+                    v.voter_node_id,
+                    prop.prev_epoch
+                )
+            })?;
+            let payload = canonical_vote_payload_for_term(
+                &v.group_id,
+                v.epoch,
+                v.term,
+                v.slot,
+                &v.proposal_hash,
+                &v.voter_node_id,
+            );
+            if !nexus_db::auth::ed25519_verify(&member.ed25519_pubkey, &payload, &v.signature) {
+                anyhow::bail!(
+                    "Invalid Ed25519 signature from '{}' on MembershipTransitionDecision",
+                    v.voter_node_id
+                );
+            }
+            unique_voters.insert(v.voter_node_id.clone());
+        }
+        let required = prev_cfg.mode.quorum_size(prev_cfg.members.len());
+        if unique_voters.len() < required {
+            anyhow::bail!(
+                "Insufficient quorum on MembershipTransitionDecision: got {}, need {}",
+                unique_voters.len(),
+                required
+            );
+        }
+
+        let new_cfg = MembershipEpochConfig {
+            mode: prop.mode,
+            members: prop
+                .new_members
+                .iter()
+                .cloned()
+                .map(|m| (m.node_id.clone(), m))
+                .collect(),
+        };
+
+        let mut state = match self.load_term_state(&prop.group_id).await? {
+            Some(s) => s,
+            None => DurableVoterTermState {
+                term_key: self.term_state_key(&prop.group_id),
+                group_id: prop.group_id.clone(),
+                voter_node_id: self.node_id.clone(),
+                promised_term: 0,
+                promised_leader_id: None,
+                min_active_epoch: prop.prev_epoch,
+                installed_epochs: HashMap::new(),
+            },
+        };
+        if let Some(existing_prev) = state.installed_epochs.get(&prop.prev_epoch) {
+            if existing_prev != prev_cfg {
+                anyhow::bail!(
+                    "Predecessor epoch {} configuration mismatch on voter '{}'",
+                    prop.prev_epoch,
+                    self.node_id
+                );
+            }
+        } else {
+            state.installed_epochs.insert(prop.prev_epoch, prev_cfg.clone());
+        }
+        if let Some(existing_next) = state.installed_epochs.get(&prop.next_epoch) {
+            if existing_next != &new_cfg {
+                anyhow::bail!(
+                    "Conflicting epoch {} configuration already installed on voter '{}'",
+                    prop.next_epoch,
+                    self.node_id
+                );
+            }
+            return Ok(state.min_active_epoch);
+        }
+        state.installed_epochs.insert(prop.next_epoch, new_cfg);
+        state.min_active_epoch = state.min_active_epoch.max(prop.next_epoch);
+        self.persist_term_state(&state).await?;
+        Ok(state.min_active_epoch)
+    }
+
+    /// Phase-1 durable term promise with idempotent same-leader retry, stale-term/stale-epoch
+    /// fencing, removed-member rejection, and signed reporting of all accepted locks `>= from_slot`.
+    pub async fn prepare_term(&self, req: &PrepareTermRequest) -> Result<TermPromise> {
+        if req.term == 0 || req.leader_id.is_empty() {
+            anyhow::bail!("PrepareTermRequest requires term >= 1 and non-empty leader_id");
+        }
+        self.ensure_tables().await?;
+
+        let mut state = match self.load_term_state(&req.group_id).await? {
+            Some(s) => s,
+            None => {
+                if req.epoch > 1 {
+                    anyhow::bail!(
+                        "Voter '{}' has not installed membership transition certificate for epoch {}",
+                        self.node_id,
+                        req.epoch
+                    );
+                }
+                DurableVoterTermState {
+                    term_key: self.term_state_key(&req.group_id),
+                    group_id: req.group_id.clone(),
+                    voter_node_id: self.node_id.clone(),
+                    promised_term: 0,
+                    promised_leader_id: None,
+                    min_active_epoch: 1,
+                    installed_epochs: HashMap::new(),
+                }
+            }
+        };
+
+        if req.epoch < state.min_active_epoch {
+            anyhow::bail!(
+                "Stale epoch {} rejected on voter '{}' (min_active_epoch={})",
+                req.epoch,
+                self.node_id,
+                state.min_active_epoch
+            );
+        }
+        if req.epoch > 1 && !state.installed_epochs.contains_key(&req.epoch) {
+            anyhow::bail!(
+                "Voter '{}' has not installed membership epoch {} certificate",
+                self.node_id,
+                req.epoch
+            );
+        }
+        if let Some(cfg) = state.installed_epochs.get(&req.epoch) {
+            if !cfg.members.contains_key(&self.node_id) {
+                anyhow::bail!(
+                    "Removed voter '{}' cannot participate in epoch {}",
+                    self.node_id,
+                    req.epoch
+                );
+            }
+        }
+
+        if req.term < state.promised_term {
+            anyhow::bail!(
+                "Stale term {} rejected on voter '{}' (promised_term={})",
+                req.term,
+                self.node_id,
+                state.promised_term
+            );
+        }
+        if req.term == state.promised_term {
+            if state.promised_leader_id.as_deref() != Some(req.leader_id.as_str()) {
+                anyhow::bail!(
+                    "Term {} on voter '{}' already promised to different leader '{:?}', refusing '{}'",
+                    req.term,
+                    self.node_id,
+                    state.promised_leader_id,
+                    req.leader_id
+                );
+            }
+            // Same term + same leader -> idempotent retry!
+        } else {
+            // Persist higher term promise BEFORE responding!
+            state.promised_term = req.term;
+            state.promised_leader_id = Some(req.leader_id.clone());
+            self.persist_term_state(&state).await?;
+        }
+
+        // Collect all durable accepted locks for `(req.group_id, self.node_id)` with `slot >= req.from_slot`
+        let mut resp = self
+            .db
+            .client
+            .query("SELECT * FROM sys_mesh_voter_lock")
+            .await?;
+        let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+        let mut accepted_locks = Vec::new();
+        for raw in rows {
+            if let Some(gid) = raw.get("group_id").and_then(|v| v.as_str()) {
+                if gid != req.group_id {
+                    continue;
+                }
+            }
+            if let Some(vid) = raw.get("voter_node_id").and_then(|v| v.as_str()) {
+                if vid != self.node_id {
+                    continue;
+                }
+            }
+            let lock: DurableVoterLock = serde_json::from_value(raw).map_err(|e| {
+                anyhow!(
+                    "Corrupt durable voter lock on '{}' during prepare_term: {}",
+                    self.node_id,
+                    e
+                )
+            })?;
+            if lock.group_id != req.group_id || lock.voter_node_id != self.node_id {
+                continue;
+            }
+            if lock.epoch != req.epoch || lock.slot < req.from_slot {
+                continue;
+            }
+            let expected_lk = self.slot_lock_key(&lock.group_id, lock.epoch, lock.slot);
+            if lock.lock_key != expected_lk {
+                anyhow::bail!("Misbound lock_key on voter '{}' during prepare_term", self.node_id);
+            }
+            let prop = lock.proposal.ok_or_else(|| {
+                anyhow!(
+                    "Incomplete durable voter lock on '{}' at slot {} (missing SlotProposal)",
+                    self.node_id,
+                    lock.slot
+                )
+            })?;
+            let vote = SignedVote {
+                group_id: lock.group_id,
+                epoch: lock.epoch,
+                term: lock.accepted_term,
+                slot: lock.slot,
+                proposal_hash: lock.proposal_hash.clone(),
+                voter_node_id: lock.voter_node_id,
+                signature: lock.signature,
+            };
+            accepted_locks.push(AcceptedSlotLock {
+                epoch: lock.epoch,
+                slot: lock.slot,
+                accepted_term: lock.accepted_term,
+                proposal_hash: lock.proposal_hash,
+                proposal: prop,
+                vote,
+            });
+        }
+        accepted_locks.sort_by_key(|l| (l.slot, l.accepted_term));
+
+        let payload = canonical_promise_payload(
+            &req.group_id,
+            req.epoch,
+            req.term,
+            &req.leader_id,
+            req.from_slot,
+            &self.node_id,
+            state.min_active_epoch,
+            &accepted_locks,
+        );
+        let signature = nexus_db::auth::ed25519_sign(&self.ed25519_sk_b64, &payload)?;
+        Ok(TermPromise {
+            group_id: req.group_id.clone(),
+            epoch: req.epoch,
+            term: req.term,
+            leader_id: req.leader_id.clone(),
+            from_slot: req.from_slot,
+            voter_node_id: self.node_id.clone(),
+            min_active_epoch: state.min_active_epoch,
+            accepted_locks,
+            signature,
+        })
     }
 
     pub fn slot_lock_key(&self, group_id: &str, epoch: u64, slot: u64) -> String {
@@ -665,6 +1434,7 @@ impl VoterNode {
             SignedVote {
                 group_id: existing.group_id,
                 epoch: existing.epoch,
+                term: existing.accepted_term,
                 slot: existing.slot,
                 proposal_hash: existing.proposal_hash,
                 voter_node_id: existing.voter_node_id,
@@ -674,9 +1444,9 @@ impl VoterNode {
         )))
     }
 
-    /// Require canonical `SlotProposal` (Lease or Membership), validate its epoch/slot/group &
-    /// canonical digest, atomically persist durable lock + proposal BEFORE returning signature,
-    /// and never overwrite or upgrade an existing lock!
+    /// Require canonical `SlotProposal`, enforce durable term & epoch fencing, independently verify
+    /// Phase-1 `TermCertificate` & Paxos value-adoption rules for all term-fenced (`term >= 1`)
+    /// votes, and atomically persist the durable lock BEFORE returning the signature!
     pub async fn cast_vote(&self, req: &VoteRequest) -> Result<SignedVote> {
         let req_prop = req.proposal.as_ref().ok_or_else(|| {
             anyhow!(
@@ -696,10 +1466,101 @@ impl VoterNode {
         }
 
         self.ensure_tables().await?;
+        let term_state_opt = self.load_term_state(&req.group_id).await?;
+
+        // Enforce voter-side epoch & term fencing + independent Phase-1 adoption proof!
+        if req.term > 0 {
+            let state = term_state_opt.as_ref().ok_or_else(|| {
+                anyhow!(
+                    "Voter '{}' has no active term promise for '{}'; Phase-1 prepare_term required",
+                    self.node_id,
+                    req.group_id
+                )
+            })?;
+            if req.epoch < state.min_active_epoch {
+                anyhow::bail!(
+                    "Stale epoch {} rejected on voter '{}' (min_active_epoch={})",
+                    req.epoch,
+                    self.node_id,
+                    state.min_active_epoch
+                );
+            }
+            let epoch_cfg = state.installed_epochs.get(&req.epoch).ok_or_else(|| {
+                anyhow!(
+                    "Voter '{}' has not installed membership configuration for epoch {}",
+                    self.node_id,
+                    req.epoch
+                )
+            })?;
+            if !epoch_cfg.members.contains_key(&self.node_id) {
+                anyhow::bail!(
+                    "Removed voter '{}' cannot vote in epoch {}",
+                    self.node_id,
+                    req.epoch
+                );
+            }
+            let req_leader = req.leader_id.as_deref().ok_or_else(|| {
+                anyhow!("Term-fenced VoteRequest (term={}) requires leader_id", req.term)
+            })?;
+            if req.term != state.promised_term
+                || state.promised_leader_id.as_deref() != Some(req_leader)
+            {
+                anyhow::bail!(
+                    "VoteRequest (term={}, leader={}) does not match active promise (term={}, leader={:?}) on voter '{}'",
+                    req.term,
+                    req_leader,
+                    state.promised_term,
+                    state.promised_leader_id,
+                    self.node_id
+                );
+            }
+            let cert = req.term_cert.as_ref().ok_or_else(|| {
+                anyhow!(
+                    "Higher-term VoteRequest (term={}) rejected: missing verifiable Phase-1 TermCertificate",
+                    req.term
+                )
+            })?;
+            if cert.group_id != req.group_id
+                || cert.epoch != req.epoch
+                || cert.term != req.term
+                || cert.leader_id != req_leader
+            {
+                anyhow::bail!("TermCertificate does not match VoteRequest (group/epoch/term/leader)");
+            }
+            // Independently verify Phase-1 quorum AND Paxos value-adoption invariant!
+            if let Some(adopted) = verify_term_certificate_and_adoption(cert, epoch_cfg, req.slot)? {
+                if &adopted != req_prop {
+                    anyhow::bail!(
+                        "Paxos adoption violation on voter '{}' at slot {} (term={}): VoteRequest conflicts with highest-term adopted proposal!",
+                        self.node_id,
+                        req.slot,
+                        req.term
+                    );
+                }
+            }
+        } else if let Some(ref state) = term_state_opt {
+            if req.epoch < state.min_active_epoch {
+                anyhow::bail!(
+                    "Stale epoch {} rejected on voter '{}' (min_active_epoch={})",
+                    req.epoch,
+                    self.node_id,
+                    state.min_active_epoch
+                );
+            }
+            if state.promised_term > 0 {
+                anyhow::bail!(
+                    "Unfenced term-0 VoteRequest rejected on voter '{}' (promised_term={})",
+                    self.node_id,
+                    state.promised_term
+                );
+            }
+        }
+
         let lock_key = self.slot_lock_key(&req.group_id, req.epoch, req.slot);
-        let vote = sign_vote_raw(
+        let vote = sign_vote_raw_in_term(
             &req.group_id,
             req.epoch,
+            req.term,
             req.slot,
             &req.proposal_hash,
             &self.node_id,
@@ -709,6 +1570,7 @@ impl VoterNode {
             lock_key: lock_key.clone(),
             group_id: req.group_id.clone(),
             epoch: req.epoch,
+            accepted_term: req.term,
             slot: req.slot,
             proposal_hash: req.proposal_hash.clone(),
             proposal: Some(req_prop.clone()),
@@ -722,8 +1584,8 @@ impl VoterNode {
             .db
             .client
             .query("CREATE type::record('sys_mesh_voter_lock', $id) CONTENT $l;")
-            .bind(("id", lock_key))
-            .bind(("l", val))
+            .bind(("id", lock_key.clone()))
+            .bind(("l", val.clone()))
             .await;
 
         match create_res {
@@ -736,13 +1598,44 @@ impl VoterNode {
             Err(e) => return Err(anyhow!("Database error persisting voter lock: {}", e)),
         }
 
-        // Existing lock found: require STRICT equality of BOTH proposal_hash AND canonical proposal!
-        // Legacy locks (`existing_prop == None`) are NEVER upgraded or accepted on retry.
+        // Existing lock found: read back & validate identity!
         let (existing_vote, existing_prop) = self
             .query_slot_lock(&req.group_id, req.epoch, req.slot)
             .await?
             .ok_or_else(|| anyhow!("Voter lock reported existing but could not be read back"))?;
 
+        if req.term < existing_vote.term {
+            anyhow::bail!(
+                "Stale-term VoteRequest (term={}) rejected on voter '{}': slot {} already accepted at term {}",
+                req.term,
+                self.node_id,
+                req.slot,
+                existing_vote.term
+            );
+        }
+
+        if req.term > existing_vote.term {
+            // Higher term with verified Phase-1 TermCertificate & adoption proof:
+            // atomically advance lock to `req.term` (never overwriting legacy `None` without payload)!
+            if existing_prop.is_none() {
+                anyhow::bail!(
+                    "Cannot overwrite legacy payload-less lock on '{}' at slot {}",
+                    self.node_id,
+                    req.slot
+                );
+            }
+            self.db
+                .client
+                .query("UPSERT type::record('sys_mesh_voter_lock', $id) CONTENT $l;")
+                .bind(("id", lock_key))
+                .bind(("l", val))
+                .await?
+                .check()?;
+            return Ok(vote);
+        }
+
+        // Same term: require STRICT equality of BOTH proposal_hash AND canonical proposal!
+        // Legacy locks (`existing_prop == None`) are NEVER upgraded or accepted on retry.
         if existing_vote.proposal_hash == req.proposal_hash {
             if existing_prop.as_ref() != Some(req_prop) {
                 anyhow::bail!(
@@ -1003,6 +1896,8 @@ pub struct CoordinationGroup {
     pub group_id: String,
     pub mode: ConsensusMode,
     pub membership_epoch: u64,
+    pub current_term: u64,
+    pub active_term_cert: Option<TermCertificate>,
     pub next_slot: u64,
     pub max_lease_ttl_ms: u64,
     pub members: HashMap<String, GroupMember>,
@@ -1034,6 +1929,8 @@ impl CoordinationGroup {
             group_id: group_id.into(),
             mode,
             membership_epoch: 1,
+            current_term: 0,
+            active_term_cert: None,
             next_slot: 1,
             max_lease_ttl_ms: 300_000,
             members: map,
@@ -1252,6 +2149,7 @@ impl CoordinationGroup {
                 }
                 group.mode = tip_cfg.mode;
                 group.membership_epoch = max_epoch;
+                group.current_term = active_rec.current_term;
                 group.next_slot = active_rec.next_slot;
                 group.members = tip_cfg.members.clone();
                 active_next_slot_for_check = Some(active_rec.next_slot);
@@ -1276,6 +2174,7 @@ impl CoordinationGroup {
             })?;
             group.validate_durable_slot_decision(&decision, None)?;
             min_safe_next_slot = min_safe_next_slot.max(decision.qc().slot.saturating_add(1));
+            group.current_term = group.current_term.max(decision.qc().term);
             match decision {
                 DurableSlotDecision::Lease(lease) => {
                     let cur_max = group.max_fencing_epoch.get(&lease.resource_key).copied().unwrap_or(0);
@@ -1303,6 +2202,7 @@ impl CoordinationGroup {
                         );
                     }
                 }
+                DurableSlotDecision::NoOp(_) => {}
             }
         }
 
@@ -1329,6 +2229,7 @@ impl CoordinationGroup {
             group_id: self.group_id.clone(),
             mode: self.mode,
             membership_epoch: 1,
+            current_term: self.current_term,
             next_slot: 1,
             members: members.to_vec(),
         };
@@ -1391,6 +2292,7 @@ impl CoordinationGroup {
             group_id: prop.group_id.clone(),
             mode: prop.mode,
             membership_epoch: prop.next_epoch,
+            current_term: self.current_term.max(decision.qc.term),
             next_slot: new_next_slot,
             members: sorted_members.clone(),
         };
@@ -1609,6 +2511,7 @@ impl CoordinationGroup {
             group_id: self.group_id.clone(),
             mode: self.mode,
             membership_epoch: self.membership_epoch,
+            current_term: self.current_term.max(lease.qc.term),
             next_slot: new_next_slot,
             members: self.members.values().cloned().collect(),
         };
@@ -1705,7 +2608,78 @@ impl CoordinationGroup {
         Ok(out)
     }
 
-    /// Validate any `DurableSlotDecision` (`Lease` or `Membership`).
+    /// Atomic persistence for a protocol-defined `NoOpDecision` (filling an unaccepted gap slot).
+    async fn persist_noop_decision_atomic(
+        &self,
+        decision: &NoOpDecision,
+        new_next_slot: u64,
+    ) -> Result<()> {
+        let Some(ref db) = self.db else { return Ok(()) };
+        let skey = slot_decision_key(&decision.proposal.group_id, decision.qc.epoch, decision.qc.slot);
+        let gkey = blake3::hash(self.group_id.as_bytes()).to_hex().to_string();
+        let slot_dec = DurableSlotDecision::NoOp(decision.clone());
+        let dec_val = serde_json::to_value(&slot_dec)?;
+        let mem_rec = DurableMembershipRecord {
+            group_id: self.group_id.clone(),
+            mode: self.mode,
+            membership_epoch: self.membership_epoch,
+            current_term: self.current_term.max(decision.qc.term),
+            next_slot: new_next_slot,
+            members: self.members.values().cloned().collect(),
+        };
+        let mem_val = serde_json::to_value(&mem_rec)?;
+
+        let tx_res = db
+            .client
+            .query(
+                "BEGIN TRANSACTION;\
+                 CREATE type::record('sys_mesh_decision_log', $skey) CONTENT $d;\
+                 UPSERT type::record('sys_mesh_membership', $gkey) CONTENT $m;\
+                 COMMIT TRANSACTION;",
+            )
+            .bind(("skey", skey.clone()))
+            .bind(("d", dec_val))
+            .bind(("gkey", gkey))
+            .bind(("m", mem_val))
+            .await;
+
+        match tx_res {
+            Ok(resp) => match resp.check() {
+                Ok(_) => return Ok(()),
+                Err(e) if is_already_exists_error(&e) => {}
+                Err(e) => return Err(anyhow!("Failed atomic NoOp commit transaction: {}", e)),
+            },
+            Err(e) if is_already_exists_error(&e) => {}
+            Err(e) => return Err(anyhow!("Database error in atomic NoOp commit: {}", e)),
+        }
+
+        let mut resp = db
+            .client
+            .query("SELECT * FROM type::record('sys_mesh_decision_log', $skey)")
+            .bind(("skey", skey))
+            .await?;
+        let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+        let raw_existing = rows
+            .first()
+            .ok_or_else(|| anyhow!("NoOp slot decision conflict reported but record missing"))?;
+        let existing = parse_durable_slot_decision(raw_existing.clone())?;
+        self.validate_durable_slot_decision(&existing, Some(decision.qc.slot))?;
+        let existing_noop = existing.as_noop().ok_or_else(|| {
+            anyhow!(
+                "CRITICAL: Slot {} already committed as non-NoOp decision",
+                decision.qc.slot
+            )
+        })?;
+        if existing_noop.canonical_digest() != decision.canonical_digest() {
+            anyhow::bail!(
+                "CRITICAL: Conflicting durable NoOp decision at slot {}",
+                decision.qc.slot
+            );
+        }
+        Ok(())
+    }
+
+    /// Validate any `DurableSlotDecision` (`Lease`, `Membership`, or `NoOp`).
     pub fn validate_durable_slot_decision(
         &self,
         decision: &DurableSlotDecision,
@@ -1716,7 +2690,36 @@ impl CoordinationGroup {
             DurableSlotDecision::Membership(m) => {
                 self.validate_durable_membership_decision(m, expected_slot)
             }
+            DurableSlotDecision::NoOp(n) => self.validate_durable_noop_decision(n, expected_slot),
         }
+    }
+
+    pub fn validate_durable_noop_decision(
+        &self,
+        decision: &NoOpDecision,
+        expected_slot: Option<u64>,
+    ) -> Result<()> {
+        let prop = &decision.proposal;
+        if prop.group_id != self.group_id {
+            anyhow::bail!("NoOp decision group_id '{}' does not match '{}'", prop.group_id, self.group_id);
+        }
+        if let Some(slot) = expected_slot {
+            if prop.slot != slot || decision.qc.slot != slot {
+                anyhow::bail!("NoOp decision slot mismatch");
+            }
+        }
+        if decision.qc.slot != prop.slot || decision.qc.epoch != prop.epoch {
+            anyhow::bail!("NoOp decision QC (epoch/slot) disagrees with proposal");
+        }
+        let epoch_cfg = self.membership_history.get(&prop.epoch).ok_or_else(|| {
+            anyhow!("No durable membership config for epoch {} to validate NoOp", prop.epoch)
+        })?;
+        self.verify_qc_for_epoch(&decision.qc, epoch_cfg, prop.epoch)?;
+        let expected_digest = prop.canonical_digest();
+        if decision.qc.proposal_hash != expected_digest {
+            anyhow::bail!("NoOp decision QC proposal_hash disagrees with canonical digest");
+        }
+        Ok(())
     }
 
     pub fn validate_durable_membership_decision(
@@ -1944,26 +2947,39 @@ impl CoordinationGroup {
             votes_by_hash.entry(v.proposal_hash.clone()).or_default().push(v);
         }
 
-        // 3. Establish unique valid QC
+        // 3. Establish unique valid QC (preserving the term carried by the votes)
         let mut valid_qcs = Vec::new();
         for (proposal_hash, votes) in votes_by_hash {
-            let qc = QuorumCertificate {
-                group_id: self.group_id.clone(),
-                epoch: self.membership_epoch,
-                slot,
-                proposal_hash,
-                mode: self.mode,
-                votes,
-            };
-            if self.verify_qc(&qc).is_ok() {
-                valid_qcs.push(qc);
+            let mut votes_by_term: HashMap<u64, Vec<SignedVote>> = HashMap::new();
+            for v in votes {
+                votes_by_term.entry(v.term).or_default().push(v);
+            }
+            for (vote_term, term_votes) in votes_by_term {
+                let qc = QuorumCertificate {
+                    group_id: self.group_id.clone(),
+                    epoch: self.membership_epoch,
+                    term: vote_term,
+                    slot,
+                    proposal_hash: proposal_hash.clone(),
+                    mode: self.mode,
+                    votes: term_votes,
+                };
+                if self.verify_qc(&qc).is_ok() {
+                    valid_qcs.push(qc);
+                }
             }
         }
         if valid_qcs.len() > 1 {
-            anyhow::bail!(
-                "CRITICAL: Conflicting quorum certificates detected during slot {} recovery!",
-                slot
-            );
+            let distinct_hashes: HashSet<&str> =
+                valid_qcs.iter().map(|q| q.proposal_hash.as_str()).collect();
+            if distinct_hashes.len() > 1 {
+                anyhow::bail!(
+                    "CRITICAL: Conflicting quorum certificates detected during slot {} recovery!",
+                    slot
+                );
+            }
+            valid_qcs.sort_by_key(|q| std::cmp::Reverse(q.term));
+            valid_qcs.truncate(1);
         }
 
         if let Some(committed) = existing_durable {
@@ -2007,7 +3023,13 @@ impl CoordinationGroup {
                         self.members = new_map;
                     }
                 }
+                DurableSlotDecision::NoOp(_) => {
+                    if slot >= self.next_slot {
+                        self.next_slot = slot + 1;
+                    }
+                }
             }
+            self.current_term = self.current_term.max(committed.qc().term);
             return Ok(Some(committed));
         }
 
@@ -2048,6 +3070,7 @@ impl CoordinationGroup {
                 let new_next_slot = self.next_slot.max(slot + 1);
                 self.persist_slot_decision_atomic(&lease, new_next_slot).await?;
 
+                self.current_term = self.current_term.max(lease.qc.term);
                 self.next_slot = new_next_slot;
                 let cur_max = self.max_fencing_epoch.get(&lease.resource_key).copied().unwrap_or(0);
                 if lease.fencing_epoch > cur_max {
@@ -2069,6 +3092,7 @@ impl CoordinationGroup {
                     .cloned()
                     .map(|m| (m.node_id.clone(), m))
                     .collect();
+                self.current_term = self.current_term.max(dec.qc.term);
                 self.membership_epoch = dec.proposal.next_epoch;
                 self.next_slot = new_next_slot;
                 self.membership_history.insert(
@@ -2081,7 +3105,286 @@ impl CoordinationGroup {
                 self.members = new_map;
                 Ok(Some(DurableSlotDecision::Membership(dec)))
             }
+            SlotProposal::NoOp(prop) => {
+                let dec = NoOpDecision { proposal: prop, qc };
+                self.validate_durable_noop_decision(&dec, Some(slot))?;
+                let new_next_slot = self.next_slot.max(slot + 1);
+                self.persist_noop_decision_atomic(&dec, new_next_slot).await?;
+
+                self.current_term = self.current_term.max(dec.qc.term);
+                self.next_slot = new_next_slot;
+                Ok(Some(DurableSlotDecision::NoOp(dec)))
+            }
         }
+    }
+
+    /// Phase-1 takeover planner: verifies a quorum of `TermPromise`s (`TermCertificate`), checks
+    /// Paxos value adoption across EVERY slot from `from_slot ..= max_reported_slot`, fails closed
+    /// on conflicting equal-highest-`accepted_term` proposals, and emits a contiguous recovery plan
+    /// (adopting accepted proposals and filling unaccepted gaps with `NoOpProposal`).
+    pub fn plan_takeover_from_promises(
+        &self,
+        leader_id: &str,
+        term: u64,
+        from_slot: u64,
+        promises: Vec<TermPromise>,
+    ) -> Result<(TermCertificate, Vec<(u64, SlotRecoveryAction)>)> {
+        let cert = TermCertificate {
+            group_id: self.group_id.clone(),
+            epoch: self.membership_epoch,
+            term,
+            leader_id: leader_id.to_string(),
+            from_slot,
+            mode: self.mode,
+            promises,
+        };
+        let current_cfg = MembershipEpochConfig {
+            mode: self.mode,
+            members: self.members.clone(),
+        };
+        // Always verify certificate quorum & signatures (even when no accepted locks exist!)
+        let _ = verify_term_certificate_and_adoption(&cert, &current_cfg, from_slot)?;
+
+        let max_slot = cert
+            .promises
+            .iter()
+            .flat_map(|p| p.accepted_locks.iter())
+            .filter(|l| l.epoch == self.membership_epoch && l.slot >= from_slot)
+            .map(|l| l.slot)
+            .max();
+
+        let mut plan = Vec::new();
+        if let Some(max_s) = max_slot {
+            for s in from_slot..=max_s {
+                match verify_term_certificate_and_adoption(&cert, &current_cfg, s)? {
+                    Some(adopted) => plan.push((s, SlotRecoveryAction::Adopt(adopted))),
+                    None => plan.push((
+                        s,
+                        SlotRecoveryAction::FillGapNoOp(NoOpProposal {
+                            group_id: self.group_id.clone(),
+                            epoch: self.membership_epoch,
+                            slot: s,
+                            reason: format!("takeover_term_{}_gap_fill", term),
+                        }),
+                    )),
+                }
+            }
+        }
+        Ok((cert, plan))
+    }
+
+    /// Commit a quorum-certified `NoOpProposal` to close an unaccepted gap slot contiguously.
+    pub async fn commit_noop_with_quorum(
+        &mut self,
+        proposal: &NoOpProposal,
+        votes: Vec<SignedVote>,
+    ) -> Result<NoOpDecision> {
+        if proposal.group_id != self.group_id
+            || proposal.epoch != self.membership_epoch
+            || proposal.slot != self.next_slot
+        {
+            anyhow::bail!("NoOp proposal (group/epoch/slot) does not match group state");
+        }
+        let expected_hash = proposal.canonical_digest();
+        let vote_term = votes
+            .iter()
+            .filter(|v| {
+                v.group_id == self.group_id
+                    && v.epoch == self.membership_epoch
+                    && v.slot == proposal.slot
+                    && v.proposal_hash == expected_hash
+            })
+            .map(|v| v.term)
+            .max()
+            .unwrap_or(self.current_term);
+        let mut valid_votes = Vec::new();
+        let mut unique = HashSet::new();
+        for v in votes {
+            if v.group_id == self.group_id
+                && v.epoch == self.membership_epoch
+                && v.term == vote_term
+                && v.slot == proposal.slot
+                && v.proposal_hash == expected_hash
+                && unique.insert(v.voter_node_id.clone())
+            {
+                valid_votes.push(v);
+            }
+        }
+        let qc = QuorumCertificate {
+            group_id: self.group_id.clone(),
+            epoch: self.membership_epoch,
+            term: vote_term,
+            slot: proposal.slot,
+            proposal_hash: expected_hash,
+            mode: self.mode,
+            votes: valid_votes,
+        };
+        let decision = NoOpDecision {
+            proposal: proposal.clone(),
+            qc,
+        };
+        self.validate_durable_noop_decision(&decision, Some(proposal.slot))?;
+        let new_next_slot = self.next_slot + 1;
+        self.persist_noop_decision_atomic(&decision, new_next_slot)
+            .await?;
+        self.current_term = self.current_term.max(vote_term);
+        self.next_slot = new_next_slot;
+        Ok(decision)
+    }
+
+    /// Autonomous multi-slot coordinator takeover & contiguous catch-up against `voters`:
+    /// 1. Phase-1 `prepare_term` fan-out across `voters` -> verified `TermCertificate`.
+    /// 2. Builds contiguous recovery plan (`self.next_slot ..= max_reported_slot`), adopting
+    ///    highest-`accepted_term` proposals and filling unaccepted gaps with `NoOpProposal`.
+    /// 3. Drives every slot through Phase-2 `cast_vote` (carrying `TermCertificate`!) and atomic
+    ///    durable commit, installing any recovered `MembershipTransitionDecision` onto `voters`.
+    /// 4. Returns `TakeoverReport` only after the entire contiguous prefix is durably committed!
+    pub async fn execute_takeover_catch_up(
+        &mut self,
+        leader_id: &str,
+        new_term: u64,
+        voters: &[VoterNode],
+    ) -> Result<TakeoverReport> {
+        if new_term <= self.current_term {
+            anyhow::bail!(
+                "Takeover term {} must exceed current_term {}",
+                new_term,
+                self.current_term
+            );
+        }
+        let from_slot = self.next_slot;
+        let prep_req = PrepareTermRequest {
+            group_id: self.group_id.clone(),
+            epoch: self.membership_epoch,
+            term: new_term,
+            leader_id: leader_id.to_string(),
+            from_slot,
+        };
+
+        let mut join_set = tokio::task::JoinSet::new();
+        for v in voters {
+            if self.members.contains_key(&v.node_id) {
+                let vc = v.clone();
+                let rc = prep_req.clone();
+                join_set.spawn(async move { vc.prepare_term(&rc).await });
+            }
+        }
+        let mut promises = Vec::new();
+        while let Some(res) = join_set.join_next().await {
+            if let Ok(Ok(p)) = res {
+                promises.push(p);
+            }
+        }
+
+        let (cert, plan) = self.plan_takeover_from_promises(leader_id, new_term, from_slot, promises)?;
+        self.current_term = new_term;
+        self.active_term_cert = Some(cert.clone());
+
+        let mut recovered_slots = Vec::new();
+        let mut filled_gaps = Vec::new();
+
+        for (slot, action) in plan {
+            // Check if already durably committed in local decision log first
+            let existing = self.read_durable_slot_decisions(slot).await?;
+            if !existing.is_empty() {
+                let _ = self.recover_and_commit_slot(slot, vec![]).await?;
+                recovered_slots.push(slot);
+                continue;
+            }
+
+            let vreq = match &action {
+                SlotRecoveryAction::Adopt(SlotProposal::Lease(lp)) => {
+                    VoteRequest::for_lease(self.membership_epoch, slot, lp.clone())
+                        .with_term(new_term, leader_id, cert.clone())
+                }
+                SlotRecoveryAction::Adopt(SlotProposal::Membership(mp)) => {
+                    VoteRequest::for_membership(mp.clone())?
+                        .with_term(new_term, leader_id, cert.clone())
+                }
+                SlotRecoveryAction::Adopt(SlotProposal::NoOp(np))
+                | SlotRecoveryAction::FillGapNoOp(np) => {
+                    VoteRequest::for_noop(np.clone()).with_term(new_term, leader_id, cert.clone())
+                }
+            };
+
+            let mut vset = tokio::task::JoinSet::new();
+            for v in voters {
+                if self.members.contains_key(&v.node_id) {
+                    let vc = v.clone();
+                    let rc = vreq.clone();
+                    vset.spawn(async move { vc.cast_vote(&rc).await });
+                }
+            }
+            let mut votes = Vec::new();
+            while let Some(res) = vset.join_next().await {
+                if let Ok(Ok(sv)) = res {
+                    votes.push(sv);
+                }
+            }
+
+            let prev_cfg = MembershipEpochConfig {
+                mode: self.mode,
+                members: self.members.clone(),
+            };
+            match action {
+                SlotRecoveryAction::Adopt(SlotProposal::Lease(lp)) => {
+                    let qc = QuorumCertificate {
+                        group_id: self.group_id.clone(),
+                        epoch: self.membership_epoch,
+                        term: new_term,
+                        slot,
+                        proposal_hash: lp.canonical_digest(),
+                        mode: self.mode,
+                        votes,
+                    };
+                    self.verify_qc(&qc)?;
+                    let lease = FencedLease {
+                        lease_id: lp.lease_id,
+                        group_id: lp.group_id,
+                        resource_key: lp.resource_key,
+                        holder_node_id: lp.holder_node_id,
+                        workload_id: lp.workload_id,
+                        fencing_epoch: lp.fencing_epoch,
+                        issued_at_ms: lp.issued_at_ms,
+                        expires_at_ms: lp.expires_at_ms,
+                        qc,
+                    };
+                    self.validate_durable_decision(&lease, Some(slot))?;
+                    let new_next = self.next_slot.max(slot + 1);
+                    self.persist_slot_decision_atomic(&lease, new_next).await?;
+                    self.next_slot = new_next;
+                    let cur_max = self.max_fencing_epoch.get(&lease.resource_key).copied().unwrap_or(0);
+                    if lease.fencing_epoch > cur_max {
+                        self.max_fencing_epoch.insert(lease.resource_key.clone(), lease.fencing_epoch);
+                        self.active_leases.insert(lease.resource_key.clone(), lease);
+                    }
+                    recovered_slots.push(slot);
+                }
+                SlotRecoveryAction::Adopt(SlotProposal::Membership(mp)) => {
+                    let mdec = self.reconfigure_membership_with_quorum(&mp, votes).await?;
+                    for v in voters {
+                        let _ = v.install_membership_epoch(&mdec, &prev_cfg).await;
+                    }
+                    recovered_slots.push(slot);
+                }
+                SlotRecoveryAction::Adopt(SlotProposal::NoOp(np)) => {
+                    let _ = self.commit_noop_with_quorum(&np, votes).await?;
+                    recovered_slots.push(slot);
+                }
+                SlotRecoveryAction::FillGapNoOp(np) => {
+                    let _ = self.commit_noop_with_quorum(&np, votes).await?;
+                    filled_gaps.push(slot);
+                }
+            }
+        }
+
+        Ok(TakeoverReport {
+            term: self.current_term,
+            membership_epoch: self.membership_epoch,
+            next_slot: self.next_slot,
+            recovered_slots,
+            filled_gaps,
+        })
     }
 
     /// Commit a quorum-certified membership transition using the unified `SlotProposal::Membership`
@@ -2124,12 +3427,31 @@ impl CoordinationGroup {
         }
         let expected_hash = proposal.canonical_digest()?;
         let slot = proposal.slot;
+        let vote_term = votes
+            .iter()
+            .filter(|v| {
+                v.group_id == self.group_id
+                    && v.epoch == self.membership_epoch
+                    && v.slot == slot
+                    && v.proposal_hash == expected_hash
+            })
+            .map(|v| v.term)
+            .max()
+            .unwrap_or(self.current_term);
+        if vote_term < self.current_term {
+            anyhow::bail!(
+                "Stale-term membership transition (vote_term={} < current_term={}) rejected",
+                vote_term,
+                self.current_term
+            );
+        }
 
         let mut valid_votes = Vec::new();
         let mut unique = HashSet::new();
         for v in votes {
             if v.group_id == self.group_id
                 && v.epoch == self.membership_epoch
+                && v.term == vote_term
                 && v.slot == slot
                 && v.proposal_hash == expected_hash
                 && unique.insert(v.voter_node_id.clone())
@@ -2140,6 +3462,7 @@ impl CoordinationGroup {
         let qc = QuorumCertificate {
             group_id: self.group_id.clone(),
             epoch: self.membership_epoch,
+            term: vote_term,
             slot,
             proposal_hash: expected_hash,
             mode: self.mode,
@@ -2157,6 +3480,7 @@ impl CoordinationGroup {
         self.persist_membership_transition_atomic(&decision, new_next_slot)
             .await?;
 
+        self.current_term = self.current_term.max(vote_term);
         self.membership_epoch = decision.proposal.next_epoch;
         self.next_slot = new_next_slot;
         let new_map: HashMap<String, GroupMember> = decision
@@ -2191,9 +3515,10 @@ impl CoordinationGroup {
             .members
             .get(&vote.voter_node_id)
             .ok_or_else(|| anyhow!("Unknown voter node '{}'", vote.voter_node_id))?;
-        let payload = canonical_vote_payload(
+        let payload = canonical_vote_payload_for_term(
             &vote.group_id,
             vote.epoch,
+            vote.term,
             vote.slot,
             &vote.proposal_hash,
             &vote.voter_node_id,
@@ -2249,14 +3574,26 @@ impl CoordinationGroup {
         }
         let mut unique_voters = HashSet::new();
         for v in &qc.votes {
-            if v.group_id != qc.group_id || v.epoch != qc.epoch || v.slot != qc.slot || v.proposal_hash != qc.proposal_hash {
+            if v.group_id != qc.group_id
+                || v.epoch != qc.epoch
+                || v.term != qc.term
+                || v.slot != qc.slot
+                || v.proposal_hash != qc.proposal_hash
+            {
                 anyhow::bail!("QC contains mismatched vote");
             }
             let member = config
                 .members
                 .get(&v.voter_node_id)
                 .ok_or_else(|| anyhow!("QC voter '{}' not in group for epoch {}", v.voter_node_id, expected_epoch))?;
-            let payload = canonical_vote_payload(&v.group_id, v.epoch, v.slot, &v.proposal_hash, &v.voter_node_id);
+            let payload = canonical_vote_payload_for_term(
+                &v.group_id,
+                v.epoch,
+                v.term,
+                v.slot,
+                &v.proposal_hash,
+                &v.voter_node_id,
+            );
             if !nexus_db::auth::ed25519_verify(&member.ed25519_pubkey, &payload, &v.signature) {
                 anyhow::bail!("QC contains invalid signature from '{}'", v.voter_node_id);
             }
@@ -2328,10 +3665,24 @@ impl CoordinationGroup {
             expires_at_ms,
         );
 
+        let vote_term = votes
+            .iter()
+            .filter(|v| v.slot == slot && v.proposal_hash == expected_hash)
+            .map(|v| v.term)
+            .max()
+            .unwrap_or(self.current_term);
+        if vote_term < self.current_term {
+            anyhow::bail!(
+                "Stale-term lease commit (vote_term={} < current_term={}) rejected",
+                vote_term,
+                self.current_term
+            );
+        }
+
         let mut valid_votes = Vec::new();
         let mut unique_voters = HashSet::new();
         for v in votes {
-            if v.slot != slot || v.proposal_hash != expected_hash {
+            if v.slot != slot || v.proposal_hash != expected_hash || v.term != vote_term {
                 continue;
             }
             if let Some(equiv) = self.record_and_verify_vote(&v)? {
@@ -2360,6 +3711,7 @@ impl CoordinationGroup {
         let qc = QuorumCertificate {
             group_id: self.group_id.clone(),
             epoch: self.membership_epoch,
+            term: vote_term,
             slot,
             proposal_hash: expected_hash,
             mode: self.mode,
@@ -2380,6 +3732,7 @@ impl CoordinationGroup {
         };
         let new_next_slot = self.next_slot + 1;
         self.persist_slot_decision_atomic(&lease, new_next_slot).await?;
+        self.current_term = self.current_term.max(vote_term);
         self.next_slot = new_next_slot;
         self.max_fencing_epoch.insert(resource_key.to_string(), next_fencing);
         self.active_leases.insert(resource_key.to_string(), lease.clone());
