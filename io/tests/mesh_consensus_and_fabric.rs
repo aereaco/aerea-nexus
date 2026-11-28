@@ -748,6 +748,208 @@ async fn p0_resource_trust_crdt_expiry_membership_digest_and_authenticated_bound
         "Existing decision record with matching hash but forged QC MUST fail closed!"
     );
 
+    // 7i. Milestone 1.1: Strict recovery rejects mixed proposal-bound + payload-less locks,
+    //     and corrupt lock record returns Err from query_slot_lock() (not Ok(None))!
+    let mix_prop = LeaseProposal {
+        group_id: "pool:us-east".into(),
+        lease_id: "lse_mix".into(),
+        resource_key: "gpu:mix".into(),
+        holder_node_id: "node-b".into(),
+        workload_id: "wl-mix".into(),
+        fencing_epoch: 1,
+        issued_at_ms: t0,
+        expires_at_ms: t0 + 30_000,
+    };
+    let mix_hash = mix_prop.canonical_digest();
+    let mv1 = sign_vote_raw("pool:us-east", 1, 61, &mix_hash, "node-a", &sk_a).unwrap();
+    let mv2 = sign_vote_raw("pool:us-east", 1, 61, &mix_hash, "node-b", &sk_b).unwrap();
+    let mv3 = sign_vote_raw("pool:us-east", 1, 61, &mix_hash, "node-c", &sk_c).unwrap();
+    assert!(
+        rec_group
+            .recover_and_commit_slot(
+                61,
+                vec![
+                    (mv1, Some(SlotProposal::Lease(mix_prop))),
+                    (mv2, None),
+                    (mv3, None),
+                ],
+            )
+            .await
+            .is_err(),
+        "Recovery MUST fail closed on mixed proposal-bound + payload-less voter locks!"
+    );
+    let corrupt_lock_key = legacy_voter.slot_lock_key("pool:us-east", 1, 99);
+    legacy_db
+        .client
+        .query("CREATE type::record('sys_mesh_voter_lock', $id) CONTENT { corrupted: true };")
+        .bind(("id", corrupt_lock_key))
+        .await
+        .unwrap();
+    assert!(
+        legacy_voter.query_slot_lock("pool:us-east", 1, 99).await.is_err(),
+        "Corrupt durable voter lock MUST return Err from query_slot_lock (not Ok(None))!"
+    );
+    assert!(
+        legacy_voter.query_slot_lock("pool:us-east", 1, 98).await.unwrap().is_none(),
+        "Absent durable voter lock must still return Ok(None)!"
+    );
+
+    // 7j. Milestone 1.1: Genesis guard rejects pre-existing same-group OR ambiguous decision-log rows,
+    //     while allowing positively foreign-group decision-log rows!
+    let orphan_db = Arc::new(Database::open_mem());
+    orphan_db
+        .client
+        .query("DEFINE TABLE IF NOT EXISTS sys_mesh_decision_log SCHEMALESS; CREATE type::record('sys_mesh_decision_log', 'orphan1') CONTENT { group_id: 'pool:orphan', lease_id: 'x' };")
+        .await
+        .unwrap();
+    assert!(
+        CoordinationGroup::open_durable(
+            orphan_db.clone(),
+            "pool:orphan",
+            ConsensusMode::CftFastPath,
+            members.clone(),
+        )
+        .await
+        .is_err(),
+        "Genesis MUST fail closed when a decision-log record already exists for the same group!"
+    );
+    // Positively foreign group initializes cleanly on the same DB
+    let _ = CoordinationGroup::open_durable(
+        orphan_db.clone(),
+        "pool:other-clean",
+        ConsensusMode::CftFastPath,
+        members.clone(),
+    )
+    .await
+    .unwrap();
+    // Ambiguous/malformed row without `group_id` blocks genesis!
+    let ambig_db = Arc::new(Database::open_mem());
+    ambig_db
+        .client
+        .query("DEFINE TABLE IF NOT EXISTS sys_mesh_decision_log SCHEMALESS; CREATE type::record('sys_mesh_decision_log', 'ambig1') CONTENT { broken: true };")
+        .await
+        .unwrap();
+    assert!(
+        CoordinationGroup::open_durable(
+            ambig_db,
+            "pool:ambig",
+            ConsensusMode::CftFastPath,
+            members.clone(),
+        )
+        .await
+        .is_err(),
+        "Genesis MUST fail closed when an ambiguous/malformed decision-log row exists!"
+    );
+
+    // 7k. Milestone 1.1: Regressed `sys_mesh_membership.next_slot` fails closed on boot (no silent repair!),
+    //     and inconsistent 3-record active tip rejects idempotent membership retry!
+    let tamper_ns_db = Arc::new(Database::open_mem());
+    let mut tamper_ns_grp = CoordinationGroup::open_durable(
+        tamper_ns_db.clone(),
+        "pool:next-slot-check",
+        ConsensusMode::CftFastPath,
+        members.clone(),
+    )
+    .await
+    .unwrap();
+    let tn_prop = MembershipTransitionProposal::new(
+        "pool:next-slot-check",
+        1,
+        2,
+        1,
+        ConsensusMode::CftFastPath,
+        epoch2_members.clone(),
+    )
+    .unwrap();
+    let tn_req = VoteRequest::for_membership(tn_prop.clone()).unwrap();
+    let tn_votes = vec![
+        voter_a.cast_vote(&tn_req).await.unwrap(),
+        voter_b.cast_vote(&tn_req).await.unwrap(),
+        voter_c.cast_vote(&tn_req).await.unwrap(),
+    ];
+    let mut pre_commit_retry_grp = tamper_ns_grp.clone();
+    let _ = tamper_ns_grp
+        .reconfigure_membership_with_quorum(&tn_prop, tn_votes.clone())
+        .await
+        .unwrap();
+    // Exact idempotent retry while all 3 records are consistent -> SUCCEEDS!
+    let mut clean_retry_grp = pre_commit_retry_grp.clone();
+    let _ = clean_retry_grp
+        .reconfigure_membership_with_quorum(&tn_prop, tn_votes.clone())
+        .await
+        .unwrap();
+    // Tamper ONLY `next_slot` back to 1 (regressed behind committed slot 1 -> requires >= 2)
+    let tn_gkey = blake3::hash(b"pool:next-slot-check").to_hex().to_string();
+    tamper_ns_db
+        .client
+        .query("UPSERT type::record('sys_mesh_membership', $gkey) CONTENT $m;")
+        .bind(("gkey", tn_gkey.clone()))
+        .bind((
+            "m",
+            serde_json::json!({
+                "group_id": "pool:next-slot-check",
+                "mode": "cft_fast_path",
+                "membership_epoch": 2,
+                "next_slot": 1,
+                "members": epoch2_members,
+            }),
+        ))
+        .await
+        .unwrap();
+    assert!(
+        CoordinationGroup::open_durable(
+            tamper_ns_db.clone(),
+            "pool:next-slot-check",
+            ConsensusMode::CftFastPath,
+            epoch2_members.clone(),
+        )
+        .await
+        .is_err(),
+        "open_durable MUST fail closed when sys_mesh_membership.next_slot is regressed!"
+    );
+    // Also verify idempotent retry directly rejects regressed next_slot AND unproven epoch 3!
+    assert!(
+        pre_commit_retry_grp
+            .reconfigure_membership_with_quorum(&tn_prop, tn_votes.clone())
+            .await
+            .is_err(),
+        "Idempotent membership retry MUST reject regressed sys_mesh_membership.next_slot!"
+    );
+    tamper_ns_db
+        .client
+        .query("UPSERT type::record('sys_mesh_membership', $gkey) CONTENT $m;")
+        .bind(("gkey", tn_gkey))
+        .bind((
+            "m",
+            serde_json::json!({
+                "group_id": "pool:next-slot-check",
+                "mode": "cft_fast_path",
+                "membership_epoch": 3,
+                "next_slot": 5,
+                "members": epoch2_members,
+            }),
+        ))
+        .await
+        .unwrap();
+    assert!(
+        pre_commit_retry_grp
+            .reconfigure_membership_with_quorum(&tn_prop, tn_votes)
+            .await
+            .is_err(),
+        "Idempotent membership retry MUST reject unproven successor epoch 3 in sys_mesh_membership!"
+    );
+    assert!(
+        CoordinationGroup::open_durable(
+            tamper_ns_db,
+            "pool:next-slot-check",
+            ConsensusMode::CftFastPath,
+            epoch2_members.clone(),
+        )
+        .await
+        .is_err(),
+        "Unproven epoch 3 tip MUST fail closed on open_durable!"
+    );
+
     // 8. Typed `nexus_db::DbError::AlreadyExists` survives full query & transaction pipeline!
     let dup_db = Database::open_mem();
     dup_db

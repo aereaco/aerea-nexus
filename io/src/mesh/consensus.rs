@@ -610,6 +610,9 @@ impl VoterNode {
     }
 
     /// Query this voter's durable lock (both `SignedVote` and canonical `Option<SlotProposal>`).
+    ///
+    /// Preserves the strict distinction between an absent lock (`Ok(None)`) and a corrupt or
+    /// unreadable lock record (`Err(...)`).
     pub async fn query_slot_lock(
         &self,
         group_id: &str,
@@ -625,22 +628,30 @@ impl VoterNode {
             .bind(("id", lock_key))
             .await?;
         let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
-        Ok(rows
-            .first()
-            .and_then(|v| serde_json::from_value::<DurableVoterLock>(v.clone()).ok())
-            .map(|existing| {
-                (
-                    SignedVote {
-                        group_id: existing.group_id,
-                        epoch: existing.epoch,
-                        slot: existing.slot,
-                        proposal_hash: existing.proposal_hash,
-                        voter_node_id: existing.voter_node_id,
-                        signature: existing.signature,
-                    },
-                    existing.proposal,
-                )
-            }))
+        let Some(raw) = rows.first() else {
+            return Ok(None);
+        };
+        let existing: DurableVoterLock = serde_json::from_value(raw.clone()).map_err(|e| {
+            anyhow!(
+                "Corrupt or malformed durable voter lock on '{}' for ({}, epoch={}, slot={}): {}",
+                self.node_id,
+                group_id,
+                epoch,
+                slot,
+                e
+            )
+        })?;
+        Ok(Some((
+            SignedVote {
+                group_id: existing.group_id,
+                epoch: existing.epoch,
+                slot: existing.slot,
+                proposal_hash: existing.proposal_hash,
+                voter_node_id: existing.voter_node_id,
+                signature: existing.signature,
+            },
+            existing.proposal,
+        )))
     }
 
     /// Require canonical `SlotProposal` (Lease or Membership), validate its epoch/slot/group &
@@ -1077,8 +1088,32 @@ impl CoordinationGroup {
             }
         }
 
+        let mut min_safe_next_slot: u64 = 1;
+        let mut active_next_slot_for_check: Option<u64> = None;
+
         match (active_mem_opt, history_by_epoch.is_empty()) {
             (None, true) => {
+                // Before initializing genesis, verify NO existing or ambiguous decision-log rows exist!
+                // Ignore a record ONLY when its group_id is positively established as another group.
+                let mut pre_lresp = db.client.query("SELECT * FROM sys_mesh_decision_log").await?;
+                let pre_lrows: Vec<serde_json::Value> = pre_lresp.take(0).unwrap_or_default();
+                for v in pre_lrows {
+                    match decision_row_group_id(&v) {
+                        Some(row_gid) if row_gid != gid => continue,
+                        Some(_) => {
+                            anyhow::bail!(
+                                "Cannot initialize genesis for '{}': existing decision-log record found without durable membership state",
+                                gid
+                            );
+                        }
+                        None => {
+                            anyhow::bail!(
+                                "Cannot initialize genesis for '{}': malformed/ambiguous decision-log record without group_id prevents safe genesis initialization",
+                                gid
+                            );
+                        }
+                    }
+                }
                 // Brand-new group: initialize genesis epoch 1 atomically!
                 if group.members.is_empty() {
                     anyhow::bail!("Cannot initialize coordination group '{}' with empty members", gid);
@@ -1159,6 +1194,7 @@ impl CoordinationGroup {
                                 ep
                             );
                         }
+                        min_safe_next_slot = min_safe_next_slot.max(dec.proposal.slot.saturating_add(1));
                     }
 
                     let members_map: HashMap<String, GroupMember> = rec_sorted
@@ -1198,6 +1234,7 @@ impl CoordinationGroup {
                 group.membership_epoch = max_epoch;
                 group.next_slot = active_rec.next_slot;
                 group.members = tip_cfg.members.clone();
+                active_next_slot_for_check = Some(active_rec.next_slot);
             }
         }
 
@@ -1218,15 +1255,13 @@ impl CoordinationGroup {
                 )
             })?;
             group.validate_durable_slot_decision(&decision, None)?;
+            min_safe_next_slot = min_safe_next_slot.max(decision.qc().slot.saturating_add(1));
             match decision {
                 DurableSlotDecision::Lease(lease) => {
                     let cur_max = group.max_fencing_epoch.get(&lease.resource_key).copied().unwrap_or(0);
                     if lease.fencing_epoch > cur_max {
                         group.max_fencing_epoch.insert(lease.resource_key.clone(), lease.fencing_epoch);
                         group.active_leases.insert(lease.resource_key.clone(), lease.clone());
-                    }
-                    if lease.qc.epoch == group.membership_epoch && lease.qc.slot >= group.next_slot {
-                        group.next_slot = lease.qc.slot + 1;
                     }
                 }
                 DurableSlotDecision::Membership(mdec) => {
@@ -1248,6 +1283,19 @@ impl CoordinationGroup {
                         );
                     }
                 }
+            }
+        }
+
+        // Validate active `next_slot` against EVERY verified transition & validated decision
+        // without silently repairing a regressed slot counter!
+        if let Some(active_next) = active_next_slot_for_check {
+            if active_next < min_safe_next_slot {
+                anyhow::bail!(
+                    "Corrupt or regressed next_slot ({}) in sys_mesh_membership for '{}': verified committed history requires next_slot >= {}",
+                    active_next,
+                    gid,
+                    min_safe_next_slot
+                );
             }
         }
         Ok(group)
@@ -1324,7 +1372,7 @@ impl CoordinationGroup {
             mode: prop.mode,
             membership_epoch: prop.next_epoch,
             next_slot: new_next_slot,
-            members: sorted_members,
+            members: sorted_members.clone(),
         };
         let mval = serde_json::to_value(&mrec)?;
 
@@ -1341,7 +1389,7 @@ impl CoordinationGroup {
             .bind(("d", dec_val))
             .bind(("hkey", hkey.clone()))
             .bind(("h", hval))
-            .bind(("gkey", gkey))
+            .bind(("gkey", gkey.clone()))
             .bind(("m", mval))
             .await;
 
@@ -1355,7 +1403,8 @@ impl CoordinationGroup {
             Err(e) => return Err(anyhow!("Database error in atomic membership transition: {}", e)),
         }
 
-        // Duplicate detected: validate BOTH existing slot decision AND history record before accepting!
+        // Duplicate detected: validate ALL THREE durable records (decision log, epoch history,
+        // AND active membership tip/successor chain) before accepting an idempotent retry!
         let mut sresp = db
             .client
             .query("SELECT * FROM type::record('sys_mesh_decision_log', $skey)")
@@ -1382,6 +1431,7 @@ impl CoordinationGroup {
             );
         }
 
+        // Record 2: `sys_mesh_membership_history:$hkey`
         let mut hresp = db
             .client
             .query("SELECT * FROM type::record('sys_mesh_membership_history', $hkey)")
@@ -1393,6 +1443,23 @@ impl CoordinationGroup {
             .ok_or_else(|| anyhow!("Membership history conflict reported for epoch {} but record missing", prop.next_epoch))?;
         let existing_h: DurableMembershipEpochRecord = serde_json::from_value(raw_h.clone())
             .map_err(|e| anyhow!("Malformed existing membership history record: {}", e))?;
+        if existing_h.group_id != prop.group_id
+            || existing_h.membership_epoch != prop.next_epoch
+            || existing_h.mode != prop.mode
+        {
+            anyhow::bail!(
+                "CRITICAL: Existing membership history record for epoch {} disagrees with proposed group/epoch/mode",
+                prop.next_epoch
+            );
+        }
+        let mut existing_h_sorted = existing_h.members.clone();
+        existing_h_sorted.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+        if existing_h_sorted != sorted_members {
+            anyhow::bail!(
+                "CRITICAL: Existing membership history members for epoch {} disagree with proposed members",
+                prop.next_epoch
+            );
+        }
         let existing_htrans = existing_h
             .transition
             .as_ref()
@@ -1403,6 +1470,109 @@ impl CoordinationGroup {
                 "CRITICAL: Conflicting membership history already committed for epoch {}",
                 prop.next_epoch
             );
+        }
+
+        // Record 3: `sys_mesh_membership:$gkey` — verify active tip matches `prop.next_epoch` OR
+        // is a cryptographically verified successor epoch in `sys_mesh_membership_history`!
+        let mut mresp = db
+            .client
+            .query("SELECT * FROM type::record('sys_mesh_membership', $gkey)")
+            .bind(("gkey", gkey))
+            .await?;
+        let mrows: Vec<serde_json::Value> = mresp.take(0).unwrap_or_default();
+        let raw_m = mrows
+            .first()
+            .ok_or_else(|| anyhow!("Active sys_mesh_membership record missing during idempotent retry check"))?;
+        let active_m: DurableMembershipRecord = serde_json::from_value(raw_m.clone())
+            .map_err(|e| anyhow!("Malformed active sys_mesh_membership record: {}", e))?;
+        if active_m.group_id != prop.group_id
+            || active_m.membership_epoch < prop.next_epoch
+            || active_m.next_slot < prop.slot.saturating_add(1)
+        {
+            anyhow::bail!(
+                "CRITICAL: Active sys_mesh_membership (epoch={}, next_slot={}) is inconsistent with committed transition to epoch {} at slot {}",
+                active_m.membership_epoch,
+                active_m.next_slot,
+                prop.next_epoch,
+                prop.slot
+            );
+        }
+        let mut active_m_sorted = active_m.members.clone();
+        active_m_sorted.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+        if active_m.membership_epoch == prop.next_epoch {
+            if active_m.mode != prop.mode || active_m_sorted != sorted_members {
+                anyhow::bail!(
+                    "CRITICAL: Active sys_mesh_membership record disagrees with committed epoch {} configuration",
+                    prop.next_epoch
+                );
+            }
+        } else {
+            // Walk & verify successor chain `(prop.next_epoch + 1)..=active_m.membership_epoch`!
+            let mut cur_cfg = MembershipEpochConfig {
+                mode: prop.mode,
+                members: sorted_members
+                    .iter()
+                    .cloned()
+                    .map(|m| (m.node_id.clone(), m))
+                    .collect(),
+            };
+            let mut min_slot = prop.slot.saturating_add(1);
+            for ep in (prop.next_epoch + 1)..=active_m.membership_epoch {
+                let succ_hkey = membership_epoch_key(&prop.group_id, ep);
+                let mut sh_resp = db
+                    .client
+                    .query("SELECT * FROM type::record('sys_mesh_membership_history', $hkey)")
+                    .bind(("hkey", succ_hkey))
+                    .await?;
+                let sh_rows: Vec<serde_json::Value> = sh_resp.take(0).unwrap_or_default();
+                let raw_sh = sh_rows.first().ok_or_else(|| {
+                    anyhow!(
+                        "CRITICAL: Missing verified successor epoch {} between epoch {} and active epoch {}",
+                        ep,
+                        prop.next_epoch,
+                        active_m.membership_epoch
+                    )
+                })?;
+                let succ_rec: DurableMembershipEpochRecord = serde_json::from_value(raw_sh.clone())
+                    .map_err(|e| anyhow!("Malformed successor epoch {} history record: {}", ep, e))?;
+                let succ_dec = succ_rec.transition.as_ref().ok_or_else(|| {
+                    anyhow!("Unproven successor epoch {} missing transition certificate", ep)
+                })?;
+                self.validate_membership_transition_against_prev(succ_dec, &cur_cfg, ep - 1, None)?;
+                let mut succ_sorted = succ_rec.members.clone();
+                succ_sorted.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+                let mut succ_prop_sorted = succ_dec.proposal.new_members.clone();
+                succ_prop_sorted.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+                if succ_rec.group_id != prop.group_id
+                    || succ_rec.membership_epoch != ep
+                    || succ_rec.mode != succ_dec.proposal.mode
+                    || succ_sorted != succ_prop_sorted
+                {
+                    anyhow::bail!(
+                        "CRITICAL: Successor epoch {} history record disagrees with its transition certificate",
+                        ep
+                    );
+                }
+                min_slot = min_slot.max(succ_dec.proposal.slot.saturating_add(1));
+                cur_cfg = MembershipEpochConfig {
+                    mode: succ_rec.mode,
+                    members: succ_sorted
+                        .into_iter()
+                        .map(|m| (m.node_id.clone(), m))
+                        .collect(),
+                };
+            }
+            let mut tip_sorted: Vec<GroupMember> = cur_cfg.members.values().cloned().collect();
+            tip_sorted.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+            if active_m.mode != cur_cfg.mode
+                || active_m_sorted != tip_sorted
+                || active_m.next_slot < min_slot
+            {
+                anyhow::bail!(
+                    "CRITICAL: Active sys_mesh_membership (epoch={}) disagrees with verified successor chain tip",
+                    active_m.membership_epoch
+                );
+            }
         }
         Ok(())
     }
@@ -1703,33 +1873,43 @@ impl CoordinationGroup {
         }
         let existing_durable = durable_decisions.into_iter().next();
 
-        // 2. Validate voter locks & canonical SlotProposal payloads
+        // 2. Validate voter locks & canonical SlotProposal payloads.
+        //    STRICT RULE: EVERY matching voter lock MUST carry a complete `Some(SlotProposal)`
+        //    whose canonical digest & contents match. Incomplete (`None`) locks fail closed
+        //    immediately rather than being silently skipped or mixed into a quorum!
         let mut votes_by_hash: HashMap<String, Vec<SignedVote>> = HashMap::new();
         let mut proposals_by_hash: HashMap<String, SlotProposal> = HashMap::new();
         for (v, prop_opt) in locked_entries {
             if v.group_id != self.group_id || v.epoch != self.membership_epoch || v.slot != slot {
                 continue;
             }
-            if let Some(ref p) = prop_opt {
-                let computed = p.validate_for_vote(&self.group_id, self.membership_epoch, slot)?;
-                if computed != v.proposal_hash {
+            let Some(ref p) = prop_opt else {
+                anyhow::bail!(
+                    "Incomplete durable voter lock from '{}' for ({}, epoch={}, slot={}): missing canonical SlotProposal payload",
+                    v.voter_node_id,
+                    self.group_id,
+                    self.membership_epoch,
+                    slot
+                );
+            };
+            let computed = p.validate_for_vote(&self.group_id, self.membership_epoch, slot)?;
+            if computed != v.proposal_hash {
+                anyhow::bail!(
+                    "Malformed or tampered SlotProposal from voter '{}' for slot {}: digest mismatch",
+                    v.voter_node_id,
+                    slot
+                );
+            }
+            if let Some(prev_p) = proposals_by_hash.get(&v.proposal_hash) {
+                if prev_p != p {
                     anyhow::bail!(
-                        "Malformed or tampered SlotProposal from voter '{}' for slot {}: digest mismatch",
-                        v.voter_node_id,
+                        "Conflicting proposal payloads for hash '{}' in slot {}",
+                        v.proposal_hash,
                         slot
                     );
                 }
-                if let Some(prev_p) = proposals_by_hash.get(&v.proposal_hash) {
-                    if prev_p != p {
-                        anyhow::bail!(
-                            "Conflicting proposal payloads for hash '{}' in slot {}",
-                            v.proposal_hash,
-                            slot
-                        );
-                    }
-                } else {
-                    proposals_by_hash.insert(v.proposal_hash.clone(), p.clone());
-                }
+            } else {
+                proposals_by_hash.insert(v.proposal_hash.clone(), p.clone());
             }
             votes_by_hash.entry(v.proposal_hash.clone()).or_default().push(v);
         }
