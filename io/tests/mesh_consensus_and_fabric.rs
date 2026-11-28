@@ -2053,7 +2053,7 @@ async fn milestone2_1_atomic_cas_dual_quorum_trusted_genesis_and_strict_promises
         assert!(
             vu_c_reopened
                 .cast_vote(
-                    &VoteRequest::for_lease(1, 3, LeaseProposal { group_id: "pool:m22-u".into(), lease_id: "lse_s3".into(), ..lp0 })
+                    &VoteRequest::for_lease(1, 3, LeaseProposal { group_id: "pool:m22-u".into(), lease_id: "lse_s3".into(), ..lp0.clone() })
                         .with_term(1, "c1", cert_u1)
                 )
                 .await
@@ -2062,4 +2062,118 @@ async fn milestone2_1_atomic_cas_dual_quorum_trusted_genesis_and_strict_promises
         );
     }
     let _ = std::fs::remove_dir_all(&unres_db_dir);
+
+    // 8. Milestone 2.2.1: Atomic HIGHER-TERM membership-lock replacement + durable barrier
+    //    (competing replacement race + on-disk redb crash/restart verifying S+1 rejection)!
+    let repl_dir = std::env::temp_dir().join(format!("nexus_m221_repl_{}", uuid::Uuid::new_v4().simple()));
+    {
+        let rdb = Arc::new(Database::init_in(&repl_dir).await);
+        let vr1 = VoterNode::new("node-a", keys[0].clone(), rdb.clone());
+        let vr2 = VoterNode::new("node-a", keys[0].clone(), rdb.clone());
+        let vr_b = VoterNode::new("node-b", keys[1].clone(), Arc::new(Database::open_mem()));
+        let vr_c = VoterNode::new("node-c", keys[2].clone(), Arc::new(Database::open_mem()));
+        let r_members = old_members[0..3].to_vec();
+        for v in [&vr1, &vr_b, &vr_c] {
+            v.install_genesis_epoch("pool:m221-r", ConsensusMode::CftFastPath, r_members.clone())
+                .await
+                .unwrap();
+        }
+        // Term 1: accept a lower-term Lease lock at slot 1 ONLY on node-a
+        let pr1_a = vr1.prepare_term(&PrepareTermRequest { group_id: "pool:m221-r".into(), epoch: 1, term: 1, leader_id: "c1".into(), from_slot: 1 }).await.unwrap();
+        let pr1_b = vr_b.prepare_term(&PrepareTermRequest { group_id: "pool:m221-r".into(), epoch: 1, term: 1, leader_id: "c1".into(), from_slot: 1 }).await.unwrap();
+        let cert_r1 = TermCertificate {
+            group_id: "pool:m221-r".into(),
+            epoch: 1,
+            term: 1,
+            leader_id: "c1".into(),
+            from_slot: 1,
+            mode: ConsensusMode::CftFastPath,
+            promises: vec![pr1_a, pr1_b],
+        };
+        let _ = vr1
+            .cast_vote(
+                &VoteRequest::for_lease(1, 1, LeaseProposal { group_id: "pool:m221-r".into(), lease_id: "lse_t1".into(), ..lp0.clone() })
+                    .with_term(1, "c1", cert_r1),
+            )
+            .await
+            .unwrap();
+
+        // Term 2: prepare on a, b, c; build cert_r2 from (b, c) which have no slot-1 lock ->
+        // race TWO conflicting MembershipTransitionProposals at slot 1 in term 2 on separate handles!
+        let _pr2_a = vr1.prepare_term(&PrepareTermRequest { group_id: "pool:m221-r".into(), epoch: 1, term: 2, leader_id: "c2".into(), from_slot: 1 }).await.unwrap();
+        let pr2_b = vr_b.prepare_term(&PrepareTermRequest { group_id: "pool:m221-r".into(), epoch: 1, term: 2, leader_id: "c2".into(), from_slot: 1 }).await.unwrap();
+        let pr2_c = vr_c.prepare_term(&PrepareTermRequest { group_id: "pool:m221-r".into(), epoch: 1, term: 2, leader_id: "c2".into(), from_slot: 1 }).await.unwrap();
+        let cert_r2 = TermCertificate {
+            group_id: "pool:m221-r".into(),
+            epoch: 1,
+            term: 2,
+            leader_id: "c2".into(),
+            from_slot: 1,
+            mode: ConsensusMode::CftFastPath,
+            promises: vec![pr2_b, pr2_c],
+        };
+        let mp_win_a = MembershipTransitionProposal::new(
+            "pool:m221-r",
+            1,
+            2,
+            1,
+            ConsensusMode::CftFastPath,
+            vec![gm[0].clone(), gm[1].clone()],
+        )
+        .unwrap();
+        let mp_win_b = MembershipTransitionProposal::new(
+            "pool:m221-r",
+            1,
+            2,
+            1,
+            ConsensusMode::CftFastPath,
+            vec![gm[0].clone(), gm[2].clone()],
+        )
+        .unwrap();
+        let br = Arc::new(Barrier::new(2));
+        let (res_a, res_b) = tokio::join!(
+            {
+                let b = br.clone();
+                let v = vr1.clone();
+                let req = VoteRequest::for_membership(mp_win_a).unwrap().with_term(2, "c2", cert_r2.clone());
+                async move {
+                    b.wait().await;
+                    v.cast_vote(&req).await
+                }
+            },
+            {
+                let b = br.clone();
+                let v = vr2.clone();
+                let req = VoteRequest::for_membership(mp_win_b).unwrap().with_term(2, "c2", cert_r2.clone());
+                async move {
+                    b.wait().await;
+                    v.cast_vote(&req).await
+                }
+            }
+        );
+        assert_eq!(
+            res_a.is_ok() as u8 + res_b.is_ok() as u8,
+            1,
+            "At most ONE conflicting higher-term membership replacement may win!"
+        );
+
+        // Crash & restart on-disk voter from redb -> durable barrier from atomic replacement
+        // MUST survive restart and reject old-epoch S+1 (slot 2)!
+        drop(vr1);
+        drop(vr2);
+        drop(rdb);
+        let rdb_reopened = Arc::new(Database::init_in(&repl_dir).await);
+        let vr_reopened = VoterNode::new("node-a", keys[0].clone(), rdb_reopened);
+        let s2_after_repl = VoteRequest::for_lease(
+            1,
+            2,
+            LeaseProposal { group_id: "pool:m221-r".into(), lease_id: "lse_s2_after_repl".into(), ..lp0 },
+        )
+        .with_term(2, "c2", cert_r2);
+        assert!(
+            vr_reopened.cast_vote(&s2_after_repl).await.is_err(),
+            "Reopened voter after higher-term membership replacement MUST reject old-epoch S+1!"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&repl_dir);
 }

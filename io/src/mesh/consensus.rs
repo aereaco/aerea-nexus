@@ -2085,40 +2085,69 @@ impl VoterNode {
         }
 
         if req.term > existing_vote.term {
-            // Higher term with verified Phase-1 TermCertificate & adoption proof:
-            // DB-atomic conditional UPDATE (`WHERE accepted_term < $term AND proposal != NONE`)
-            // guarantees at most ONE proposal wins the transition to `req.term`!
-            let prop_val = serde_json::to_value(req_prop)?;
-            let mut upd = self
-                .db
-                .client
-                .query(
-                    "UPDATE type::record('sys_mesh_voter_lock', $id) \
-                     SET accepted_term = $term, proposal_hash = $ph, proposal = $prop, signature = $sig, locked_at_ms = $now \
-                     WHERE accepted_term < $term AND proposal != NONE;",
-                )
-                .bind(("id", lock_key))
-                .bind(("term", req.term))
-                .bind(("ph", req.proposal_hash.clone()))
-                .bind(("prop", prop_val))
-                .bind(("sig", vote.signature.clone()))
-                .bind(("now", now_ms()))
-                .await?;
-            let updated_rows: Vec<serde_json::Value> = upd.take(0).unwrap_or_default();
-            if !updated_rows.is_empty() {
-                if let Some((tid, ts_val)) = barrier_state_update {
-                    self.db
-                        .client
-                        .query("UPSERT type::record('sys_mesh_voter_term', $tid) CONTENT $ts;")
-                        .bind(("tid", tid))
-                        .bind(("ts", ts_val))
-                        .await?
-                        .check()?;
-                }
-                return Ok(vote);
+            // Reject payload-less legacy locks BEFORE starting any replacement transaction
+            // so a failing request can never install a barrier independently!
+            if existing_prop.is_none() {
+                anyhow::bail!(
+                    "Cannot overwrite legacy payload-less lock on '{}' at slot {}",
+                    self.node_id,
+                    req.slot
+                );
             }
-            // Conditional UPDATE lost a race (or encountered a legacy payload-less lock):
-            // re-read committed lock and accept ONLY on strict exact equality!
+
+            // Higher term with verified Phase-1 TermCertificate & adoption proof:
+            // Execute conditional lock replacement AND (for Membership proposals) durable old-epoch
+            // barrier update inside ONE atomic `nexus-db` transaction!
+            let prop_val = serde_json::to_value(req_prop)?;
+            if let Some((tid, ts_val)) = barrier_state_update {
+                let bindings = vec![
+                    ("id".to_string(), nexus_db::Value::String(lock_key.clone())),
+                    ("term".to_string(), nexus_db::Value::Int(req.term as i64)),
+                    ("ph".to_string(), nexus_db::Value::String(req.proposal_hash.clone())),
+                    ("prop".to_string(), nexus_db::Value::from_json(&prop_val)),
+                    ("sig".to_string(), nexus_db::Value::String(vote.signature.clone())),
+                    ("now".to_string(), nexus_db::Value::Int(now_ms() as i64)),
+                    ("tid".to_string(), nexus_db::Value::String(tid)),
+                    ("ts".to_string(), nexus_db::Value::from_json(&ts_val)),
+                ];
+                let outcomes = self.db.inner.query_scoped_multi(
+                    "nexus",
+                    "system",
+                    "BEGIN TRANSACTION;\
+                     UPDATE type::record('sys_mesh_voter_lock', $id) \
+                       SET accepted_term = $term, proposal_hash = $ph, proposal = $prop, signature = $sig, locked_at_ms = $now \
+                       WHERE accepted_term < $term AND proposal != NONE;\
+                     UPSERT type::record('sys_mesh_voter_term', $tid) CONTENT $ts;\
+                     COMMIT TRANSACTION;",
+                    bindings,
+                )?;
+                let lock_updated_count = outcomes.get(1).map(|o| o.result.len()).unwrap_or(0);
+                if lock_updated_count == 1 {
+                    return Ok(vote);
+                }
+            } else {
+                let mut upd = self
+                    .db
+                    .client
+                    .query(
+                        "UPDATE type::record('sys_mesh_voter_lock', $id) \
+                         SET accepted_term = $term, proposal_hash = $ph, proposal = $prop, signature = $sig, locked_at_ms = $now \
+                         WHERE accepted_term < $term AND proposal != NONE;",
+                    )
+                    .bind(("id", lock_key))
+                    .bind(("term", req.term))
+                    .bind(("ph", req.proposal_hash.clone()))
+                    .bind(("prop", prop_val))
+                    .bind(("sig", vote.signature.clone()))
+                    .bind(("now", now_ms()))
+                    .await?;
+                let updated_rows: Vec<serde_json::Value> = upd.take(0).unwrap_or_default();
+                if updated_rows.len() == 1 {
+                    return Ok(vote);
+                }
+            }
+
+            // Conditional UPDATE lost a race: re-read committed lock and accept ONLY on strict exact equality!
             let (committed_vote, committed_prop) = self
                 .query_slot_lock(&req.group_id, req.epoch, req.slot)
                 .await?
@@ -3898,19 +3927,23 @@ impl CoordinationGroup {
         })
     }
 
-    /// Dual-quorum membership activation & old-configuration fencing barrier:
-    /// - Installs `mdec` on reachable old and new voters.
-    /// - Requires BOTH:
-    ///   1. Old-configuration fence quorum (`>= Q(C_old)`) durably fenced at `min_active_epoch >= next_epoch`
-    ///      (guarantees no isolated old-configuration quorum can commit conflicting old-epoch decisions!).
-    ///   2. New-configuration activation quorum (`>= Q(C_new)`) durably installed at `next_epoch`.
-    /// - Fails closed if either quorum is not achieved; returns unreachable removed voters as
-    ///   explicit operational telemetry (`pending_removed_fence_nodes`).
-    pub async fn activate_membership_transition(
+    /// Shared activation receipt verifier used by BOTH local `activate_membership_transition()`
+    /// and remote TCP RPC coordinators!
+    ///
+    /// Enforces:
+    /// - No duplicate voter identities (never counts one voter twice).
+    /// - Every receipt belongs to `prev_cfg` or `mdec.proposal.new_members` and has
+    ///   `barrier_slot == mdec.proposal.slot`.
+    /// - Every embedded `post_transition_old_locks` record is cryptographically validated (identity,
+    ///   epoch, slot > transition slot, proposal digest, Ed25519 signature) and blocks activation
+    ///   even if remaining voters would otherwise satisfy both quorum counts!
+    /// - Requires BOTH `fenced_old >= Q(C_old)` AND `activated_new >= Q(C_new)` with
+    ///   `min_active_epoch >= mdec.proposal.next_epoch`.
+    pub fn verify_activation_receipts(
         &self,
         mdec: &MembershipTransitionDecision,
         prev_cfg: &MembershipEpochConfig,
-        voters: &[VoterNode],
+        receipts: &[EpochInstallReceipt],
     ) -> Result<Vec<String>> {
         let new_member_ids: HashSet<&str> = mdec
             .proposal
@@ -3918,41 +3951,113 @@ impl CoordinationGroup {
             .iter()
             .map(|m| m.node_id.as_str())
             .collect();
+        let mut seen_voters = HashSet::new();
         let mut fenced_old = HashSet::new();
         let mut activated_new = HashSet::new();
-        let mut failed_voters = HashSet::new();
         let mut unresolved_post_transition: Vec<(String, Vec<u64>)> = Vec::new();
 
-        for v in voters {
-            let in_old = prev_cfg.members.contains_key(&v.node_id);
-            let in_new = new_member_ids.contains(v.node_id.as_str());
+        for receipt in receipts {
+            if !seen_voters.insert(receipt.voter_node_id.as_str()) {
+                anyhow::bail!(
+                    "Duplicate EpochInstallReceipt from voter '{}' during epoch {} activation",
+                    receipt.voter_node_id,
+                    mdec.proposal.next_epoch
+                );
+            }
+            let in_old = prev_cfg.members.contains_key(&receipt.voter_node_id);
+            let in_new = new_member_ids.contains(receipt.voter_node_id.as_str());
             if !in_old && !in_new {
+                anyhow::bail!(
+                    "Unauthorized EpochInstallReceipt from non-member voter '{}'",
+                    receipt.voter_node_id
+                );
+            }
+            if receipt.barrier_slot != mdec.proposal.slot {
+                anyhow::bail!(
+                    "EpochInstallReceipt from '{}' has barrier_slot {} != expected transition slot {}",
+                    receipt.voter_node_id,
+                    receipt.barrier_slot,
+                    mdec.proposal.slot
+                );
+            }
+
+            // Cryptographically validate every reported unresolved post-transition old-epoch lock!
+            for lock in &receipt.post_transition_old_locks {
+                if lock.epoch != mdec.proposal.prev_epoch || lock.slot <= mdec.proposal.slot {
+                    anyhow::bail!(
+                        "Malformed post_transition_old_lock from '{}': (epoch={}, slot={}) invalid for transition (prev_epoch={}, slot={})",
+                        receipt.voter_node_id,
+                        lock.epoch,
+                        lock.slot,
+                        mdec.proposal.prev_epoch,
+                        mdec.proposal.slot
+                    );
+                }
+                let computed = lock.proposal.validate_for_vote(
+                    &mdec.proposal.group_id,
+                    lock.epoch,
+                    lock.slot,
+                )?;
+                if computed != lock.proposal_hash {
+                    anyhow::bail!(
+                        "Tampered post_transition_old_lock proposal from '{}' at slot {}",
+                        receipt.voter_node_id,
+                        lock.slot
+                    );
+                }
+                let v = &lock.vote;
+                if v.group_id != mdec.proposal.group_id
+                    || v.epoch != lock.epoch
+                    || v.term != lock.accepted_term
+                    || v.slot != lock.slot
+                    || v.proposal_hash != lock.proposal_hash
+                    || v.voter_node_id != receipt.voter_node_id
+                {
+                    anyhow::bail!(
+                        "Mismatched embedded vote in post_transition_old_lock from '{}' at slot {}",
+                        receipt.voter_node_id,
+                        lock.slot
+                    );
+                }
+                let old_member = prev_cfg.members.get(&receipt.voter_node_id).ok_or_else(|| {
+                    anyhow!(
+                        "Post-transition old-epoch lock reported by non-old-epoch voter '{}'",
+                        receipt.voter_node_id
+                    )
+                })?;
+                let vpayload = canonical_vote_payload_for_term(
+                    &v.group_id,
+                    v.epoch,
+                    v.term,
+                    v.slot,
+                    &v.proposal_hash,
+                    &v.voter_node_id,
+                );
+                if !nexus_db::auth::ed25519_verify(&old_member.ed25519_pubkey, &vpayload, &v.signature) {
+                    anyhow::bail!(
+                        "Invalid Ed25519 signature on post_transition_old_lock from '{}' at slot {}",
+                        receipt.voter_node_id,
+                        lock.slot
+                    );
+                }
+            }
+
+            if !receipt.post_transition_old_locks.is_empty() {
+                let slots: Vec<u64> = receipt
+                    .post_transition_old_locks
+                    .iter()
+                    .map(|l| l.slot)
+                    .collect();
+                unresolved_post_transition.push((receipt.voter_node_id.clone(), slots));
                 continue;
             }
-            match v.install_membership_epoch(mdec, prev_cfg).await {
-                Ok(receipt) => {
-                    if !receipt.post_transition_old_locks.is_empty() {
-                        let slots: Vec<u64> = receipt
-                            .post_transition_old_locks
-                            .iter()
-                            .map(|l| l.slot)
-                            .collect();
-                        unresolved_post_transition.push((v.node_id.clone(), slots));
-                        continue;
-                    }
-                    if receipt.min_active_epoch >= mdec.proposal.next_epoch {
-                        if in_old {
-                            fenced_old.insert(v.node_id.clone());
-                        }
-                        if in_new {
-                            activated_new.insert(v.node_id.clone());
-                        }
-                    } else {
-                        failed_voters.insert(v.node_id.clone());
-                    }
+
+            if receipt.min_active_epoch >= mdec.proposal.next_epoch {
+                if in_old {
+                    fenced_old.insert(receipt.voter_node_id.clone());
                 }
-                Err(_) => {
-                    failed_voters.insert(v.node_id.clone());
+                if in_new {
+                    activated_new.insert(receipt.voter_node_id.clone());
                 }
             }
         }
@@ -3996,6 +4101,36 @@ impl CoordinationGroup {
         }
         pending_removed.sort();
         Ok(pending_removed)
+    }
+
+    /// Dual-quorum membership activation & old-configuration fencing barrier delegating directly
+    /// to `verify_activation_receipts()`.
+    pub async fn activate_membership_transition(
+        &self,
+        mdec: &MembershipTransitionDecision,
+        prev_cfg: &MembershipEpochConfig,
+        voters: &[VoterNode],
+    ) -> Result<Vec<String>> {
+        let new_member_ids: HashSet<&str> = mdec
+            .proposal
+            .new_members
+            .iter()
+            .map(|m| m.node_id.as_str())
+            .collect();
+        let mut receipts = Vec::new();
+
+        for v in voters {
+            let in_old = prev_cfg.members.contains_key(&v.node_id);
+            let in_new = new_member_ids.contains(v.node_id.as_str());
+            if !in_old && !in_new {
+                continue;
+            }
+            if let Ok(receipt) = v.install_membership_epoch(mdec, prev_cfg).await {
+                receipts.push(receipt);
+            }
+        }
+
+        self.verify_activation_receipts(mdec, prev_cfg, &receipts)
     }
 
     /// Commit a quorum-certified membership transition using the unified `SlotProposal::Membership`
