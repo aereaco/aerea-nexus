@@ -18,8 +18,9 @@
 
 use nexus_io::db::Database;
 use nexus_io::mesh::consensus::{
-    ConsensusMode, CoordinationGroup, FencedLease, FencedResourceGuard, GroupMember, LeaseProposal,
-    SignedVote, VoteRequest, VoterNode,
+    ConsensusMode, CoordinationGroup, DurableSlotDecision, FencedLease, FencedResourceGuard,
+    GroupMember, LeaseProposal, MembershipTransitionDecision, MembershipTransitionProposal,
+    SignedVote, SlotProposal, VoteRequest, VoterNode,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -55,7 +56,7 @@ enum VoterRpcReq {
 #[serde(tag = "status", rename_all = "snake_case")]
 enum VoterRpcResp {
     VoteOk { vote: SignedVote },
-    LockFound { entry: Option<(SignedVote, Option<LeaseProposal>)> },
+    LockFound { entry: Option<(SignedVote, Option<SlotProposal>)> },
     ExecOk { accepted_epoch: u64 },
     Err { message: String },
 }
@@ -72,6 +73,11 @@ enum CoordRpcReq {
         issued_at_ms: u64,
         expires_at_ms: u64,
         now: u64,
+        skip_persist: bool,
+    },
+    ProposeMembership {
+        voter_addrs: Vec<String>,
+        new_members: Vec<GroupMember>,
         skip_persist: bool,
     },
     RecoverAndCommitSlot {
@@ -91,8 +97,9 @@ enum CoordRpcReq {
 #[serde(tag = "status", rename_all = "snake_case")]
 enum CoordRpcResp {
     Committed { lease: FencedLease },
+    CommittedMembership { decision: MembershipTransitionDecision },
     VotesCollectedOnly { count: usize, proposal_hash: String },
-    State { next_slot: u64, lease: Option<FencedLease> },
+    State { membership_epoch: u64, next_slot: u64, lease: Option<FencedLease> },
     Ok,
     Err { message: String },
 }
@@ -268,13 +275,7 @@ async fn run_coordinator_child() {
                         expires_at_ms,
                     };
                     let prop_hash = proposal.canonical_digest();
-                    let vreq = VoteRequest {
-                        group_id: gid,
-                        epoch,
-                        slot,
-                        proposal_hash: prop_hash.clone(),
-                        proposal: Some(proposal),
-                    };
+                    let vreq = VoteRequest::for_lease(epoch, slot, proposal);
                     let votes = fan_out_votes_tcp(&voter_addrs, vreq).await;
                     if skip_persist {
                         CoordRpcResp::VotesCollectedOnly {
@@ -301,6 +302,50 @@ async fn run_coordinator_child() {
                         }
                     }
                 }
+                Ok(CoordRpcReq::ProposeMembership {
+                    voter_addrs,
+                    new_members,
+                    skip_persist,
+                }) => {
+                    let (gid, epoch, slot, mode) = {
+                        let g = grp_arc.lock().await;
+                        (g.group_id.clone(), g.membership_epoch, g.next_slot, g.mode)
+                    };
+                    let prop = match MembershipTransitionProposal::new(
+                        gid,
+                        epoch,
+                        epoch + 1,
+                        slot,
+                        mode,
+                        new_members,
+                    ) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            let out = format!(
+                                "{}\n",
+                                serde_json::to_string(&CoordRpcResp::Err { message: e.to_string() }).unwrap()
+                            );
+                            let _ = write_half.write_all(out.as_bytes()).await;
+                            let _ = write_half.flush().await;
+                            return;
+                        }
+                    };
+                    let prop_hash = prop.canonical_digest().unwrap();
+                    let vreq = VoteRequest::for_membership(prop.clone()).unwrap();
+                    let votes = fan_out_votes_tcp(&voter_addrs, vreq).await;
+                    if skip_persist {
+                        CoordRpcResp::VotesCollectedOnly {
+                            count: votes.len(),
+                            proposal_hash: prop_hash,
+                        }
+                    } else {
+                        let mut g = grp_arc.lock().await;
+                        match g.reconfigure_membership_with_quorum(&prop, votes).await {
+                            Ok(decision) => CoordRpcResp::CommittedMembership { decision },
+                            Err(e) => CoordRpcResp::Err { message: e.to_string() },
+                        }
+                    }
+                }
                 Ok(CoordRpcReq::RecoverAndCommitSlot { voter_addrs, slot }) => {
                     let (gid, epoch) = {
                         let g = grp_arc.lock().await;
@@ -323,7 +368,10 @@ async fn run_coordinator_child() {
                     }
                     let mut g = grp_arc.lock().await;
                     match g.recover_and_commit_slot(slot, entries).await {
-                        Ok(Some(lease)) => CoordRpcResp::Committed { lease },
+                        Ok(Some(DurableSlotDecision::Lease(lease))) => CoordRpcResp::Committed { lease },
+                        Ok(Some(DurableSlotDecision::Membership(decision))) => {
+                            CoordRpcResp::CommittedMembership { decision }
+                        }
                         Ok(None) => CoordRpcResp::Err { message: "No quorum found for slot".into() },
                         Err(e) => CoordRpcResp::Err { message: e.to_string() },
                     }
@@ -331,6 +379,7 @@ async fn run_coordinator_child() {
                 Ok(CoordRpcReq::GetState { resource_key }) => {
                     let g = grp_arc.lock().await;
                     CoordRpcResp::State {
+                        membership_epoch: g.membership_epoch,
                         next_slot: g.next_slot,
                         lease: g.active_leases.get(&resource_key).cloned(),
                     }
@@ -547,7 +596,7 @@ async fn five_process_autonomous_standby_recovery_and_host_clock_fencing() {
     )
     .await
     {
-        CoordRpcResp::State { next_slot, lease: Some(l) } => (next_slot, l),
+        CoordRpcResp::State { next_slot, lease: Some(l), .. } => (next_slot, l),
         other => panic!("Restarted standby coordinator lost recovered state: {:?}", other),
     };
     assert_eq!(persisted_next_slot, 3);
@@ -633,8 +682,68 @@ async fn five_process_autonomous_standby_recovery_and_host_clock_fencing() {
         VoterRpcResp::ExecOk { accepted_epoch: 2 }
     ));
 
+    // 5. Milestone 1: Standby autonomous recovery of a MEMBERSHIP TRANSITION on slot 3!
+    //    `standby_restarted` collects quorum (2 of 3) on `SlotProposal::Membership` (epoch 1 -> 2,
+    //    dropping node-3) with `skip_persist = true`, then is KILLED PERMANENTLY!
+    let epoch2_members = vec![members[0].clone(), members[1].clone()];
+    let mem_pre_crash = send_coord_rpc(
+        &standby_addr_2,
+        &CoordRpcReq::ProposeMembership {
+            voter_addrs: vec![v_addr1.clone(), v_addr2.clone()],
+            new_members: epoch2_members.clone(),
+            skip_persist: true,
+        },
+    )
+    .await;
+    let expected_m_hash = match mem_pre_crash {
+        CoordRpcResp::VotesCollectedOnly { count: 2, proposal_hash } => proposal_hash,
+        other => panic!("Expected 2 membership votes before coordinator kill, got {:?}", other),
+    };
+    // KILL `standby_restarted` PERMANENTLY!
     let _ = standby_restarted.kill();
     let _ = standby_restarted.wait();
+
+    // Fresh standby coordinator (`coord-3`) queries the 3 voter processes, recovers & commits
+    // `DurableSlotDecision::Membership` for slot 3 WITHOUT the original coordinator!
+    let coord3_dir = base_dir.join("coord-3");
+    let (mut coord3, coord3_addr) = spawn_coordinator(&coord3_dir, &members);
+    let recovered_mdec = match send_coord_rpc(
+        &coord3_addr,
+        &CoordRpcReq::RecoverAndCommitSlot {
+            voter_addrs: all_voters.clone(),
+            slot: 3,
+        },
+    )
+    .await
+    {
+        CoordRpcResp::CommittedMembership { decision } => decision,
+        other => panic!("Standby coord-3 failed autonomous membership recovery on slot 3: {:?}", other),
+    };
+    assert_eq!(recovered_mdec.canonical_digest().unwrap(), expected_m_hash);
+    assert_eq!(recovered_mdec.proposal.next_epoch, 2);
+
+    // Kill & restart `coord-3` from its on-disk DB -> verified epoch chain 1 -> 2 survives restart!
+    let _ = coord3.kill();
+    let _ = coord3.wait();
+    let (mut coord3_restarted, coord3_addr_2) = spawn_coordinator(&coord3_dir, &members);
+    match send_coord_rpc(
+        &coord3_addr_2,
+        &CoordRpcReq::GetState {
+            resource_key: "gpu:mp:0".into(),
+        },
+    )
+    .await
+    {
+        CoordRpcResp::State {
+            membership_epoch: 2,
+            next_slot: 4,
+            ..
+        } => {}
+        other => panic!("Restarted coord-3 failed to reconstruct verified epoch 2 chain: {:?}", other),
+    }
+
+    let _ = coord3_restarted.kill();
+    let _ = coord3_restarted.wait();
     let _ = v1.kill();
     let _ = v1.wait();
     let _ = v2.kill();

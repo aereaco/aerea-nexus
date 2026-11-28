@@ -102,15 +102,166 @@ impl LeaseProposal {
     }
 }
 
+/// Canonical, versioned membership-transition proposal (`NEXUS-MEMBERSHIP-TRANSITION-v2`).
+///
+/// Bound into the same durable per-voter `(group_id, epoch, slot)` lock mechanism as `LeaseProposal`
+/// with strict proposal-type domain separation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MembershipTransitionProposal {
+    pub group_id: String,
+    pub prev_epoch: u64,
+    pub next_epoch: u64,
+    pub slot: u64,
+    pub mode: ConsensusMode,
+    pub new_members: Vec<GroupMember>,
+}
+
+impl MembershipTransitionProposal {
+    pub fn new(
+        group_id: impl Into<String>,
+        prev_epoch: u64,
+        next_epoch: u64,
+        slot: u64,
+        mode: ConsensusMode,
+        new_members: Vec<GroupMember>,
+    ) -> Result<Self> {
+        let mut sorted = new_members;
+        sorted.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+        let prop = Self {
+            group_id: group_id.into(),
+            prev_epoch,
+            next_epoch,
+            slot,
+            mode,
+            new_members: sorted,
+        };
+        let _ = prop.canonical_digest()?;
+        Ok(prop)
+    }
+
+    /// Single canonical length-prefixed encoding (`NEXUS-MEMBERSHIP-TRANSITION-v2`), strictly
+    /// domain-separated from `NEXUS-LEASE-PROPOSAL-v2`.
+    pub fn canonical_digest(&self) -> Result<String> {
+        if self.next_epoch != self.prev_epoch.saturating_add(1) {
+            anyhow::bail!(
+                "Invalid membership transition epoch jump: prev_epoch={} -> next_epoch={}",
+                self.prev_epoch,
+                self.next_epoch
+            );
+        }
+        if self.new_members.is_empty() {
+            anyhow::bail!("Membership transition cannot have an empty member set");
+        }
+        let mut sorted = self.new_members.clone();
+        sorted.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+        let mut seen = HashSet::new();
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"NEXUS-MEMBERSHIP-TRANSITION-v2");
+        push_len_prefixed(&mut hasher, self.group_id.as_bytes());
+        hasher.update(&self.prev_epoch.to_be_bytes());
+        hasher.update(&self.next_epoch.to_be_bytes());
+        hasher.update(&self.slot.to_be_bytes());
+        push_len_prefixed(&mut hasher, self.mode.canonical_tag().as_bytes());
+        hasher.update(&(sorted.len() as u32).to_be_bytes());
+        for m in &sorted {
+            if !seen.insert(m.node_id.as_str()) {
+                anyhow::bail!("Duplicate node_id '{}' in membership transition", m.node_id);
+            }
+            push_len_prefixed(&mut hasher, m.node_id.as_bytes());
+            push_len_prefixed(&mut hasher, m.identity_id.as_bytes());
+            push_len_prefixed(&mut hasher, m.org_id.as_bytes());
+            push_len_prefixed(&mut hasher, m.ed25519_pubkey.as_bytes());
+        }
+        Ok(hasher.finalize().to_hex().to_string())
+    }
+}
+
+/// Unified canonical slot proposal used across `VoteRequest`, `DurableVoterLock`, QC verification,
+/// autonomous recovery, and durable slot persistence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SlotProposal {
+    Lease(LeaseProposal),
+    Membership(MembershipTransitionProposal),
+}
+
+impl SlotProposal {
+    pub fn group_id(&self) -> &str {
+        match self {
+            Self::Lease(p) => &p.group_id,
+            Self::Membership(p) => &p.group_id,
+        }
+    }
+
+    pub fn canonical_digest(&self) -> Result<String> {
+        match self {
+            Self::Lease(p) => Ok(p.canonical_digest()),
+            Self::Membership(p) => p.canonical_digest(),
+        }
+    }
+
+    pub fn validate_for_vote(&self, group_id: &str, epoch: u64, slot: u64) -> Result<String> {
+        if self.group_id() != group_id {
+            anyhow::bail!(
+                "Proposal group_id '{}' does not match vote group_id '{}'",
+                self.group_id(),
+                group_id
+            );
+        }
+        if let Self::Membership(m) = self {
+            if m.prev_epoch != epoch || m.next_epoch != epoch.saturating_add(1) {
+                anyhow::bail!(
+                    "Membership transition epoch ({} -> {}) does not match vote epoch {}",
+                    m.prev_epoch,
+                    m.next_epoch,
+                    epoch
+                );
+            }
+            if m.slot != slot {
+                anyhow::bail!(
+                    "Membership transition slot {} does not match vote slot {}",
+                    m.slot,
+                    slot
+                );
+            }
+        }
+        self.canonical_digest()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VoteRequest {
     pub group_id: String,
     pub epoch: u64,
     pub slot: u64,
     pub proposal_hash: String,
-    /// Canonical proposal payload persisted atomically with the voter's durable lock for recovery.
+    /// Canonical slot proposal persisted atomically with the voter's durable lock for recovery.
     #[serde(default)]
-    pub proposal: Option<LeaseProposal>,
+    pub proposal: Option<SlotProposal>,
+}
+
+impl VoteRequest {
+    pub fn for_lease(epoch: u64, slot: u64, proposal: LeaseProposal) -> Self {
+        let proposal_hash = proposal.canonical_digest();
+        Self {
+            group_id: proposal.group_id.clone(),
+            epoch,
+            slot,
+            proposal_hash,
+            proposal: Some(SlotProposal::Lease(proposal)),
+        }
+    }
+
+    pub fn for_membership(proposal: MembershipTransitionProposal) -> Result<Self> {
+        let proposal_hash = proposal.canonical_digest()?;
+        Ok(Self {
+            group_id: proposal.group_id.clone(),
+            epoch: proposal.prev_epoch,
+            slot: proposal.slot,
+            proposal_hash,
+            proposal: Some(SlotProposal::Membership(proposal)),
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -175,6 +326,86 @@ impl FencedLease {
     }
 }
 
+/// Verifiable durable membership-transition decision binding the canonical proposal and the
+/// predecessor-epoch QuorumCertificate that authorized it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MembershipTransitionDecision {
+    pub proposal: MembershipTransitionProposal,
+    pub qc: QuorumCertificate,
+}
+
+impl MembershipTransitionDecision {
+    pub fn canonical_digest(&self) -> Result<String> {
+        self.proposal.canonical_digest()
+    }
+}
+
+/// Type-aware durable slot decision persisted in `sys_mesh_decision_log`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "decision_kind", rename_all = "snake_case")]
+pub enum DurableSlotDecision {
+    Lease(FencedLease),
+    Membership(MembershipTransitionDecision),
+}
+
+impl DurableSlotDecision {
+    pub fn group_id(&self) -> &str {
+        match self {
+            Self::Lease(l) => &l.group_id,
+            Self::Membership(m) => &m.proposal.group_id,
+        }
+    }
+
+    pub fn qc(&self) -> &QuorumCertificate {
+        match self {
+            Self::Lease(l) => &l.qc,
+            Self::Membership(m) => &m.qc,
+        }
+    }
+
+    pub fn canonical_digest(&self) -> Result<String> {
+        match self {
+            Self::Lease(l) => Ok(l.canonical_digest()),
+            Self::Membership(m) => m.canonical_digest(),
+        }
+    }
+
+    pub fn as_lease(&self) -> Option<&FencedLease> {
+        match self {
+            Self::Lease(l) => Some(l),
+            Self::Membership(_) => None,
+        }
+    }
+
+    pub fn as_membership(&self) -> Option<&MembershipTransitionDecision> {
+        match self {
+            Self::Membership(m) => Some(m),
+            Self::Lease(_) => None,
+        }
+    }
+}
+
+fn decision_row_group_id(v: &serde_json::Value) -> Option<&str> {
+    v.get("group_id")
+        .and_then(|g| g.as_str())
+        .or_else(|| v.get("proposal").and_then(|p| p.get("group_id")).and_then(|g| g.as_str()))
+}
+
+/// Parse a durable `sys_mesh_decision_log` row while preserving backward compatibility with
+/// previously persisted untagged `FencedLease` records and failing closed on malformed JSON.
+fn parse_durable_slot_decision(v: serde_json::Value) -> Result<DurableSlotDecision> {
+    if v.get("decision_kind").is_some() {
+        return serde_json::from_value::<DurableSlotDecision>(v)
+            .map_err(|e| anyhow!("Malformed tagged DurableSlotDecision record: {}", e));
+    }
+    if v.get("lease_id").is_some() {
+        let lease: FencedLease = serde_json::from_value(v)
+            .map_err(|e| anyhow!("Malformed legacy FencedLease decision record: {}", e))?;
+        return Ok(DurableSlotDecision::Lease(lease));
+    }
+    anyhow::bail!("Malformed durable decision record: missing decision_kind / lease_id")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct DurableVoterLock {
     lock_key: String,
@@ -183,7 +414,7 @@ struct DurableVoterLock {
     slot: u64,
     proposal_hash: String,
     #[serde(default)]
-    proposal: Option<LeaseProposal>,
+    proposal: Option<SlotProposal>,
     voter_node_id: String,
     signature: String,
     locked_at_ms: u64,
@@ -210,6 +441,9 @@ struct DurableMembershipEpochRecord {
     membership_epoch: u64,
     mode: ConsensusMode,
     members: Vec<GroupMember>,
+    /// `None` only for genesis epoch 1; mandatory verified transition certificate for every epoch > 1.
+    #[serde(default)]
+    transition: Option<MembershipTransitionDecision>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -375,13 +609,13 @@ impl VoterNode {
         )
     }
 
-    /// Query this voter's durable lock (both `SignedVote` and canonical `Option<LeaseProposal>`).
+    /// Query this voter's durable lock (both `SignedVote` and canonical `Option<SlotProposal>`).
     pub async fn query_slot_lock(
         &self,
         group_id: &str,
         epoch: u64,
         slot: u64,
-    ) -> Result<Option<(SignedVote, Option<LeaseProposal>)>> {
+    ) -> Result<Option<(SignedVote, Option<SlotProposal>)>> {
         self.ensure_tables().await?;
         let lock_key = self.slot_lock_key(group_id, epoch, slot);
         let mut resp = self
@@ -409,25 +643,19 @@ impl VoterNode {
             }))
     }
 
-    /// Require canonical `LeaseProposal`, verify its digest, atomically persist durable lock +
-    /// proposal BEFORE returning signature, and never overwrite or upgrade an existing lock!
+    /// Require canonical `SlotProposal` (Lease or Membership), validate its epoch/slot/group &
+    /// canonical digest, atomically persist durable lock + proposal BEFORE returning signature,
+    /// and never overwrite or upgrade an existing lock!
     pub async fn cast_vote(&self, req: &VoteRequest) -> Result<SignedVote> {
         let req_prop = req.proposal.as_ref().ok_or_else(|| {
             anyhow!(
-                "Production VoteRequest for ({}, epoch={}, slot={}) requires a canonical LeaseProposal payload",
+                "Production VoteRequest for ({}, epoch={}, slot={}) requires a canonical SlotProposal payload",
                 req.group_id,
                 req.epoch,
                 req.slot
             )
         })?;
-        if req_prop.group_id != req.group_id {
-            anyhow::bail!(
-                "Proposal group_id '{}' does not match vote group_id '{}'",
-                req_prop.group_id,
-                req.group_id
-            );
-        }
-        let computed = req_prop.canonical_digest();
+        let computed = req_prop.validate_for_vote(&req.group_id, req.epoch, req.slot)?;
         if computed != req.proposal_hash {
             anyhow::bail!(
                 "Proposal payload digest '{}' does not match claimed proposal_hash '{}'",
@@ -810,7 +1038,7 @@ impl CoordinationGroup {
             .bind(("id", gkey))
             .await?;
         let mrows: Vec<serde_json::Value> = mresp.take(0).unwrap_or_default();
-        if let Some(raw_mem) = mrows.first() {
+        let active_mem_opt: Option<DurableMembershipRecord> = if let Some(raw_mem) = mrows.first() {
             let rec: DurableMembershipRecord = serde_json::from_value(raw_mem.clone())
                 .map_err(|e| anyhow!("Malformed durable membership record for '{}': {}", gid, e))?;
             if rec.group_id != gid {
@@ -820,25 +1048,15 @@ impl CoordinationGroup {
                     gid
                 );
             }
-            group.mode = rec.mode;
-            group.membership_epoch = rec.membership_epoch;
-            group.next_slot = rec.next_slot;
-            group.members = rec
-                .members
-                .into_iter()
-                .map(|m| (m.node_id.clone(), m))
-                .collect();
-            group.membership_history.clear();
+            Some(rec)
         } else {
-            let mems: Vec<GroupMember> = group.members.values().cloned().collect();
-            group
-                .persist_membership_and_epoch_history(group.membership_epoch, group.next_slot, &mems)
-                .await?;
-        }
+            None
+        };
 
-        // Load durable membership epoch history (fail closed on malformed rows for this group)
+        // Load ALL durable membership epoch history records for this group (fail closed on malformed!)
         let mut hresp = db.client.query("SELECT * FROM sys_mesh_membership_history").await?;
         let hrows: Vec<serde_json::Value> = hresp.take(0).unwrap_or_default();
+        let mut history_by_epoch: HashMap<u64, DurableMembershipEpochRecord> = HashMap::new();
         for v in hrows {
             if let Some(row_gid) = v.get("group_id").and_then(|g| g.as_str()) {
                 if row_gid != gid {
@@ -848,118 +1066,218 @@ impl CoordinationGroup {
             let rec: DurableMembershipEpochRecord = serde_json::from_value(v).map_err(|e| {
                 anyhow!("Malformed durable membership history record for '{}': {}", gid, e)
             })?;
-            if rec.group_id == gid {
-                let members_map = rec
-                    .members
-                    .into_iter()
-                    .map(|m| (m.node_id.clone(), m))
-                    .collect();
-                group.membership_history.insert(
-                    rec.membership_epoch,
-                    MembershipEpochConfig {
-                        mode: rec.mode,
-                        members: members_map,
-                    },
+            if rec.group_id != gid {
+                continue;
+            }
+            if history_by_epoch.insert(rec.membership_epoch, rec).is_some() {
+                anyhow::bail!(
+                    "Duplicate durable membership history record for '{}'",
+                    gid
                 );
             }
         }
-        // Ensure current epoch is present in membership_history and persisted
-        if !group.membership_history.contains_key(&group.membership_epoch) {
-            group.membership_history.insert(
-                group.membership_epoch,
-                MembershipEpochConfig {
-                    mode: group.mode,
-                    members: group.members.clone(),
-                },
-            );
-            let mems: Vec<GroupMember> = group.members.values().cloned().collect();
-            group
-                .persist_membership_epoch_snapshot(group.membership_epoch, group.mode, &mems)
-                .await?;
+
+        match (active_mem_opt, history_by_epoch.is_empty()) {
+            (None, true) => {
+                // Brand-new group: initialize genesis epoch 1 atomically!
+                if group.members.is_empty() {
+                    anyhow::bail!("Cannot initialize coordination group '{}' with empty members", gid);
+                }
+                let mut mems: Vec<GroupMember> = group.members.values().cloned().collect();
+                mems.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+                group.persist_genesis_atomic(&mems).await?;
+            }
+            (None, false) => {
+                anyhow::bail!(
+                    "Corrupt durable state for '{}': membership history exists without active sys_mesh_membership record",
+                    gid
+                );
+            }
+            (Some(_), true) => {
+                anyhow::bail!(
+                    "Corrupt durable state for '{}': active sys_mesh_membership exists without verifiable membership history",
+                    gid
+                );
+            }
+            (Some(active_rec), false) => {
+                // Reconstruct and cryptographically verify the ENTIRE membership chain 1 -> 2 -> ... -> max_epoch!
+                let max_epoch = *history_by_epoch.keys().max().unwrap_or(&0);
+                if max_epoch == 0 {
+                    anyhow::bail!("Invalid membership history epoch 0 for '{}'", gid);
+                }
+                group.membership_history.clear();
+                for ep in 1..=max_epoch {
+                    let rec = history_by_epoch.get(&ep).ok_or_else(|| {
+                        anyhow!(
+                            "Skipped or missing membership epoch {} in durable chain for '{}' (max={})",
+                            ep,
+                            gid,
+                            max_epoch
+                        )
+                    })?;
+                    if rec.members.is_empty() {
+                        anyhow::bail!("Epoch {} in '{}' has empty member set", ep, gid);
+                    }
+                    let mut rec_sorted = rec.members.clone();
+                    rec_sorted.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+                    let mut seen_ids = HashSet::new();
+                    for m in &rec_sorted {
+                        if !seen_ids.insert(m.node_id.as_str()) {
+                            anyhow::bail!("Duplicate member '{}' in epoch {} of '{}'", m.node_id, ep, gid);
+                        }
+                    }
+
+                    if ep == 1 {
+                        if rec.transition.is_some() {
+                            anyhow::bail!("Genesis epoch 1 in '{}' must not carry a transition certificate", gid);
+                        }
+                    } else {
+                        let dec = rec.transition.as_ref().ok_or_else(|| {
+                            anyhow!(
+                                "Unproven membership epoch {} in '{}': missing MembershipTransitionDecision",
+                                ep,
+                                gid
+                            )
+                        })?;
+                        let prev_cfg = group.membership_history.get(&(ep - 1)).ok_or_else(|| {
+                            anyhow!("Missing verified predecessor epoch {} for '{}'", ep - 1, gid)
+                        })?;
+                        group.validate_membership_transition_against_prev(dec, prev_cfg, ep - 1, None)?;
+                        if rec.mode != dec.proposal.mode {
+                            anyhow::bail!(
+                                "Epoch {} record mode {:?} disagrees with verified transition mode {:?}",
+                                ep,
+                                rec.mode,
+                                dec.proposal.mode
+                            );
+                        }
+                        let mut prop_sorted = dec.proposal.new_members.clone();
+                        prop_sorted.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+                        if rec_sorted != prop_sorted {
+                            anyhow::bail!(
+                                "Epoch {} member set disagrees with verified MembershipTransitionProposal",
+                                ep
+                            );
+                        }
+                    }
+
+                    let members_map: HashMap<String, GroupMember> = rec_sorted
+                        .into_iter()
+                        .map(|m| (m.node_id.clone(), m))
+                        .collect();
+                    group.membership_history.insert(
+                        ep,
+                        MembershipEpochConfig {
+                            mode: rec.mode,
+                            members: members_map,
+                        },
+                    );
+                }
+
+                // Active membership record MUST match the verified chain tip EXACTLY!
+                let tip_cfg = group
+                    .membership_history
+                    .get(&max_epoch)
+                    .ok_or_else(|| anyhow!("Missing verified chain tip epoch {}", max_epoch))?;
+                let mut active_sorted = active_rec.members.clone();
+                active_sorted.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+                let mut tip_sorted: Vec<GroupMember> = tip_cfg.members.values().cloned().collect();
+                tip_sorted.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+                if active_rec.membership_epoch != max_epoch
+                    || active_rec.mode != tip_cfg.mode
+                    || active_sorted != tip_sorted
+                {
+                    anyhow::bail!(
+                        "Active sys_mesh_membership record for '{}' (epoch={}) disagrees with verified membership chain tip (epoch={})",
+                        gid,
+                        active_rec.membership_epoch,
+                        max_epoch
+                    );
+                }
+                group.mode = tip_cfg.mode;
+                group.membership_epoch = max_epoch;
+                group.next_slot = active_rec.next_slot;
+                group.members = tip_cfg.members.clone();
+            }
         }
 
-        // Load & cryptographically validate ALL durable decisions for this group (fail closed!)
+        // Load & cryptographically validate ALL durable slot decisions for this group (fail closed!)
         let mut lresp = db.client.query("SELECT * FROM sys_mesh_decision_log").await?;
         let lrows: Vec<serde_json::Value> = lresp.take(0).unwrap_or_default();
         for v in lrows {
-            if let Some(row_gid) = v.get("group_id").and_then(|g| g.as_str()) {
+            if let Some(row_gid) = decision_row_group_id(&v) {
                 if row_gid != gid {
                     continue;
                 }
             }
-            let lease: FencedLease = serde_json::from_value(v).map_err(|e| {
+            let decision = parse_durable_slot_decision(v).map_err(|e| {
                 anyhow!(
                     "Malformed durable decision record in sys_mesh_decision_log during boot of '{}': {}",
                     gid,
                     e
                 )
             })?;
-            group.validate_durable_decision(&lease, None)?;
-            let cur_max = group.max_fencing_epoch.get(&lease.resource_key).copied().unwrap_or(0);
-            if lease.fencing_epoch > cur_max {
-                group.max_fencing_epoch.insert(lease.resource_key.clone(), lease.fencing_epoch);
-                group.active_leases.insert(lease.resource_key.clone(), lease.clone());
-            }
-            if lease.qc.epoch == group.membership_epoch && lease.qc.slot >= group.next_slot {
-                group.next_slot = lease.qc.slot + 1;
+            group.validate_durable_slot_decision(&decision, None)?;
+            match decision {
+                DurableSlotDecision::Lease(lease) => {
+                    let cur_max = group.max_fencing_epoch.get(&lease.resource_key).copied().unwrap_or(0);
+                    if lease.fencing_epoch > cur_max {
+                        group.max_fencing_epoch.insert(lease.resource_key.clone(), lease.fencing_epoch);
+                        group.active_leases.insert(lease.resource_key.clone(), lease.clone());
+                    }
+                    if lease.qc.epoch == group.membership_epoch && lease.qc.slot >= group.next_slot {
+                        group.next_slot = lease.qc.slot + 1;
+                    }
+                }
+                DurableSlotDecision::Membership(mdec) => {
+                    // Ensure the corresponding historical epoch matches this decision
+                    let Some(target_cfg) = group.membership_history.get(&mdec.proposal.next_epoch) else {
+                        anyhow::bail!(
+                            "Committed membership transition to epoch {} missing from verified history",
+                            mdec.proposal.next_epoch
+                        );
+                    };
+                    let mut prop_sorted = mdec.proposal.new_members.clone();
+                    prop_sorted.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+                    let mut hist_sorted: Vec<GroupMember> = target_cfg.members.values().cloned().collect();
+                    hist_sorted.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+                    if target_cfg.mode != mdec.proposal.mode || hist_sorted != prop_sorted {
+                        anyhow::bail!(
+                            "Committed membership decision for epoch {} disagrees with membership history",
+                            mdec.proposal.next_epoch
+                        );
+                    }
+                }
             }
         }
         Ok(group)
     }
 
-    async fn persist_membership_epoch_snapshot(
-        &self,
-        membership_epoch: u64,
-        mode: ConsensusMode,
-        members: &[GroupMember],
-    ) -> Result<()> {
-        let Some(ref db) = self.db else { return Ok(()) };
-        let hkey = membership_epoch_key(&self.group_id, membership_epoch);
-        let hrec = DurableMembershipEpochRecord {
-            group_id: self.group_id.clone(),
-            membership_epoch,
-            mode,
-            members: members.to_vec(),
-        };
-        let hval = serde_json::to_value(&hrec)?;
-        db.client
-            .query("UPSERT type::record('sys_mesh_membership_history', $hkey) CONTENT $h;")
-            .bind(("hkey", hkey))
-            .bind(("h", hval))
-            .await?
-            .check()?;
-        Ok(())
-    }
-
-    async fn persist_membership_and_epoch_history(
-        &self,
-        membership_epoch: u64,
-        next_slot: u64,
-        members: &[GroupMember],
-    ) -> Result<()> {
+    async fn persist_genesis_atomic(&self, members: &[GroupMember]) -> Result<()> {
         let Some(ref db) = self.db else { return Ok(()) };
         let gkey = blake3::hash(self.group_id.as_bytes()).to_hex().to_string();
-        let hkey = membership_epoch_key(&self.group_id, membership_epoch);
+        let hkey = membership_epoch_key(&self.group_id, 1);
         let rec = DurableMembershipRecord {
             group_id: self.group_id.clone(),
             mode: self.mode,
-            membership_epoch,
-            next_slot,
+            membership_epoch: 1,
+            next_slot: 1,
             members: members.to_vec(),
         };
         let hrec = DurableMembershipEpochRecord {
             group_id: self.group_id.clone(),
-            membership_epoch,
+            membership_epoch: 1,
             mode: self.mode,
             members: members.to_vec(),
+            transition: None,
         };
         let val = serde_json::to_value(&rec)?;
         let hval = serde_json::to_value(&hrec)?;
         db.client
             .query(
                 "BEGIN TRANSACTION;\
-                 UPSERT type::record('sys_mesh_membership', $gkey) CONTENT $m;\
-                 UPSERT type::record('sys_mesh_membership_history', $hkey) CONTENT $h;\
+                 CREATE type::record('sys_mesh_membership', $gkey) CONTENT $m;\
+                 CREATE type::record('sys_mesh_membership_history', $hkey) CONTENT $h;\
                  COMMIT TRANSACTION;",
             )
             .bind(("gkey", gkey))
@@ -971,18 +1289,132 @@ impl CoordinationGroup {
         Ok(())
     }
 
-    /// Unified atomic slot-commit arbitration shared by BOTH `commit_exclusive_lease` AND
-    /// `recover_and_commit_slot`!
+    /// Atomic 3-record membership-transition commit:
+    /// `CREATE sys_mesh_decision_log:$skey` + `CREATE sys_mesh_membership_history:$hkey` +
+    /// `UPSERT sys_mesh_membership:$gkey` inside ONE `nexus-db` transaction!
     ///
-    /// Persists the slot decision (`CREATE` insert-if-absent keyed by `(group, epoch, slot)`) AND
-    /// membership `next_slot` advancement inside ONE `nexus-db` transaction. If a decision already
-    /// exists for `(group, epoch, slot)`, validates the existing durable record AND verifies exact
-    /// digest match (idempotent) or FAILS CLOSED on corruption/conflict!
+    /// On `DbError::AlreadyExists`, reads back AND cryptographically validates the existing durable
+    /// records, accepting idempotently ONLY on exact verified digest/content match!
+    async fn persist_membership_transition_atomic(
+        &self,
+        decision: &MembershipTransitionDecision,
+        new_next_slot: u64,
+    ) -> Result<()> {
+        let Some(ref db) = self.db else { return Ok(()) };
+        let prop = &decision.proposal;
+        let skey = slot_decision_key(&prop.group_id, prop.prev_epoch, prop.slot);
+        let hkey = membership_epoch_key(&prop.group_id, prop.next_epoch);
+        let gkey = blake3::hash(self.group_id.as_bytes()).to_hex().to_string();
+
+        let mut sorted_members = prop.new_members.clone();
+        sorted_members.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+
+        let slot_dec = DurableSlotDecision::Membership(decision.clone());
+        let dec_val = serde_json::to_value(&slot_dec)?;
+        let hrec = DurableMembershipEpochRecord {
+            group_id: prop.group_id.clone(),
+            membership_epoch: prop.next_epoch,
+            mode: prop.mode,
+            members: sorted_members.clone(),
+            transition: Some(decision.clone()),
+        };
+        let hval = serde_json::to_value(&hrec)?;
+        let mrec = DurableMembershipRecord {
+            group_id: prop.group_id.clone(),
+            mode: prop.mode,
+            membership_epoch: prop.next_epoch,
+            next_slot: new_next_slot,
+            members: sorted_members,
+        };
+        let mval = serde_json::to_value(&mrec)?;
+
+        let tx_res = db
+            .client
+            .query(
+                "BEGIN TRANSACTION;\
+                 CREATE type::record('sys_mesh_decision_log', $skey) CONTENT $d;\
+                 CREATE type::record('sys_mesh_membership_history', $hkey) CONTENT $h;\
+                 UPSERT type::record('sys_mesh_membership', $gkey) CONTENT $m;\
+                 COMMIT TRANSACTION;",
+            )
+            .bind(("skey", skey.clone()))
+            .bind(("d", dec_val))
+            .bind(("hkey", hkey.clone()))
+            .bind(("h", hval))
+            .bind(("gkey", gkey))
+            .bind(("m", mval))
+            .await;
+
+        match tx_res {
+            Ok(resp) => match resp.check() {
+                Ok(_) => return Ok(()),
+                Err(e) if is_already_exists_error(&e) => {}
+                Err(e) => return Err(anyhow!("Failed atomic membership transition transaction: {}", e)),
+            },
+            Err(e) if is_already_exists_error(&e) => {}
+            Err(e) => return Err(anyhow!("Database error in atomic membership transition: {}", e)),
+        }
+
+        // Duplicate detected: validate BOTH existing slot decision AND history record before accepting!
+        let mut sresp = db
+            .client
+            .query("SELECT * FROM type::record('sys_mesh_decision_log', $skey)")
+            .bind(("skey", skey))
+            .await?;
+        let srows: Vec<serde_json::Value> = sresp.take(0).unwrap_or_default();
+        let raw_s = srows
+            .first()
+            .ok_or_else(|| anyhow!("Membership slot decision conflict reported but record missing"))?;
+        let existing_slot = parse_durable_slot_decision(raw_s.clone())?;
+        self.validate_durable_slot_decision(&existing_slot, Some(prop.slot))?;
+        let existing_mdec = existing_slot.as_membership().ok_or_else(|| {
+            anyhow!(
+                "CRITICAL: Slot {} already committed as a Lease decision, cannot commit Membership transition",
+                prop.slot
+            )
+        })?;
+        if existing_mdec.canonical_digest()? != decision.canonical_digest()? {
+            anyhow::bail!(
+                "CRITICAL: Conflicting durable membership transition already committed for ({}, epoch={}, slot={})",
+                prop.group_id,
+                prop.prev_epoch,
+                prop.slot
+            );
+        }
+
+        let mut hresp = db
+            .client
+            .query("SELECT * FROM type::record('sys_mesh_membership_history', $hkey)")
+            .bind(("hkey", hkey))
+            .await?;
+        let hrows: Vec<serde_json::Value> = hresp.take(0).unwrap_or_default();
+        let raw_h = hrows
+            .first()
+            .ok_or_else(|| anyhow!("Membership history conflict reported for epoch {} but record missing", prop.next_epoch))?;
+        let existing_h: DurableMembershipEpochRecord = serde_json::from_value(raw_h.clone())
+            .map_err(|e| anyhow!("Malformed existing membership history record: {}", e))?;
+        let existing_htrans = existing_h
+            .transition
+            .as_ref()
+            .ok_or_else(|| anyhow!("Existing epoch {} history record lacks transition certificate", prop.next_epoch))?;
+        self.validate_durable_membership_decision(existing_htrans, Some(prop.slot))?;
+        if existing_htrans.canonical_digest()? != decision.canonical_digest()? {
+            anyhow::bail!(
+                "CRITICAL: Conflicting membership history already committed for epoch {}",
+                prop.next_epoch
+            );
+        }
+        Ok(())
+    }
+
+    /// Unified atomic lease slot-commit arbitration shared by BOTH `commit_exclusive_lease` AND
+    /// `recover_and_commit_slot`!
     async fn persist_slot_decision_atomic(&self, lease: &FencedLease, new_next_slot: u64) -> Result<()> {
         let Some(ref db) = self.db else { return Ok(()) };
         let skey = slot_decision_key(&lease.group_id, lease.qc.epoch, lease.qc.slot);
         let gkey = blake3::hash(self.group_id.as_bytes()).to_hex().to_string();
-        let lease_val = serde_json::to_value(lease)?;
+        let slot_dec = DurableSlotDecision::Lease(lease.clone());
+        let lease_val = serde_json::to_value(&slot_dec)?;
         let mem_rec = DurableMembershipRecord {
             group_id: self.group_id.clone(),
             mode: self.mode,
@@ -1026,10 +1458,15 @@ impl CoordinationGroup {
         let raw_existing = rows
             .first()
             .ok_or_else(|| anyhow!("Slot decision reported existing but could not be read back"))?;
-        let existing: FencedLease = serde_json::from_value(raw_existing.clone())
-            .map_err(|e| anyhow!("Existing durable slot decision is malformed: {}", e))?;
-        self.validate_durable_decision(&existing, Some(lease.qc.slot))?;
-        if existing.canonical_digest() != lease.canonical_digest() {
+        let existing = parse_durable_slot_decision(raw_existing.clone())?;
+        self.validate_durable_slot_decision(&existing, Some(lease.qc.slot))?;
+        let existing_lease = existing.as_lease().ok_or_else(|| {
+            anyhow!(
+                "CRITICAL: Slot {} already committed as Membership transition, cannot commit Lease",
+                lease.qc.slot
+            )
+        })?;
+        if existing_lease.canonical_digest() != lease.canonical_digest() {
             anyhow::bail!(
                 "CRITICAL: Conflicting durable decision already committed for ({}, epoch={}, slot={})",
                 lease.group_id,
@@ -1040,41 +1477,131 @@ impl CoordinationGroup {
         Ok(())
     }
 
-    /// Read ALL durable decisions in `sys_mesh_decision_log` matching `(self.group_id, self.membership_epoch, slot)`.
+    /// Read ALL durable slot decisions in `sys_mesh_decision_log` matching `(self.group_id, self.membership_epoch, slot)`.
     /// Explicitly fails closed on malformed records rather than silently discarding them!
-    async fn read_durable_slot_decisions(&self, slot: u64) -> Result<Vec<FencedLease>> {
+    async fn read_durable_slot_decisions(&self, slot: u64) -> Result<Vec<DurableSlotDecision>> {
         let Some(ref db) = self.db else {
             return Ok(self
                 .active_leases
                 .values()
                 .filter(|l| l.qc.slot == slot && l.qc.epoch == self.membership_epoch)
                 .cloned()
+                .map(DurableSlotDecision::Lease)
                 .collect());
         };
         let mut resp = db.client.query("SELECT * FROM sys_mesh_decision_log").await?;
         let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
         let mut out = Vec::new();
         for v in rows {
-            if let Some(row_gid) = v.get("group_id").and_then(|g| g.as_str()) {
+            if let Some(row_gid) = decision_row_group_id(&v) {
                 if row_gid != self.group_id {
                     continue;
                 }
             }
-            let lease: FencedLease = serde_json::from_value(v).map_err(|e| {
+            let dec = parse_durable_slot_decision(v).map_err(|e| {
                 anyhow!(
                     "Malformed durable decision record in sys_mesh_decision_log for '{}': {}",
                     self.group_id,
                     e
                 )
             })?;
-            if lease.group_id == self.group_id
-                && lease.qc.epoch == self.membership_epoch
-                && lease.qc.slot == slot
+            if dec.group_id() == self.group_id
+                && dec.qc().epoch == self.membership_epoch
+                && dec.qc().slot == slot
             {
-                out.push(lease);
+                out.push(dec);
             }
         }
         Ok(out)
+    }
+
+    /// Validate any `DurableSlotDecision` (`Lease` or `Membership`).
+    pub fn validate_durable_slot_decision(
+        &self,
+        decision: &DurableSlotDecision,
+        expected_slot: Option<u64>,
+    ) -> Result<()> {
+        match decision {
+            DurableSlotDecision::Lease(l) => self.validate_durable_decision(l, expected_slot),
+            DurableSlotDecision::Membership(m) => {
+                self.validate_durable_membership_decision(m, expected_slot)
+            }
+        }
+    }
+
+    pub fn validate_durable_membership_decision(
+        &self,
+        decision: &MembershipTransitionDecision,
+        expected_slot: Option<u64>,
+    ) -> Result<()> {
+        let prev_epoch = decision.proposal.prev_epoch;
+        let prev_cfg = self.membership_history.get(&prev_epoch).ok_or_else(|| {
+            anyhow!(
+                "No durable membership configuration available for ({}, epoch={}) to validate membership transition to epoch {}",
+                self.group_id,
+                prev_epoch,
+                decision.proposal.next_epoch
+            )
+        })?;
+        self.validate_membership_transition_against_prev(decision, prev_cfg, prev_epoch, expected_slot)
+    }
+
+    fn validate_membership_transition_against_prev(
+        &self,
+        decision: &MembershipTransitionDecision,
+        prev_cfg: &MembershipEpochConfig,
+        expected_prev_epoch: u64,
+        expected_slot: Option<u64>,
+    ) -> Result<()> {
+        let prop = &decision.proposal;
+        if prop.group_id != self.group_id {
+            anyhow::bail!(
+                "Membership transition group_id '{}' does not match '{}'",
+                prop.group_id,
+                self.group_id
+            );
+        }
+        if prop.prev_epoch != expected_prev_epoch || prop.next_epoch != expected_prev_epoch + 1 {
+            anyhow::bail!(
+                "Membership transition epoch ({} -> {}) does not match expected predecessor {}",
+                prop.prev_epoch,
+                prop.next_epoch,
+                expected_prev_epoch
+            );
+        }
+        if prop.mode != prev_cfg.mode {
+            anyhow::bail!(
+                "Membership transition mode {:?} does not match predecessor mode {:?}",
+                prop.mode,
+                prev_cfg.mode
+            );
+        }
+        if let Some(slot) = expected_slot {
+            if prop.slot != slot {
+                anyhow::bail!(
+                    "Membership transition slot {} does not match expected slot {}",
+                    prop.slot,
+                    slot
+                );
+            }
+        }
+        if decision.qc.slot != prop.slot {
+            anyhow::bail!(
+                "Membership transition QC slot {} disagrees with proposal slot {}",
+                decision.qc.slot,
+                prop.slot
+            );
+        }
+        let expected_digest = prop.canonical_digest()?;
+        self.verify_qc_for_epoch(&decision.qc, prev_cfg, expected_prev_epoch)?;
+        if decision.qc.proposal_hash != expected_digest {
+            anyhow::bail!(
+                "Membership transition QC proposal_hash '{}' does not match canonical digest '{}'",
+                decision.qc.proposal_hash,
+                expected_digest
+            );
+        }
+        Ok(())
     }
 
     /// Shared durable decision validator used by `open_durable()`, `recover_and_commit_slot()`,
@@ -1148,24 +1675,25 @@ impl CoordinationGroup {
         self.mode.quorum_size(self.members.len())
     }
 
-    /// Autonomous standby coordinator recovery & commit for `slot`:
-    /// 1. Reads durable `sys_mesh_decision_log` and rejects conflicting committed decisions.
-    /// 2. Validates every `(SignedVote, Option<LeaseProposal>)` from voters' durable locks.
+    /// Type-aware autonomous standby coordinator recovery & commit for `slot` (supports BOTH
+    /// `SlotProposal::Lease` and `SlotProposal::Membership` transitions):
+    /// 1. Reads & validates durable `sys_mesh_decision_log` for `slot` (failing closed on conflicts/corruption).
+    /// 2. Validates every `(SignedVote, Option<SlotProposal>)` from voters' durable locks.
     /// 3. Reconstructs the unique verified `QuorumCertificate` (failing closed on conflicting quorums).
-    /// 4. Requires a matching canonical `LeaseProposal` (fails closed on legacy locks missing payload).
-    /// 5. Commits the reconstructed `FencedLease` via the SAME `persist_slot_decision_atomic` path
+    /// 4. Requires a matching canonical `SlotProposal` (fails closed on legacy locks missing payload).
+    /// 5. Persists atomically (`persist_slot_decision_atomic` or `persist_membership_transition_atomic`)
     ///    and updates in-memory state ONLY after durable persistence succeeds!
     pub async fn recover_and_commit_slot(
         &mut self,
         slot: u64,
-        locked_entries: Vec<(SignedVote, Option<LeaseProposal>)>,
-    ) -> Result<Option<FencedLease>> {
+        locked_entries: Vec<(SignedVote, Option<SlotProposal>)>,
+    ) -> Result<Option<DurableSlotDecision>> {
         // 1. Reconcile & cryptographically validate complete durable decision log for this slot
         let durable_decisions = self.read_durable_slot_decisions(slot).await?;
         let mut distinct_durable_digests = HashSet::new();
         for d in &durable_decisions {
-            self.validate_durable_decision(d, Some(slot))?;
-            distinct_durable_digests.insert(d.canonical_digest());
+            self.validate_durable_slot_decision(d, Some(slot))?;
+            distinct_durable_digests.insert(d.canonical_digest()?);
         }
         if distinct_durable_digests.len() > 1 {
             anyhow::bail!(
@@ -1175,24 +1703,29 @@ impl CoordinationGroup {
         }
         let existing_durable = durable_decisions.into_iter().next();
 
-        // 2. Validate voter locks & proposal payloads
+        // 2. Validate voter locks & canonical SlotProposal payloads
         let mut votes_by_hash: HashMap<String, Vec<SignedVote>> = HashMap::new();
-        let mut proposals_by_hash: HashMap<String, LeaseProposal> = HashMap::new();
+        let mut proposals_by_hash: HashMap<String, SlotProposal> = HashMap::new();
         for (v, prop_opt) in locked_entries {
             if v.group_id != self.group_id || v.epoch != self.membership_epoch || v.slot != slot {
                 continue;
             }
             if let Some(ref p) = prop_opt {
-                if p.canonical_digest() != v.proposal_hash {
+                let computed = p.validate_for_vote(&self.group_id, self.membership_epoch, slot)?;
+                if computed != v.proposal_hash {
                     anyhow::bail!(
-                        "Malformed or tampered LeaseProposal from voter '{}' for slot {}: digest mismatch",
+                        "Malformed or tampered SlotProposal from voter '{}' for slot {}: digest mismatch",
                         v.voter_node_id,
                         slot
                     );
                 }
                 if let Some(prev_p) = proposals_by_hash.get(&v.proposal_hash) {
                     if prev_p != p {
-                        anyhow::bail!("Conflicting proposal payloads for hash '{}' in slot {}", v.proposal_hash, slot);
+                        anyhow::bail!(
+                            "Conflicting proposal payloads for hash '{}' in slot {}",
+                            v.proposal_hash,
+                            slot
+                        );
                     }
                 } else {
                     proposals_by_hash.insert(v.proposal_hash.clone(), p.clone());
@@ -1217,26 +1750,53 @@ impl CoordinationGroup {
             }
         }
         if valid_qcs.len() > 1 {
-            anyhow::bail!("CRITICAL: Conflicting quorum certificates detected during slot {} recovery!", slot);
+            anyhow::bail!(
+                "CRITICAL: Conflicting quorum certificates detected during slot {} recovery!",
+                slot
+            );
         }
 
         if let Some(committed) = existing_durable {
             if let Some(ref recovered_qc) = valid_qcs.first() {
-                if recovered_qc.proposal_hash != committed.canonical_digest() {
+                if recovered_qc.proposal_hash != committed.canonical_digest()? {
                     anyhow::bail!(
                         "CRITICAL: Recovered voter quorum conflicts with durable committed decision for slot {}!",
                         slot
                     );
                 }
             }
-            // Hydrate in-memory state from durable decision
-            if slot >= self.next_slot {
-                self.next_slot = slot + 1;
-            }
-            let cur_max = self.max_fencing_epoch.get(&committed.resource_key).copied().unwrap_or(0);
-            if committed.fencing_epoch > cur_max {
-                self.max_fencing_epoch.insert(committed.resource_key.clone(), committed.fencing_epoch);
-                self.active_leases.insert(committed.resource_key.clone(), committed.clone());
+            match &committed {
+                DurableSlotDecision::Lease(lease) => {
+                    if slot >= self.next_slot {
+                        self.next_slot = slot + 1;
+                    }
+                    let cur_max = self.max_fencing_epoch.get(&lease.resource_key).copied().unwrap_or(0);
+                    if lease.fencing_epoch > cur_max {
+                        self.max_fencing_epoch.insert(lease.resource_key.clone(), lease.fencing_epoch);
+                        self.active_leases.insert(lease.resource_key.clone(), lease.clone());
+                    }
+                }
+                DurableSlotDecision::Membership(mdec) => {
+                    if mdec.proposal.next_epoch > self.membership_epoch {
+                        let new_map: HashMap<String, GroupMember> = mdec
+                            .proposal
+                            .new_members
+                            .iter()
+                            .cloned()
+                            .map(|m| (m.node_id.clone(), m))
+                            .collect();
+                        self.membership_epoch = mdec.proposal.next_epoch;
+                        self.next_slot = self.next_slot.max(slot + 1);
+                        self.membership_history.insert(
+                            mdec.proposal.next_epoch,
+                            MembershipEpochConfig {
+                                mode: mdec.proposal.mode,
+                                members: new_map.clone(),
+                            },
+                        );
+                        self.members = new_map;
+                    }
+                }
             }
             return Ok(Some(committed));
         }
@@ -1245,66 +1805,126 @@ impl CoordinationGroup {
             return Ok(None);
         };
 
-        // 4. Require canonical LeaseProposal (fail closed for legacy locks missing proposal payload!)
+        // 4. Require canonical SlotProposal (fail closed for legacy locks missing proposal payload!)
         let proposal = proposals_by_hash.remove(&qc.proposal_hash).ok_or_else(|| {
             anyhow!(
-                "Cannot autonomously recover slot {}: durable voter locks lack canonical LeaseProposal payload",
+                "Cannot autonomously recover slot {}: durable voter locks lack canonical SlotProposal payload",
                 slot
             )
         })?;
-        if proposal.group_id != self.group_id {
-            anyhow::bail!("Recovered proposal group_id '{}' mismatch", proposal.group_id);
-        }
-        if proposal.expires_at_ms <= proposal.issued_at_ms
-            || proposal.expires_at_ms - proposal.issued_at_ms > self.max_lease_ttl_ms
-        {
-            anyhow::bail!("Recovered proposal violates group lease validity/TTL bounds");
-        }
 
-        let lease = FencedLease {
-            lease_id: proposal.lease_id,
-            group_id: proposal.group_id,
-            resource_key: proposal.resource_key,
-            holder_node_id: proposal.holder_node_id,
-            workload_id: proposal.workload_id,
-            fencing_epoch: proposal.fencing_epoch,
-            issued_at_ms: proposal.issued_at_ms,
-            expires_at_ms: proposal.expires_at_ms,
-            qc,
-        };
+        match proposal {
+            SlotProposal::Lease(prop) => {
+                if prop.group_id != self.group_id {
+                    anyhow::bail!("Recovered lease proposal group_id '{}' mismatch", prop.group_id);
+                }
+                if prop.expires_at_ms <= prop.issued_at_ms
+                    || prop.expires_at_ms - prop.issued_at_ms > self.max_lease_ttl_ms
+                {
+                    anyhow::bail!("Recovered lease proposal violates group validity/TTL bounds");
+                }
+                let lease = FencedLease {
+                    lease_id: prop.lease_id,
+                    group_id: prop.group_id,
+                    resource_key: prop.resource_key,
+                    holder_node_id: prop.holder_node_id,
+                    workload_id: prop.workload_id,
+                    fencing_epoch: prop.fencing_epoch,
+                    issued_at_ms: prop.issued_at_ms,
+                    expires_at_ms: prop.expires_at_ms,
+                    qc,
+                };
+                self.validate_durable_decision(&lease, Some(slot))?;
+                let new_next_slot = self.next_slot.max(slot + 1);
+                self.persist_slot_decision_atomic(&lease, new_next_slot).await?;
 
-        // 5. Persist atomically BEFORE publishing into in-memory state!
-        let new_next_slot = self.next_slot.max(slot + 1);
-        self.persist_slot_decision_atomic(&lease, new_next_slot).await?;
+                self.next_slot = new_next_slot;
+                let cur_max = self.max_fencing_epoch.get(&lease.resource_key).copied().unwrap_or(0);
+                if lease.fencing_epoch > cur_max {
+                    self.max_fencing_epoch.insert(lease.resource_key.clone(), lease.fencing_epoch);
+                    self.active_leases.insert(lease.resource_key.clone(), lease.clone());
+                }
+                Ok(Some(DurableSlotDecision::Lease(lease)))
+            }
+            SlotProposal::Membership(prop) => {
+                let dec = MembershipTransitionDecision { proposal: prop, qc };
+                self.validate_durable_membership_decision(&dec, Some(slot))?;
+                let new_next_slot = self.next_slot.max(slot + 1);
+                self.persist_membership_transition_atomic(&dec, new_next_slot).await?;
 
-        self.next_slot = new_next_slot;
-        let cur_max = self.max_fencing_epoch.get(&lease.resource_key).copied().unwrap_or(0);
-        if lease.fencing_epoch > cur_max {
-            self.max_fencing_epoch.insert(lease.resource_key.clone(), lease.fencing_epoch);
-            self.active_leases.insert(lease.resource_key.clone(), lease.clone());
+                let new_map: HashMap<String, GroupMember> = dec
+                    .proposal
+                    .new_members
+                    .iter()
+                    .cloned()
+                    .map(|m| (m.node_id.clone(), m))
+                    .collect();
+                self.membership_epoch = dec.proposal.next_epoch;
+                self.next_slot = new_next_slot;
+                self.membership_history.insert(
+                    dec.proposal.next_epoch,
+                    MembershipEpochConfig {
+                        mode: dec.proposal.mode,
+                        members: new_map.clone(),
+                    },
+                );
+                self.members = new_map;
+                Ok(Some(DurableSlotDecision::Membership(dec)))
+            }
         }
-        Ok(Some(lease))
     }
 
+    /// Commit a quorum-certified membership transition using the unified `SlotProposal::Membership`
+    /// durable voting contract (atomic 3-record persistence: decision log + epoch history + tip).
     pub async fn reconfigure_membership_with_quorum(
         &mut self,
-        new_members: Vec<GroupMember>,
+        proposal: &MembershipTransitionProposal,
         votes: Vec<SignedVote>,
-    ) -> Result<u64> {
-        let next_epoch = self.membership_epoch + 1;
-        let expected_hash = hash_membership_change(&self.group_id, next_epoch, self.mode, &new_members)?;
-        let slot = self.next_slot;
+    ) -> Result<MembershipTransitionDecision> {
+        if proposal.group_id != self.group_id {
+            anyhow::bail!(
+                "Membership transition group_id '{}' does not match '{}'",
+                proposal.group_id,
+                self.group_id
+            );
+        }
+        if proposal.prev_epoch != self.membership_epoch
+            || proposal.next_epoch != self.membership_epoch + 1
+        {
+            anyhow::bail!(
+                "Membership transition epoch ({} -> {}) does not match active epoch {}",
+                proposal.prev_epoch,
+                proposal.next_epoch,
+                self.membership_epoch
+            );
+        }
+        if proposal.slot != self.next_slot {
+            anyhow::bail!(
+                "Membership transition slot {} does not match expected next_slot {}",
+                proposal.slot,
+                self.next_slot
+            );
+        }
+        if proposal.mode != self.mode {
+            anyhow::bail!(
+                "Membership transition mode {:?} does not match group mode {:?}",
+                proposal.mode,
+                self.mode
+            );
+        }
+        let expected_hash = proposal.canonical_digest()?;
+        let slot = proposal.slot;
 
         let mut valid_votes = Vec::new();
         let mut unique = HashSet::new();
         for v in votes {
-            if v.slot == slot && v.proposal_hash == expected_hash {
-                if let Some(eq) = self.record_and_verify_vote(&v)? {
-                    anyhow::bail!("Equivocation during membership change from '{}'", eq.voter_node_id);
-                }
-                if unique.insert(v.voter_node_id.clone()) {
-                    valid_votes.push(v);
-                }
+            if v.group_id == self.group_id
+                && v.epoch == self.membership_epoch
+                && v.slot == slot
+                && v.proposal_hash == expected_hash
+                && unique.insert(v.voter_node_id.clone())
+            {
+                valid_votes.push(v);
             }
         }
         let qc = QuorumCertificate {
@@ -1315,27 +1935,36 @@ impl CoordinationGroup {
             mode: self.mode,
             votes: valid_votes,
         };
-        self.verify_qc(&qc)?;
+        let mut canonical_prop = proposal.clone();
+        canonical_prop.new_members.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+        let decision = MembershipTransitionDecision {
+            proposal: canonical_prop,
+            qc,
+        };
+        self.validate_durable_membership_decision(&decision, Some(slot))?;
 
         let new_next_slot = self.next_slot + 1;
-        self.persist_membership_and_epoch_history(next_epoch, new_next_slot, &new_members)
+        self.persist_membership_transition_atomic(&decision, new_next_slot)
             .await?;
 
-        self.membership_epoch = next_epoch;
+        self.membership_epoch = decision.proposal.next_epoch;
         self.next_slot = new_next_slot;
-        let new_map: HashMap<String, GroupMember> = new_members
-            .into_iter()
+        let new_map: HashMap<String, GroupMember> = decision
+            .proposal
+            .new_members
+            .iter()
+            .cloned()
             .map(|m| (m.node_id.clone(), m))
             .collect();
         self.membership_history.insert(
-            next_epoch,
+            decision.proposal.next_epoch,
             MembershipEpochConfig {
-                mode: self.mode,
+                mode: decision.proposal.mode,
                 members: new_map.clone(),
             },
         );
         self.members = new_map;
-        Ok(self.membership_epoch)
+        Ok(decision)
     }
 
     pub fn record_and_verify_vote(&mut self, vote: &SignedVote) -> Result<Option<EquivocationProof>> {

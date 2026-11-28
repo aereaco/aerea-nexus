@@ -455,14 +455,7 @@ pub async fn schedule_and_lease_workload(
         issued_at_ms: now,
         expires_at_ms,
     };
-    let proposal_hash = proposal.canonical_digest();
-    let vote_req = VoteRequest {
-        group_id: group.group_id.clone(),
-        epoch: group.membership_epoch,
-        slot: group.next_slot,
-        proposal_hash,
-        proposal: Some(proposal),
-    };
+    let vote_req = VoteRequest::for_lease(group.membership_epoch, group.next_slot, proposal);
 
     // Parallel 1-RTT fan-out to all online authorized voters!
     let mut join_set = tokio::task::JoinSet::new();
