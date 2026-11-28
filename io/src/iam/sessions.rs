@@ -220,19 +220,11 @@ impl SessionService {
         match create_res {
             Ok(resp) => match resp.check() {
                 Ok(_) => return Ok(1),
-                Err(e) => {
-                    let msg = e.to_string().to_ascii_lowercase();
-                    if !(msg.contains("already exists") || msg.contains("duplicate") || msg.contains("unique")) {
-                        return Err(anyhow!("Failed to initialize revocation epoch: {}", e));
-                    }
-                }
+                Err(e) if crate::db::is_already_exists_error(&e) => {}
+                Err(e) => return Err(anyhow!("Failed to initialize revocation epoch: {}", e)),
             },
-            Err(e) => {
-                let msg = e.to_string().to_ascii_lowercase();
-                if !(msg.contains("already exists") || msg.contains("duplicate") || msg.contains("unique")) {
-                    return Err(anyhow!("Database error initializing revocation epoch: {}", e));
-                }
-            }
+            Err(e) if crate::db::is_already_exists_error(&e) => {}
+            Err(e) => return Err(anyhow!("Database error initializing revocation epoch: {}", e)),
         }
         let resp = self
             .db

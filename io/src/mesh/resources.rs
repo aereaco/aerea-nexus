@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::mesh::consensus::{
-    hash_lease_proposal, CoordinationGroup, FencedLease, SignedVote, VoteRequest, VoterNode,
+    CoordinationGroup, FencedLease, LeaseProposal, SignedVote, VoteRequest, VoterNode,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -445,21 +445,23 @@ pub async fn schedule_and_lease_workload(
     let lease_id = format!("lse_{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
     let expires_at_ms = now.saturating_add(ttl_ms);
     let next_fencing = group.max_fencing_epoch.get(resource_key).copied().unwrap_or(0) + 1;
-    let proposal_hash = hash_lease_proposal(
-        &group.group_id,
-        &lease_id,
-        resource_key,
-        &chosen.node_id,
-        &spec.workload_id,
-        next_fencing,
-        now,
+    let proposal = LeaseProposal {
+        group_id: group.group_id.clone(),
+        lease_id: lease_id.clone(),
+        resource_key: resource_key.to_string(),
+        holder_node_id: chosen.node_id.clone(),
+        workload_id: spec.workload_id.clone(),
+        fencing_epoch: next_fencing,
+        issued_at_ms: now,
         expires_at_ms,
-    );
+    };
+    let proposal_hash = proposal.canonical_digest();
     let vote_req = VoteRequest {
         group_id: group.group_id.clone(),
         epoch: group.membership_epoch,
         slot: group.next_slot,
         proposal_hash,
+        proposal: Some(proposal),
     };
 
     // Parallel 1-RTT fan-out to all online authorized voters!

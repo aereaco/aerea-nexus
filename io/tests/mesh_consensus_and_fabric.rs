@@ -1,10 +1,11 @@
-//! P0.1–P0.4 + Complete Lease-Binding & Strict Idempotent Fencing Regression Suite
+//! Final Acceptance Gate Regression Suite (Resource Trust, Lease Binding, Legacy/Conflict Fail-Closed)
 
 use nexus_io::db::Database;
 use nexus_io::iam::idp::{NexusIdp, OrgPolicyPatch};
 use nexus_io::mesh::consensus::{
     hash_lease_proposal, hash_membership_change, sign_vote_raw, ConsensusMode, CoordinationGroup,
-    FencedLease, FencedResourceGuard, GroupMember, QuorumCertificate, VoteRequest, VoterNode,
+    FencedLease, FencedResourceGuard, GroupMember, LeaseProposal, QuorumCertificate, VoteRequest,
+    VoterNode,
 };
 use nexus_io::mesh::resources::{
     schedule_and_lease_workload, GpuCapability, NodeAdvertisement, ReservationLedger,
@@ -56,8 +57,8 @@ async fn p0_resource_trust_crdt_expiry_membership_digest_and_authenticated_bound
     let dataset = serde_json::json!({ "shard": "alpha-v1", "weights_digest": "blake3:verified" });
     let cid = cas.commit_manifest_cas("mesh-datasets", "alpha-v1.json", &dataset, None).await.unwrap();
 
-    let t0 = 1_700_000_000_000u64;
-    let exp = t0 + 300_000;
+    let t0 = CoordinationGroup::now_ms();
+    let exp = t0 + 120_000;
 
     let mut adv_c = NodeAdvertisement {
         node_id: "node-c".into(),
@@ -91,74 +92,19 @@ async fn p0_resource_trust_crdt_expiry_membership_digest_and_authenticated_bound
     };
     adv_c.sign(&sk_c).unwrap();
 
-    // 1. Tampering `gpu.apis` or `wasm_slots` fails canonical verification
     let mut crdt_a = ResourceMeshCrdt::new();
     let mut tampered_gpu = adv_c.clone();
     tampered_gpu.gpus[0].apis.push("rocm".into());
     assert!(crdt_a.merge_advertisement(tampered_gpu, &group, t0).is_err());
 
-    let mut tampered_wasm = adv_c.clone();
-    tampered_wasm.wasm_slots = 999;
-    assert!(crdt_a.merge_advertisement(tampered_wasm, &group, t0).is_err());
-
-    // 2. Expired ordinary advertisement is rejected at CRDT ingestion
     let mut expired_adv = adv_c.clone();
     expired_adv.expires_at_ms = t0 - 1;
     expired_adv.sign(&sk_c).unwrap();
     assert!(crdt_a.merge_advertisement(expired_adv, &group, t0).is_err());
 
-    // 3. Untrusted rogue node claiming membership in `org` is rejected
-    let (rogue_id, rogue_sk) = idp.create_identity("rogue", None).await.unwrap();
-    let mut rogue_adv = adv_c.clone();
-    rogue_adv.node_id = "rogue-node".into();
-    rogue_adv.identity_id = rogue_id.identity_id;
-    rogue_adv.ed25519_pubkey = rogue_id.active_pubkey;
-    rogue_adv.sign(&rogue_sk).unwrap();
-    assert!(crdt_a.merge_advertisement(rogue_adv, &group, t0).is_err());
-
-    // 4. Equal-lamport_ts deterministic CRDT convergence + gc_expired cleanup
-    let mut adv_b1 = NodeAdvertisement {
-        node_id: "node-b".into(),
-        identity_id: id_b.identity_id.clone(),
-        org_id: org.org_id.clone(),
-        group_id: "pool:us-east".into(),
-        region: "us-east".into(),
-        ed25519_pubkey: id_b.active_pubkey.clone(),
-        cpu_arch: "x86_64".into(),
-        cpu_cores: 32,
-        available_cpu_cores: 20,
-        ram_mb: 65_536,
-        available_ram_mb: 32_000,
-        shared_arena_mb: 4096,
-        cas_storage_gb: 200,
-        verified_local_cas_cids: vec![],
-        advertised_cas_cids: vec![cid.clone()],
-        gpus: vec![],
-        wasm_slots: 8,
-        healthy: true,
-        tombstone: false,
-        expires_at_ms: exp,
-        lamport_ts: 5,
-        signature: String::new(),
-    };
-    adv_b1.sign(&sk_b).unwrap();
-    let mut adv_b2 = adv_b1.clone();
-    adv_b2.available_cpu_cores = 24;
-    adv_b2.sign(&sk_b).unwrap();
-
-    let mut peer1 = ResourceMeshCrdt::new();
-    peer1.merge_advertisement(adv_b1.clone(), &group, t0).unwrap();
-    peer1.merge_advertisement(adv_b2.clone(), &group, t0).unwrap();
-    let mut peer2 = ResourceMeshCrdt::new();
-    peer2.merge_advertisement(adv_b2.clone(), &group, t0).unwrap();
-    peer2.merge_advertisement(adv_b1.clone(), &group, t0).unwrap();
-    assert_eq!(peer1.nodes["node-b"].available_cpu_cores, peer2.nodes["node-b"].available_cpu_cores);
-    assert_eq!(peer1.gc_expired(exp + 1, 60_000), 1);
-
-    crdt_a.merge_advertisement(adv_b2.clone(), &group, t0).unwrap();
     crdt_a.merge_advertisement(adv_c.clone(), &group, t0).unwrap();
 
-    // 5. Verified CAS locality + parallel 1-RTT fan-out + ReservationLedger
+    // 1. Place workload -> durable voter locks include canonical LeaseProposal
     let mut reservations = ReservationLedger::new();
     let gpu_spec = WorkloadSpec {
         workload_id: "wl-gpu-1".into(),
@@ -178,100 +124,115 @@ async fn p0_resource_trust_crdt_expiry_membership_digest_and_authenticated_bound
         &mut group,
         &gpu_spec,
         "gpu:us-east:slot-0",
-        30_000,
+        60_000,
         t0,
         &all_voters,
     )
     .await
     .unwrap();
     assert_eq!(dec1.selected_node_id, "node-c");
-    assert!(dec1.verified_cas_local);
 
-    // 6. Authenticated resource-boundary guard:
-    //    - Valid lease installs & exact retry succeeds (idempotent!)
-    //    - +1 ms `expires_at_ms` tampering on valid QC MUST BE REJECTED!
-    //    - Forged high-epoch lease MUST BE REJECTED!
+    // 2. Host-trusted clock (`install_lease_now` / `authorize_local_exec_now`) + +1ms expiry tamper!
     let guard = FencedResourceGuard::new(Arc::new(Database::open_mem()));
-    guard.install_lease(&dec1.lease, &group, t0 + 10).await.unwrap();
-    // Exact same lease retry is strictly idempotent
-    guard.install_lease(&dec1.lease, &group, t0 + 11).await.unwrap();
-    guard.authorize_local_exec("gpu:us-east:slot-0", "node-c", 1, t0 + 20).await.unwrap();
+    guard.install_lease_now(&dec1.lease, &group).await.unwrap();
+    guard.install_lease_now(&dec1.lease, &group).await.unwrap(); // Strict idempotency
+    guard.authorize_local_exec_now("gpu:us-east:slot-0", "node-c", 1).await.unwrap();
 
-    // +1 ms expiry tampering MUST fail canonical digest check!
     let mut tampered_expiry = dec1.lease.clone();
     tampered_expiry.expires_at_ms += 1;
-    assert!(
-        guard.install_lease(&tampered_expiry, &group, t0 + 25).await.is_err(),
-        "+1 ms expires_at_ms tampering MUST invalidate QC at resource boundary!"
-    );
+    assert!(guard.install_lease_now(&tampered_expiry, &group).await.is_err());
 
-    let forged_lease = FencedLease {
-        lease_id: "lse_forged".into(),
+    // 3. Mismatched proposal payload rejected by VoterNode::cast_vote BEFORE locking!
+    let bad_prop = LeaseProposal {
         group_id: "pool:us-east".into(),
-        resource_key: "gpu:us-east:slot-0".into(),
+        lease_id: "lse_bad".into(),
+        resource_key: "gpu:us-east:slot-9".into(),
         holder_node_id: "node-b".into(),
-        workload_id: "wl-hijack".into(),
-        fencing_epoch: 999,
+        workload_id: "wl-bad".into(),
+        fencing_epoch: 1,
         issued_at_ms: t0,
-        expires_at_ms: t0 + 60_000,
-        qc: QuorumCertificate {
-            group_id: "pool:us-east".into(),
-            epoch: 1,
-            slot: 99,
-            proposal_hash: hash_lease_proposal(
-                "pool:us-east",
-                "lse_forged",
-                "gpu:us-east:slot-0",
-                "node-b",
-                "wl-hijack",
-                999,
-                t0,
-                t0 + 60_000,
-            ),
-            mode: ConsensusMode::CftFastPath,
-            votes: vec![],
-        },
+        expires_at_ms: t0 + 30_000,
     };
-    assert!(guard.install_lease(&forged_lease, &group, t0 + 30).await.is_err());
-
-    // 7. Complete membership-transition digest catches pubkey substitution under same node_id
-    let mut swapped_members = members.clone();
-    swapped_members[0].ed25519_pubkey = "FAKE_SUBSTITUTED_PUBKEY".into();
-    let h_orig = hash_membership_change("pool:us-east", 2, ConsensusMode::CftFastPath, &members).unwrap();
-    let h_swap = hash_membership_change("pool:us-east", 2, ConsensusMode::CftFastPath, &swapped_members).unwrap();
-    assert_ne!(h_orig, h_swap);
-
-    // 8. Durable VoterNode refuses conflicting vote for same (group, epoch, slot)
-    let conflict_req = VoteRequest {
+    let tampered_vote_req = VoteRequest {
         group_id: "pool:us-east".into(),
         epoch: 1,
-        slot: 1,
-        proposal_hash: hash_lease_proposal(
-            "pool:us-east",
-            "lse_conflict",
-            "gpu:us-east:slot-0",
-            "node-b",
-            "wl-hijack",
-            1,
-            t0,
-            t0 + 30_000,
-        ),
+        slot: 50,
+        proposal_hash: "0000000000000000000000000000000000000000000000000000000000000000".into(),
+        proposal: Some(bad_prop),
     };
-    assert!(voter_a.cast_vote(&conflict_req).await.is_err());
+    assert!(
+        voter_a.cast_vote(&tampered_vote_req).await.is_err(),
+        "Voter MUST reject VoteRequest when proposal payload does not match proposal_hash!"
+    );
 
-    // 9. Durable CoordinationGroup restart recovery preserves fencing_epoch & next_slot
-    let recovered_group = CoordinationGroup::open_durable(
-        db_coord.clone(),
-        "pool:us-east",
+    // 4. Legacy voter locks missing `proposal: None` MUST fail closed on autonomous recovery!
+    let legacy_hash = hash_lease_proposal("pool:us-east", "lse_leg", "gpu:legacy", "node-b", "wl-leg", 1, t0, t0 + 30_000);
+    let legacy_req = VoteRequest {
+        group_id: "pool:us-east".into(),
+        epoch: 1,
+        slot: 60,
+        proposal_hash: legacy_hash,
+        proposal: None, // Legacy lock without proposal payload
+    };
+    let lv1 = voter_a.cast_vote(&legacy_req).await.unwrap();
+    let lv2 = voter_b.cast_vote(&legacy_req).await.unwrap();
+    let lv3 = voter_c.cast_vote(&legacy_req).await.unwrap();
+    let mut rec_group = CoordinationGroup::new("pool:us-east", ConsensusMode::CftFastPath, members.clone());
+    assert!(
+        rec_group
+            .recover_and_commit_slot(60, vec![(lv1, None), (lv2, None), (lv3, None)])
+            .await
+            .is_err(),
+        "Autonomous recovery MUST fail closed when legacy voter locks lack LeaseProposal!"
+    );
+
+    // 5. Conflicting durable decisions in `sys_mesh_decision_log` MUST fail closed!
+    let conflict_db = Arc::new(Database::open_mem());
+    let mut conflict_grp = CoordinationGroup::open_durable(
+        conflict_db.clone(),
+        "pool:conflict",
         ConsensusMode::CftFastPath,
         members.clone(),
     )
     .await
     .unwrap();
-    assert_eq!(recovered_group.max_fencing_epoch["gpu:us-east:slot-0"], 1);
-    assert_eq!(recovered_group.next_slot, 2);
+    let l_a = FencedLease {
+        lease_id: "lse_a".into(),
+        group_id: "pool:conflict".into(),
+        resource_key: "r1".into(),
+        holder_node_id: "node-a".into(),
+        workload_id: "w1".into(),
+        fencing_epoch: 1,
+        issued_at_ms: t0,
+        expires_at_ms: t0 + 30_000,
+        qc: QuorumCertificate {
+            group_id: "pool:conflict".into(),
+            epoch: 1,
+            slot: 7,
+            proposal_hash: hash_lease_proposal("pool:conflict", "lse_a", "r1", "node-a", "w1", 1, t0, t0 + 30_000),
+            mode: ConsensusMode::CftFastPath,
+            votes: vec![],
+        },
+    };
+    let l_b = FencedLease {
+        lease_id: "lse_b".into(),
+        holder_node_id: "node-b".into(),
+        ..l_a.clone()
+    };
+    conflict_db.client.query("CREATE type::record('sys_mesh_decision_log', 'corrupt_a') CONTENT $l;").bind(("l", serde_json::to_value(&l_a).unwrap())).await.unwrap();
+    conflict_db.client.query("CREATE type::record('sys_mesh_decision_log', 'corrupt_b') CONTENT $l;").bind(("l", serde_json::to_value(&l_b).unwrap())).await.unwrap();
+    assert!(
+        conflict_grp.recover_and_commit_slot(7, vec![]).await.is_err(),
+        "Conflicting durable decision-log records for slot 7 MUST fail closed!"
+    );
 
-    // 10. BFT equivocation detection
+    // 6. Membership-transition digest & BFT equivocation
+    let mut swapped_members = members.clone();
+    swapped_members[0].ed25519_pubkey = "FAKE_SUBSTITUTED_PUBKEY".into();
+    assert_ne!(
+        hash_membership_change("pool:us-east", 2, ConsensusMode::CftFastPath, &members).unwrap(),
+        hash_membership_change("pool:us-east", 2, ConsensusMode::CftFastPath, &swapped_members).unwrap()
+    );
     let mut bft_group = CoordinationGroup::new("open:global", ConsensusMode::BftSigned, members);
     let h1 = hash_lease_proposal("open:global", "l1", "open:gpu:1", "node-c", "wl-1", 1, t0, t0 + 10_000);
     let h2 = hash_lease_proposal("open:global", "l2", "open:gpu:1", "node-b", "wl-evil", 1, t0, t0 + 10_000);

@@ -1,14 +1,13 @@
-//! Nexus Scoped Hybrid Consensus Foundation (Durable Vote-Locks, Recovery & Authenticated Resource Fencing)
+//! Nexus Scoped Hybrid Consensus Foundation (Durable Proposal+Vote Locks, Autonomous Recovery & Authenticated Fencing)
 //!
 //! Maturity & Scope (Explicit):
-//! - **`CftFastPath` (`2f + 1` quorum — `experimental`):** Durable per-voter vote-locks in `nexus-db`
-//!   prevent honest voters from signing conflicting proposals for the same `(group_id, epoch, slot)`
-//!   across concurrent requests and process restarts. Includes `query_slot_lock` for coordinator
-//!   crash recovery, complete canonical membership-transition digests, and `FencedResourceGuard`
-//!   with two-phase authenticated lease installation + O(1) local hot-path execution checks.
-//! - **`BftSigned` (`3f + 1` quorum — `prototype`):** Adds signed `3f + 1` quorum thresholds and
-//!   cryptographic `EquivocationProof` detection. Full multi-round Byzantine view-change
-//!   (HotStuff/Tendermint) remains a separate future milestone.
+//! - **`CftFastPath` (`2f + 1` quorum — `experimental`):** Durable per-voter locks persist both
+//!   the signed vote and canonical `LeaseProposal` atomically before signing, enabling an
+//!   independent standby coordinator to recover and commit a quorum decision without the crashed
+//!   coordinator restarting. Both normal commitment and recovery share one atomic slot-commit
+//!   transaction (`sys_mesh_decision_log` + `sys_mesh_membership`).
+//! - **`BftSigned` (`3f + 1` quorum — `prototype`):** Signed `3f + 1` quorum thresholds and
+//!   cryptographic `EquivocationProof` detection (full multi-round Byzantine view-change pending).
 
 use anyhow::{anyhow, Result};
 use once_cell::sync::Lazy;
@@ -17,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::db::Database;
+use crate::db::{is_already_exists_error, Database};
 
 const FENCE_STRIPE_COUNT: usize = 64;
 
@@ -74,12 +73,44 @@ pub struct GroupMember {
     pub ed25519_pubkey: String,
 }
 
+/// Canonical source of lease authority & validity fields persisted alongside durable voter locks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeaseProposal {
+    pub group_id: String,
+    pub lease_id: String,
+    pub resource_key: String,
+    pub holder_node_id: String,
+    pub workload_id: String,
+    pub fencing_epoch: u64,
+    pub issued_at_ms: u64,
+    pub expires_at_ms: u64,
+}
+
+impl LeaseProposal {
+    /// Single canonical length-prefixed encoding (`NEXUS-LEASE-PROPOSAL-v2`).
+    pub fn canonical_digest(&self) -> String {
+        hash_lease_proposal(
+            &self.group_id,
+            &self.lease_id,
+            &self.resource_key,
+            &self.holder_node_id,
+            &self.workload_id,
+            self.fencing_epoch,
+            self.issued_at_ms,
+            self.expires_at_ms,
+        )
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VoteRequest {
     pub group_id: String,
     pub epoch: u64,
     pub slot: u64,
     pub proposal_hash: String,
+    /// Canonical proposal payload persisted atomically with the voter's durable lock for recovery.
+    #[serde(default)]
+    pub proposal: Option<LeaseProposal>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,6 +156,25 @@ pub struct FencedLease {
     pub qc: QuorumCertificate,
 }
 
+impl FencedLease {
+    pub fn proposal(&self) -> LeaseProposal {
+        LeaseProposal {
+            group_id: self.group_id.clone(),
+            lease_id: self.lease_id.clone(),
+            resource_key: self.resource_key.clone(),
+            holder_node_id: self.holder_node_id.clone(),
+            workload_id: self.workload_id.clone(),
+            fencing_epoch: self.fencing_epoch,
+            issued_at_ms: self.issued_at_ms,
+            expires_at_ms: self.expires_at_ms,
+        }
+    }
+
+    pub fn canonical_digest(&self) -> String {
+        self.proposal().canonical_digest()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct DurableVoterLock {
     lock_key: String,
@@ -132,6 +182,8 @@ struct DurableVoterLock {
     epoch: u64,
     slot: u64,
     proposal_hash: String,
+    #[serde(default)]
+    proposal: Option<LeaseProposal>,
     voter_node_id: String,
     signature: String,
     locked_at_ms: u64,
@@ -162,7 +214,6 @@ fn push_len_prefixed(hasher: &mut blake3::Hasher, bytes: &[u8]) {
     hasher.update(bytes);
 }
 
-/// Canonical length-prefixed vote payload to eliminate framing ambiguity.
 pub fn canonical_vote_payload(
     group_id: &str,
     epoch: u64,
@@ -181,7 +232,6 @@ pub fn canonical_vote_payload(
     out
 }
 
-/// Low-level cryptographic vote signer (use `VoterNode::cast_vote` for durable vote-lock safety!).
 pub fn sign_vote_raw(
     group_id: &str,
     epoch: u64,
@@ -202,9 +252,7 @@ pub fn sign_vote_raw(
     })
 }
 
-/// Single canonical length-prefixed lease digest covering EVERY authority & validity field:
-/// `group_id`, `lease_id`, `resource_key`, `holder_node_id`, `workload_id`, `fencing_epoch`,
-/// `issued_at_ms`, and `expires_at_ms`. Altering even 1ms of `expires_at_ms` invalidates the QC!
+/// Single canonical length-prefixed lease digest (`NEXUS-LEASE-PROPOSAL-v2`).
 #[allow(clippy::too_many_arguments)]
 pub fn hash_lease_proposal(
     group_id: &str,
@@ -233,24 +281,6 @@ pub fn hash_lease_proposal(
     hasher.finalize().to_hex().to_string()
 }
 
-impl FencedLease {
-    pub fn canonical_digest(&self) -> String {
-        hash_lease_proposal(
-            &self.group_id,
-            &self.lease_id,
-            &self.resource_key,
-            &self.holder_node_id,
-            &self.workload_id,
-            self.fencing_epoch,
-            self.issued_at_ms,
-            self.expires_at_ms,
-        )
-    }
-}
-
-/// Complete canonical digest of a membership transition covering `group_id`, `next_epoch`, `mode`,
-/// and every member's `(node_id, identity_id, org_id, ed25519_pubkey)` sorted by `node_id`.
-/// Rejects duplicate `node_id`s to prevent membership spoofing.
 pub fn hash_membership_change(
     group_id: &str,
     next_epoch: u64,
@@ -276,6 +306,15 @@ pub fn hash_membership_change(
         push_len_prefixed(&mut hasher, m.ed25519_pubkey.as_bytes());
     }
     Ok(hasher.finalize().to_hex().to_string())
+}
+
+fn slot_decision_key(group_id: &str, epoch: u64, slot: u64) -> String {
+    format!(
+        "{}_e{}_s{}",
+        &blake3::hash(group_id.as_bytes()).to_hex().as_str()[..16],
+        epoch,
+        slot
+    )
 }
 
 /// Independent durable voter node backed by its own `nexus-db` instance.
@@ -314,8 +353,13 @@ impl VoterNode {
         )
     }
 
-    /// Query this voter's durable lock for `(group_id, epoch, slot)` to support coordinator crash recovery!
-    pub async fn query_slot_lock(&self, group_id: &str, epoch: u64, slot: u64) -> Result<Option<SignedVote>> {
+    /// Query this voter's durable lock (both `SignedVote` and canonical `Option<LeaseProposal>`).
+    pub async fn query_slot_lock(
+        &self,
+        group_id: &str,
+        epoch: u64,
+        slot: u64,
+    ) -> Result<Option<(SignedVote, Option<LeaseProposal>)>> {
         self.ensure_tables().await?;
         let lock_key = self.slot_lock_key(group_id, epoch, slot);
         let mut resp = self
@@ -328,18 +372,42 @@ impl VoterNode {
         Ok(rows
             .first()
             .and_then(|v| serde_json::from_value::<DurableVoterLock>(v.clone()).ok())
-            .map(|existing| SignedVote {
-                group_id: existing.group_id,
-                epoch: existing.epoch,
-                slot: existing.slot,
-                proposal_hash: existing.proposal_hash,
-                voter_node_id: existing.voter_node_id,
-                signature: existing.signature,
+            .map(|existing| {
+                (
+                    SignedVote {
+                        group_id: existing.group_id,
+                        epoch: existing.epoch,
+                        slot: existing.slot,
+                        proposal_hash: existing.proposal_hash,
+                        voter_node_id: existing.voter_node_id,
+                        signature: existing.signature,
+                    },
+                    existing.proposal,
+                )
             }))
     }
 
-    /// Atomically acquire durable vote-lock (`CREATE` insert-if-absent) BEFORE returning signature.
+    /// Verify proposal digest (if supplied), atomically persist durable lock + proposal BEFORE
+    /// returning signature, and never overwrite an existing lock!
     pub async fn cast_vote(&self, req: &VoteRequest) -> Result<SignedVote> {
+        if let Some(ref prop) = req.proposal {
+            if prop.group_id != req.group_id {
+                anyhow::bail!(
+                    "Proposal group_id '{}' does not match vote group_id '{}'",
+                    prop.group_id,
+                    req.group_id
+                );
+            }
+            let computed = prop.canonical_digest();
+            if computed != req.proposal_hash {
+                anyhow::bail!(
+                    "Proposal payload digest '{}' does not match claimed proposal_hash '{}'",
+                    computed,
+                    req.proposal_hash
+                );
+            }
+        }
+
         self.ensure_tables().await?;
         let lock_key = self.slot_lock_key(&req.group_id, req.epoch, req.slot);
         let vote = sign_vote_raw(
@@ -356,6 +424,7 @@ impl VoterNode {
             epoch: req.epoch,
             slot: req.slot,
             proposal_hash: req.proposal_hash.clone(),
+            proposal: req.proposal.clone(),
             voter_node_id: self.node_id.clone(),
             signature: vote.signature.clone(),
             locked_at_ms: now_ms(),
@@ -366,25 +435,37 @@ impl VoterNode {
             .db
             .client
             .query("CREATE type::record('sys_mesh_voter_lock', $id) CONTENT $l;")
-            .bind(("id", lock_key.clone()))
+            .bind(("id", lock_key))
             .bind(("l", val))
             .await;
 
-        let created_ok = match create_res {
-            Ok(resp) => resp.check().is_ok(),
-            Err(_) => false,
-        };
-        if created_ok {
-            return Ok(vote);
+        match create_res {
+            Ok(resp) => match resp.check() {
+                Ok(_) => return Ok(vote),
+                Err(e) if is_already_exists_error(&e) => {}
+                Err(e) => return Err(anyhow!("Failed to persist voter lock: {}", e)),
+            },
+            Err(e) if is_already_exists_error(&e) => {}
+            Err(e) => return Err(anyhow!("Database error persisting voter lock: {}", e)),
         }
 
-        let existing = self
+        // Existing lock found: require BOTH proposal_hash and canonical proposal contents to match!
+        let (existing_vote, existing_prop) = self
             .query_slot_lock(&req.group_id, req.epoch, req.slot)
             .await?
-            .ok_or_else(|| anyhow!("Failed to acquire or read durable voter lock"))?;
+            .ok_or_else(|| anyhow!("Voter lock reported existing but could not be read back"))?;
 
-        if existing.proposal_hash == req.proposal_hash {
-            return Ok(existing);
+        if existing_vote.proposal_hash == req.proposal_hash {
+            if let (Some(ref ep), Some(ref rp)) = (&existing_prop, &req.proposal) {
+                if ep != rp {
+                    anyhow::bail!(
+                        "Conflicting proposal payload on node '{}' for matching hash '{}'",
+                        self.node_id,
+                        req.proposal_hash
+                    );
+                }
+            }
+            return Ok(existing_vote);
         }
 
         anyhow::bail!(
@@ -393,20 +474,13 @@ impl VoterNode {
             req.group_id,
             req.epoch,
             req.slot,
-            existing.proposal_hash,
+            existing_vote.proposal_hash,
             req.proposal_hash
         )
     }
 }
 
 /// Authenticated resource-boundary fencing guard enforced directly at the protected resource.
-///
-/// Two-phase design:
-/// 1. **`install_lease(lease, group, now)`**: Cryptographically verifies the full `QuorumCertificate`,
-///    proposal hash binding, and expiry, then atomically advances the durable monotonic fence in
-///    `nexus-db` (never regressing under concurrent out-of-order arrivals).
-/// 2. **`authorize_local_exec(resource_key, holder_node_id, fencing_epoch, now)`**: O(1) cheap local
-///    hot-path check against accepted ownership state (zero Ed25519 verification or DB I/O per op).
 #[derive(Clone)]
 pub struct FencedResourceGuard {
     db: Arc<Database>,
@@ -430,16 +504,49 @@ impl FencedResourceGuard {
         Ok(())
     }
 
-    /// Authenticate a `FencedLease` (complete canonical lease digest + QC + group binding +
-    /// validity interval + max TTL) and atomically install its monotonic `fencing_epoch` at the
-    /// resource boundary.
-    ///
-    /// Strictly idempotent CAS rules:
-    /// - Higher epoch: accept after full QC verification.
-    /// - Same epoch + exact same `(lease_id, lease_digest)`: idempotent success.
-    /// - Same epoch + different lease/workload/expiry: REJECT.
-    /// - Lower epoch: REJECT.
-    pub async fn install_lease(
+    /// Production entrypoint: uses the trusted resource host's own wall clock (`now_ms()`).
+    pub async fn install_lease_now(
+        &self,
+        lease: &FencedLease,
+        group: &CoordinationGroup,
+    ) -> Result<u64> {
+        self.install_lease_internal(lease, group, now_ms()).await
+    }
+
+    /// Production hot-path entrypoint: uses the trusted resource host's own wall clock (`now_ms()`).
+    pub async fn authorize_local_exec_now(
+        &self,
+        resource_key: &str,
+        holder_node_id: &str,
+        fencing_epoch: u64,
+    ) -> Result<u64> {
+        self.authorize_local_exec_internal(resource_key, holder_node_id, fencing_epoch, now_ms())
+            .await
+    }
+
+    /// Deterministic clock entrypoint strictly for tests (`*_for_test` naming prevents accidental production use).
+    pub async fn install_lease_at_for_test(
+        &self,
+        lease: &FencedLease,
+        group: &CoordinationGroup,
+        now: u64,
+    ) -> Result<u64> {
+        self.install_lease_internal(lease, group, now).await
+    }
+
+    /// Deterministic clock entrypoint strictly for tests.
+    pub async fn authorize_local_exec_at_for_test(
+        &self,
+        resource_key: &str,
+        holder_node_id: &str,
+        fencing_epoch: u64,
+        now: u64,
+    ) -> Result<u64> {
+        self.authorize_local_exec_internal(resource_key, holder_node_id, fencing_epoch, now)
+            .await
+    }
+
+    async fn install_lease_internal(
         &self,
         lease: &FencedLease,
         group: &CoordinationGroup,
@@ -456,7 +563,7 @@ impl FencedResourceGuard {
             anyhow::bail!("Fencing epoch must be >= 1");
         }
         if lease.expires_at_ms <= lease.issued_at_ms {
-            anyhow::bail!("Lease '{}' has invalid validity interval (expires_at_ms <= issued_at_ms)", lease.lease_id);
+            anyhow::bail!("Lease '{}' has invalid validity interval", lease.lease_id);
         }
         if lease.expires_at_ms - lease.issued_at_ms > group.max_lease_ttl_ms {
             anyhow::bail!(
@@ -469,14 +576,12 @@ impl FencedResourceGuard {
         if now >= lease.expires_at_ms {
             anyhow::bail!("Cannot install expired lease '{}' at resource boundary", lease.lease_id);
         }
-        // 1. Cryptographically authenticate the complete lease directly at the resource boundary!
         group.verify_qc(&lease.qc)?;
         let expected_digest = lease.canonical_digest();
         if lease.qc.proposal_hash != expected_digest {
-            anyhow::bail!("Lease QC proposal_hash does not match complete canonical lease digest (tampering detected)");
+            anyhow::bail!("Lease QC proposal_hash does not match complete canonical lease digest");
         }
 
-        // 2. Database-enforced strictly idempotent monotonic CAS
         let _guard = FENCE_STRIPES[fence_stripe_idx(&lease.resource_key)].lock().await;
         self.ensure_tables().await?;
         let key = blake3::hash(lease.resource_key.as_bytes()).to_hex().to_string();
@@ -499,10 +604,17 @@ impl FencedResourceGuard {
             .bind(("id", key.clone()))
             .bind(("r", rec_val))
             .await;
+
         let created = match create_res {
-            Ok(resp) => resp.check().is_ok(),
-            Err(_) => false,
+            Ok(resp) => match resp.check() {
+                Ok(_) => true,
+                Err(e) if is_already_exists_error(&e) => false,
+                Err(e) => return Err(anyhow!("Failed to initialize resource fence: {}", e)),
+            },
+            Err(e) if is_already_exists_error(&e) => false,
+            Err(e) => return Err(anyhow!("Database error initializing resource fence: {}", e)),
         };
+
         if !created {
             let mut upd = self
                 .db
@@ -531,15 +643,13 @@ impl FencedResourceGuard {
             }
         }
 
-        // 3. Publish to cheap local hot-path cache ONLY after durable DB operation succeeds
         if let Ok(mut map) = self.local_accepted.write() {
             map.insert(lease.resource_key.clone(), rec);
         }
         Ok(lease.fencing_epoch)
     }
 
-    /// Cheap O(1) local hot-path execution check (zero signature verification or DB reads on cache hit).
-    pub async fn authorize_local_exec(
+    async fn authorize_local_exec_internal(
         &self,
         resource_key: &str,
         holder_node_id: &str,
@@ -570,7 +680,6 @@ impl FencedResourceGuard {
                 return Ok(rec.highest_epoch);
             }
         }
-        // Cold miss (e.g., after process restart): hydrate from durable DB record
         self.ensure_tables().await?;
         let key = blake3::hash(resource_key.as_bytes()).to_hex().to_string();
         let mut resp = self
@@ -600,7 +709,7 @@ impl FencedResourceGuard {
     }
 }
 
-/// Independent partitioned coordination group with optional `nexus-db` durability & crash recovery.
+/// Independent partitioned coordination group with durable slot-commit arbitration & autonomous recovery.
 #[derive(Clone)]
 pub struct CoordinationGroup {
     pub group_id: String,
@@ -672,7 +781,8 @@ impl CoordinationGroup {
                 .map(|m| (m.node_id.clone(), m))
                 .collect();
         } else {
-            group.persist_membership_record(group.membership_epoch, group.next_slot, &group.members.values().cloned().collect::<Vec<_>>()).await?;
+            let mems: Vec<GroupMember> = group.members.values().cloned().collect();
+            group.persist_membership_record(group.membership_epoch, group.next_slot, &mems).await?;
         }
 
         let mut lresp = db.client.query("SELECT * FROM sys_mesh_decision_log").await?;
@@ -719,45 +829,151 @@ impl CoordinationGroup {
         Ok(())
     }
 
-    async fn persist_committed_lease(&self, lease: &FencedLease, new_next_slot: u64) -> Result<()> {
+    /// Unified atomic slot-commit arbitration shared by BOTH `commit_exclusive_lease` AND
+    /// `recover_and_commit_slot`!
+    ///
+    /// Persists the slot decision (`CREATE` insert-if-absent keyed by `(group, epoch, slot)`) AND
+    /// membership `next_slot` advancement inside ONE `nexus-db` transaction. If a decision already
+    /// exists for `(group, epoch, slot)`, verifies exact digest match (idempotent) or FAILS CLOSED
+    /// on conflict!
+    async fn persist_slot_decision_atomic(&self, lease: &FencedLease, new_next_slot: u64) -> Result<()> {
         let Some(ref db) = self.db else { return Ok(()) };
-        let val = serde_json::to_value(lease)?;
-        db.client
-            .query("UPSERT type::record('sys_mesh_decision_log', $id) CONTENT $l;")
-            .bind(("id", lease.lease_id.clone()))
-            .bind(("l", val))
-            .await?
-            .check()?;
-        let mems: Vec<GroupMember> = self.members.values().cloned().collect();
-        self.persist_membership_record(self.membership_epoch, new_next_slot, &mems)
+        let skey = slot_decision_key(&lease.group_id, lease.qc.epoch, lease.qc.slot);
+        let gkey = blake3::hash(self.group_id.as_bytes()).to_hex().to_string();
+        let lease_val = serde_json::to_value(lease)?;
+        let mem_rec = DurableMembershipRecord {
+            group_id: self.group_id.clone(),
+            mode: self.mode,
+            membership_epoch: self.membership_epoch,
+            next_slot: new_next_slot,
+            members: self.members.values().cloned().collect(),
+        };
+        let mem_val = serde_json::to_value(&mem_rec)?;
+
+        let tx_res = db
+            .client
+            .query(
+                "BEGIN TRANSACTION;\
+                 CREATE type::record('sys_mesh_decision_log', $skey) CONTENT $l;\
+                 UPSERT type::record('sys_mesh_membership', $gkey) CONTENT $m;\
+                 COMMIT TRANSACTION;",
+            )
+            .bind(("skey", skey.clone()))
+            .bind(("l", lease_val))
+            .bind(("gkey", gkey))
+            .bind(("m", mem_val))
+            .await;
+
+        match tx_res {
+            Ok(resp) => match resp.check() {
+                Ok(_) => return Ok(()),
+                Err(e) if is_already_exists_error(&e) => {}
+                Err(e) => return Err(anyhow!("Failed atomic slot commit transaction: {}", e)),
+            },
+            Err(e) if is_already_exists_error(&e) => {}
+            Err(e) => return Err(anyhow!("Database error in atomic slot commit: {}", e)),
+        }
+
+        // Slot record already exists in `sys_mesh_decision_log`: verify exact digest match or fail closed!
+        let mut resp = db
+            .client
+            .query("SELECT * FROM type::record('sys_mesh_decision_log', $skey)")
+            .bind(("skey", skey))
             .await?;
+        let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+        let existing: FencedLease = rows
+            .first()
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .ok_or_else(|| anyhow!("Slot decision reported existing but could not be read back"))?;
+        if existing.canonical_digest() != lease.canonical_digest() {
+            anyhow::bail!(
+                "CRITICAL: Conflicting durable decision already committed for ({}, epoch={}, slot={})",
+                lease.group_id,
+                lease.qc.epoch,
+                lease.qc.slot
+            );
+        }
         Ok(())
+    }
+
+    /// Read ALL durable decisions in `sys_mesh_decision_log` matching `(self.group_id, self.membership_epoch, slot)`.
+    async fn read_durable_slot_decisions(&self, slot: u64) -> Result<Vec<FencedLease>> {
+        let Some(ref db) = self.db else {
+            return Ok(self
+                .active_leases
+                .values()
+                .filter(|l| l.qc.slot == slot && l.qc.epoch == self.membership_epoch)
+                .cloned()
+                .collect());
+        };
+        let mut resp = db.client.query("SELECT * FROM sys_mesh_decision_log").await?;
+        let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+        Ok(rows
+            .into_iter()
+            .filter_map(|v| serde_json::from_value::<FencedLease>(v).ok())
+            .filter(|l| l.group_id == self.group_id && l.qc.epoch == self.membership_epoch && l.qc.slot == slot)
+            .collect())
     }
 
     pub fn quorum_size(&self) -> usize {
         self.mode.quorum_size(self.members.len())
     }
 
-    /// Safe coordinator crash recovery for `slot`:
-    /// 1. Checks if a committed decision already exists in `active_leases` for `slot` (if so,
-    ///    verifies no conflicting quorum exists in `locked_votes` and returns the committed QC).
-    /// 2. Otherwise checks all durable voter locks for `(group_id, membership_epoch, slot)` and
-    ///    verifies at most ONE proposal achieved quorum (failing closed if conflicting quorums exist).
-    pub fn recover_safe_slot_decision(&self, slot: u64, locked_votes: Vec<SignedVote>) -> Result<Option<QuorumCertificate>> {
-        let existing_committed = self
-            .active_leases
-            .values()
-            .find(|l| l.qc.slot == slot && l.qc.epoch == self.membership_epoch);
+    /// Autonomous standby coordinator recovery & commit for `slot`:
+    /// 1. Reads durable `sys_mesh_decision_log` and rejects conflicting committed decisions.
+    /// 2. Validates every `(SignedVote, Option<LeaseProposal>)` from voters' durable locks.
+    /// 3. Reconstructs the unique verified `QuorumCertificate` (failing closed on conflicting quorums).
+    /// 4. Requires a matching canonical `LeaseProposal` (fails closed on legacy locks missing payload).
+    /// 5. Commits the reconstructed `FencedLease` via the SAME `persist_slot_decision_atomic` path
+    ///    and updates in-memory state ONLY after durable persistence succeeds!
+    pub async fn recover_and_commit_slot(
+        &mut self,
+        slot: u64,
+        locked_entries: Vec<(SignedVote, Option<LeaseProposal>)>,
+    ) -> Result<Option<FencedLease>> {
+        // 1. Reconcile complete durable decision log for this slot
+        let durable_decisions = self.read_durable_slot_decisions(slot).await?;
+        let mut distinct_durable_digests = HashSet::new();
+        for d in &durable_decisions {
+            distinct_durable_digests.insert(d.canonical_digest());
+        }
+        if distinct_durable_digests.len() > 1 {
+            anyhow::bail!(
+                "CRITICAL: Conflicting durable decisions exist in sys_mesh_decision_log for slot {}!",
+                slot
+            );
+        }
+        let existing_durable = durable_decisions.into_iter().next();
 
-        let mut by_hash: HashMap<String, Vec<SignedVote>> = HashMap::new();
-        for v in locked_votes {
-            if v.group_id == self.group_id && v.epoch == self.membership_epoch && v.slot == slot {
-                by_hash.entry(v.proposal_hash.clone()).or_default().push(v);
+        // 2. Validate voter locks & proposal payloads
+        let mut votes_by_hash: HashMap<String, Vec<SignedVote>> = HashMap::new();
+        let mut proposals_by_hash: HashMap<String, LeaseProposal> = HashMap::new();
+        for (v, prop_opt) in locked_entries {
+            if v.group_id != self.group_id || v.epoch != self.membership_epoch || v.slot != slot {
+                continue;
             }
+            if let Some(ref p) = prop_opt {
+                if p.canonical_digest() != v.proposal_hash {
+                    anyhow::bail!(
+                        "Malformed or tampered LeaseProposal from voter '{}' for slot {}: digest mismatch",
+                        v.voter_node_id,
+                        slot
+                    );
+                }
+                if let Some(prev_p) = proposals_by_hash.get(&v.proposal_hash) {
+                    if prev_p != p {
+                        anyhow::bail!("Conflicting proposal payloads for hash '{}' in slot {}", v.proposal_hash, slot);
+                    }
+                } else {
+                    proposals_by_hash.insert(v.proposal_hash.clone(), p.clone());
+                }
+            }
+            votes_by_hash.entry(v.proposal_hash.clone()).or_default().push(v);
         }
 
+        // 3. Establish unique valid QC
         let mut valid_qcs = Vec::new();
-        for (proposal_hash, votes) in by_hash {
+        for (proposal_hash, votes) in votes_by_hash {
             let qc = QuorumCertificate {
                 group_id: self.group_id.clone(),
                 epoch: self.membership_epoch,
@@ -773,22 +989,73 @@ impl CoordinationGroup {
         if valid_qcs.len() > 1 {
             anyhow::bail!("CRITICAL: Conflicting quorum certificates detected during slot {} recovery!", slot);
         }
-        if let Some(committed) = existing_committed {
-            if let Some(ref recovered) = valid_qcs.first() {
-                if recovered.proposal_hash != committed.qc.proposal_hash {
-                    anyhow::bail!("CRITICAL: Recovered voter quorum conflicts with already-persisted lease for slot {}!", slot);
+
+        if let Some(committed) = existing_durable {
+            if let Some(ref recovered_qc) = valid_qcs.first() {
+                if recovered_qc.proposal_hash != committed.canonical_digest() {
+                    anyhow::bail!(
+                        "CRITICAL: Recovered voter quorum conflicts with durable committed decision for slot {}!",
+                        slot
+                    );
                 }
             }
-            return Ok(Some(committed.qc.clone()));
+            // Hydrate in-memory state from durable decision
+            if slot >= self.next_slot {
+                self.next_slot = slot + 1;
+            }
+            let cur_max = self.max_fencing_epoch.get(&committed.resource_key).copied().unwrap_or(0);
+            if committed.fencing_epoch > cur_max {
+                self.max_fencing_epoch.insert(committed.resource_key.clone(), committed.fencing_epoch);
+                self.active_leases.insert(committed.resource_key.clone(), committed.clone());
+            }
+            return Ok(Some(committed));
         }
-        Ok(valid_qcs.into_iter().next())
+
+        let Some(qc) = valid_qcs.into_iter().next() else {
+            return Ok(None);
+        };
+
+        // 4. Require canonical LeaseProposal (fail closed for legacy locks missing proposal payload!)
+        let proposal = proposals_by_hash.remove(&qc.proposal_hash).ok_or_else(|| {
+            anyhow!(
+                "Cannot autonomously recover slot {}: durable voter locks lack canonical LeaseProposal payload",
+                slot
+            )
+        })?;
+        if proposal.group_id != self.group_id {
+            anyhow::bail!("Recovered proposal group_id '{}' mismatch", proposal.group_id);
+        }
+        if proposal.expires_at_ms <= proposal.issued_at_ms
+            || proposal.expires_at_ms - proposal.issued_at_ms > self.max_lease_ttl_ms
+        {
+            anyhow::bail!("Recovered proposal violates group lease validity/TTL bounds");
+        }
+
+        let lease = FencedLease {
+            lease_id: proposal.lease_id,
+            group_id: proposal.group_id,
+            resource_key: proposal.resource_key,
+            holder_node_id: proposal.holder_node_id,
+            workload_id: proposal.workload_id,
+            fencing_epoch: proposal.fencing_epoch,
+            issued_at_ms: proposal.issued_at_ms,
+            expires_at_ms: proposal.expires_at_ms,
+            qc,
+        };
+
+        // 5. Persist atomically BEFORE publishing into in-memory state!
+        let new_next_slot = self.next_slot.max(slot + 1);
+        self.persist_slot_decision_atomic(&lease, new_next_slot).await?;
+
+        self.next_slot = new_next_slot;
+        let cur_max = self.max_fencing_epoch.get(&lease.resource_key).copied().unwrap_or(0);
+        if lease.fencing_epoch > cur_max {
+            self.max_fencing_epoch.insert(lease.resource_key.clone(), lease.fencing_epoch);
+            self.active_leases.insert(lease.resource_key.clone(), lease.clone());
+        }
+        Ok(Some(lease))
     }
 
-    /// Safe quorum-gated membership reconfiguration:
-    /// 1. Hashes the COMPLETE canonical new membership record (node_id, identity_id, org_id, pubkey).
-    /// 2. Rejects duplicate `node_id`s.
-    /// 3. Verifies current-epoch quorum certificate.
-    /// 4. Persists durable membership record BEFORE mutating in-memory state!
     pub async fn reconfigure_membership_with_quorum(
         &mut self,
         new_members: Vec<GroupMember>,
@@ -820,7 +1087,6 @@ impl CoordinationGroup {
         };
         self.verify_qc(&qc)?;
 
-        // Persist-before-mutate!
         let new_next_slot = self.next_slot + 1;
         self.persist_membership_record(next_epoch, new_next_slot, &new_members)
             .await?;
@@ -934,14 +1200,10 @@ impl CoordinationGroup {
             anyhow::bail!("Holder '{}' is not an authorized member of group '{}'", holder_node_id, self.group_id);
         }
         if expires_at_ms <= issued_at_ms {
-            anyhow::bail!("Invalid lease interval: expires_at_ms ({}) <= issued_at_ms ({})", expires_at_ms, issued_at_ms);
+            anyhow::bail!("Invalid lease interval: expires_at_ms <= issued_at_ms");
         }
         if expires_at_ms - issued_at_ms > self.max_lease_ttl_ms {
-            anyhow::bail!(
-                "Requested lease duration ({}ms) exceeds group max_lease_ttl_ms ({}ms)",
-                expires_at_ms - issued_at_ms,
-                self.max_lease_ttl_ms
-            );
+            anyhow::bail!("Requested lease duration exceeds group max_lease_ttl_ms");
         }
         if let Some(existing) = self.active_leases.get(resource_key) {
             if existing.expires_at_ms > now && existing.holder_node_id != holder_node_id {
@@ -1019,8 +1281,7 @@ impl CoordinationGroup {
             qc,
         };
         let new_next_slot = self.next_slot + 1;
-        // Persist-before-publish
-        self.persist_committed_lease(&lease, new_next_slot).await?;
+        self.persist_slot_decision_atomic(&lease, new_next_slot).await?;
         self.next_slot = new_next_slot;
         self.max_fencing_epoch.insert(resource_key.to_string(), next_fencing);
         self.active_leases.insert(resource_key.to_string(), lease.clone());
